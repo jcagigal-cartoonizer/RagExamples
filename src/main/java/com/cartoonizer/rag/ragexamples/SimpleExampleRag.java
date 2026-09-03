@@ -38,10 +38,11 @@ public class SimpleExampleRag {
     public static void main(String[] args) {
         String documentToRead = "./example-files/story-about-happy-carrot.txt";
         File f = new File(documentToRead);
-        System.out.println("EXISTS = " + f.exists());
-//        setup(documentToRead);
-//        String answer = askQuestion("Who is Charlie?");
-//        System.out.println("Answer: " + answer);
+        if (f.exists()) {
+            setup(documentToRead);
+            String answer = askQuestion("Who is Charlie?");
+            System.out.println("Answer: " + answer);
+        }
     }
     public static String askQuestion(String question) {
 

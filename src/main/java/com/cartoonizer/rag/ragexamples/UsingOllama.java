@@ -34,9 +34,9 @@ public class UsingOllama {
 
     // Pull the model and create an image based on the selected model.
     try {
-        log.info("Start pulling the '{}' model ... would take several minutes ...", TINY_DOLPHIN_MODEL);
+//        log.info("Start pulling the '{}' model ... would take several minutes ...", TINY_DOLPHIN_MODEL);
         Container.ExecResult r = ollama.execInContainer("ollama", "pull", TINY_DOLPHIN_MODEL);
-        log.info("Model pulling competed! {}", r);
+//        log.info("Model pulling competed! {}", r);
     } catch (IOException | InterruptedException e) {
         throw new RuntimeException("Error pulling model", e);
     }
@@ -53,7 +53,7 @@ public class UsingOllama {
 
     // Example usage
     String answer = model.chat("Provide 3 short bullet points explaining why Java is awesome");
-    System.out.println(answer);
+    System.out.println("Answer = " + answer);
 
     // Stop the Ollama container
     ollama.stop();

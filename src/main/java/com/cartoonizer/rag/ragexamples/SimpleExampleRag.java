@@ -36,11 +36,14 @@ import static java.util.stream.Collectors.joining;
 public class SimpleExampleRag {
 
     public static void main(String[] args) {
-        String documentToRead = "./example-files/story-about-happy-carrot.txt";
+        String documentToRead = "./example-files/story-about-loan-cagigal.txt";
         File f = new File(documentToRead);
         if (f.exists()) {
+            System.out.println("Before setup ");
             setup(documentToRead);
-            String answer = askQuestion("Who is Charlie?");
+            String question = "Who is Juan Cagigal";
+            System.out.println("After setup question: " + question);
+            String answer = askQuestion(question);
             System.out.println("Answer: " + answer);
         }
     }
@@ -100,11 +103,14 @@ public class SimpleExampleRag {
 
         // Split document into segments 100 tokens each
         DocumentSplitter splitter = DocumentSplitters.recursive(
-                300,
+                512,
                 0,
                 new OpenAiTokenCountEstimator(ModelNames.CHAT_GPT_MINI)
         );
         List<TextSegment> segments = splitter.split(document);
+        for (TextSegment segment : segments) {
+            System.out.println("segment " + segment.text());
+        }
 
         // Embed segments (convert them into vectors that represent the meaning) using embedding model        
         List<Embedding> embeddings = embeddingModel.embedAll(segments).content();

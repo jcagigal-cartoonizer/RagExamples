@@ -1,12 +1,11 @@
-package com.cartoonizer.rag.ragexamples;
-
-
+package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.shared.utils.ApiKeys;
 import com.cartoonizer.rag.shared.utils.ModelNames;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentParser;
 import dev.langchain4j.data.document.DocumentSplitter;
+import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.embedding.Embedding;
@@ -33,20 +32,33 @@ import static dev.langchain4j.data.document.loader.FileSystemDocumentLoader.load
 import java.io.File;
 import static java.util.stream.Collectors.joining;
 
-public class SimpleExampleRag {
+public class SimpleExampleOpenAi {
 
     public static void main(String[] args) {
-        String documentToRead = "./example-files/story-about-loan-cagigal.txt";
-        File f = new File(documentToRead);
+        String documentsPath = "./example-files";
+        File f = new File(documentsPath);
         if (f.exists()) {
             System.out.println("Before setup ");
-            setup(documentToRead);
-            String question = "Who is Juan Cagigal";
-            System.out.println("After setup question: " + question);
-            String answer = askQuestion(question);
-            System.out.println("Answer: " + answer);
+            setup(documentsPath);
+//            String question = "Who is Juan Cagigal";
+            String[] questions = {
+//                "Who is Juan Cagigal",
+//                "Give me some reasons tu use RAG software",
+                "How to use RAG to migrate from Jetpack Views to Jetpack Compose with langchain4j ",
+                "provide a **complete langchain4j sample project structure** for migration from Jetpack Views to Jetpack Compose with langchain4j",
+            };
+            String[] answers = new String[questions.length];
+            for (int i = 0; i < questions.length; i++) {
+                System.out.println("\n\n****************************************************************************************");
+                String question = questions[i];
+                System.out.println("QUESTION: " + question);
+                answers[i] = askQuestion(question);
+                System.out.println("ANSWER: " + answers[i]);
+            }
+            System.out.println("\n\n****************************************************************************************");
         }
     }
+
     public static String askQuestion(String question) {
 
         // Embed the question
@@ -64,12 +76,12 @@ public class SimpleExampleRag {
         // Create a prompt for the model that includes question and relevant embeddings
         PromptTemplate promptTemplate = PromptTemplate.from(
                 "Answer the following question to the best of your ability:\n"
-                        + "\n"
-                        + "Question:\n"
-                        + "{{question}}\n"
-                        + "\n"
-                        + "Base your answer on the following information:\n"
-                        + "{{information}}");
+                + "\n"
+                + "Question:\n"
+                + "{{question}}\n"
+                + "\n"
+                + "Base your answer on the following information:\n"
+                + "{{information}}");
 
         String information = relevantEmbeddings.stream()
                 .map(match -> match.embedded().text())
@@ -96,10 +108,11 @@ public class SimpleExampleRag {
     public static DocumentParser documentParser = new TextDocumentParser();
     public static EmbeddingModel embeddingModel = new BgeSmallEnV15QuantizedEmbeddingModel();
     public static EmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
-    public static void setup(String documentToRead) {
-        
+
+    public static void setup(String documentsPath) {
+
         // Load the document that includes the information you'd like to "chat" about with the model.
-        Document document = loadDocument(documentToRead, documentParser);
+        List<Document> documents = FileSystemDocumentLoader.loadDocuments(documentsPath, documentParser);
 
         // Split document into segments 100 tokens each
         DocumentSplitter splitter = DocumentSplitters.recursive(
@@ -107,17 +120,19 @@ public class SimpleExampleRag {
                 0,
                 new OpenAiTokenCountEstimator(ModelNames.CHAT_GPT_MINI)
         );
-        List<TextSegment> segments = splitter.split(document);
-        for (TextSegment segment : segments) {
-            System.out.println("segment " + segment.text());
+        for (Document document : documents) {
+            List<TextSegment> segments = splitter.split(document);
+            for (TextSegment segment : segments) {
+                System.out.println("Doc " + document.metadata() + " segment " + segment.text());
+            }
+
+            // Embed segments (convert them into vectors that represent the meaning) using embedding model        
+            List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
+
+            // Store embeddings into embedding store for further search / retrieval
+            embeddingStore.addAll(embeddings, segments);
+
         }
-
-        // Embed segments (convert them into vectors that represent the meaning) using embedding model        
-        List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
-
-        // Store embeddings into embedding store for further search / retrieval
-        embeddingStore.addAll(embeddings, segments);
-
     }
-    
+
 }

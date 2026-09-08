@@ -2,467 +2,50 @@ package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.shared.utils.ApiKeys;
 import com.cartoonizer.rag.shared.utils.ModelNames;
-import dev.langchain4j.data.document.Document;
+import com.cartoonizer.rag.shared.utils.Utils;
 import java.io.File;
 
 public class SimpleExampleOpenAi {
 
     public static void main(String[] args) {
         String documentsPath = "./example-files";
-        String answerPath = "./output-files/fragment_online_invoice.txt";
-        String processedAnswerPath = "./processed-files/processed-fragment_online_invoice.txt";
+        String fileToGenerate = "HomeFragment";
+        String answerPath = "./output-files/" + fileToGenerate + ".txt";
+        String processedAnswerPath = "./processed-files/processed-" + fileToGenerate + ".txt";
+        
+        String pathForComposable = documentsPath  + "/" + fileToGenerate + ".kt";
+        String pathViewModel = documentsPath  + "/HomeViewModel.kt";
+        String pathLayout = documentsPath  + "/fragment_home.xml";
+        String pathSharedViewModel = documentsPath  + "/MainActivityViewModel.kt";
+        
+        String savedComposable = Utils.readFullFile(pathForComposable);
+        String savedViewModel = Utils.readFullFile(pathViewModel);
+        String savedLayout = Utils.readFullFile(pathLayout);
+        String savedSharedViewModel = Utils.readFullFile(pathSharedViewModel);
+        
         File f = new File(documentsPath);
         if (f.exists()) {
             System.out.println("Before setup ");
             OpenAiChat chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
             chat.setup();
             String[] questions = {
-//                "Who is Juan Cagigal",
-//                "Give me some reasons tu use RAG software",
-//                "How to use RAG to migrate from Jetpack Views to Jetpack Compose with langchain4j ",
-//                "provide a **complete langchain4j sample project structure** for migration from Jetpack Views to Jetpack Compose with langchain4j. retrieve **only relevant Android/Compose documents**, not unrelated text",
-//                "Based on the previous answer, provide a screen-by-screen migration example from XML to Compose",
-//                "Who is Juan Cagigal",
-//                "Give me some reasons tu use RAG software",
-//                "How to use RAG to migrate from Jetpack Views to Jetpack Compose with langchain4j ",
-//                "provide a **complete langchain4j sample project structure** for migration from Jetpack Views to Jetpack Compose with langchain4j. retrieve **only relevant Android/Compose documents**, not unrelated text",
-//                "Based on the previous answer, provide a screen-by-screen migration example from XML to Compose",
-//                "Who is Juan Cagigal",
-//                "Give me some reasons tu use RAG software",
-//                "How to use RAG to migrate from Jetpack Views to Jetpack Compose with langchain4j ",
-//                "provide a **complete langchain4j sample project structure** for migration from Jetpack Views to Jetpack Compose with langchain4j. retrieve **only relevant Android/Compose documents**, not unrelated text",
-//                "Based on the previous answer, provide a screen-by-screen migration example from XML to Compose",
-//                "Who is Juan Cagigal",
-//                "Give me some reasons tu use RAG software",
-//                "How to use RAG to migrate from Jetpack Views to Jetpack Compose with langchain4j ",
-//                "provide a **complete langchain4j sample project structure** for migration from Jetpack Views to Jetpack Compose with langchain4j. retrieve **only relevant Android/Compose documents**, not unrelated text",
-//                "Based on the previous answer, provide a screen-by-screen migration example from XML to Compose",
-            """
-            provide a Jetpack Compose Theme object that implements the properties of the android xml theme file theme.xml
-            provide Jetpack Compose Modifier extensions that implement the properties of the android xml styles file styles.xml
-            provide a jetpack compose composable function that implements the following layout xml file used in Jetpack Views using those Compose Theme and Modifiers
-<?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/rootContainer"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/container"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:theme="@style/Theme.SmartTD"
-        app:layout_constraintBottom_toTopOf="@+id/lytContainerFlowMenu"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.5"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-
-        <ScrollView
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent">
-
-            <androidx.constraintlayout.widget.ConstraintLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content">
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clCountry"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clStreet"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clCity"
-                    tools:visibility="visible">
-
-                    <EditText
-                        android:id="@+id/etClientCountry"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv9" />
-
-                    <TextView
-                        android:id="@+id/tv9"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_pais"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientCountry"
-                        app:layout_constraintStart_toStartOf="@+id/etClientCountry"
-                        app:layout_constraintTop_toTopOf="parent" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clPhoneNumber"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clPostalCode"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clStreet"
-                    tools:visibility="visible">
-
-                    <TextView
-                        android:id="@+id/tv1"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_numero"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientNumber"
-                        app:layout_constraintStart_toStartOf="@+id/etClientNumber"
-                        app:layout_constraintTop_toTopOf="parent" />
-
-                    <EditText
-                        android:id="@+id/etClientNumber"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv1" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clCity"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clCountry"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clProvince"
-                    tools:visibility="visible">
-
-                    <EditText
-                        android:id="@+id/etClientCity"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv2" />
-
-                    <TextView
-                        android:id="@+id/tv2"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_ciudad"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientCity"
-                        app:layout_constraintStart_toStartOf="@+id/etClientCity"
-                        app:layout_constraintTop_toTopOf="parent" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clCompanyName"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clProvince"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clEmail"
-                    tools:visibility="visible">
-
-                    <TextView
-                        android:id="@+id/tv3"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_empresa"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientCompanyName"
-                        app:layout_constraintStart_toStartOf="@+id/etClientCompanyName"
-                        app:layout_constraintTop_toTopOf="parent" />
-
-                    <EditText
-                        android:id="@+id/etClientCompanyName"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv3" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clNIF"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    app:layout_constraintBottom_toTopOf="@+id/clEmail"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toTopOf="parent">
-
-                    <TextView
-                        android:id="@+id/tv4"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_nif"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientNIF"
-                        app:layout_constraintStart_toStartOf="@+id/etClientNIF"
-                        app:layout_constraintTop_toTopOf="parent" />
-
-                    <EditText
-                        android:id="@+id/etClientNIF"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv4" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clPostalCode"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toBottomOf="parent"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clPhoneNumber"
-                    tools:visibility="visible">
-
-                    <TextView
-                        android:id="@+id/tv5"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_codpostal"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientPostalCode"
-                        app:layout_constraintStart_toStartOf="@+id/etClientPostalCode"
-                        app:layout_constraintTop_toTopOf="parent" />
-
-                    <EditText
-                        android:id="@+id/etClientPostalCode"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv5" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clStreet"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clPhoneNumber"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clCountry"
-                    tools:visibility="visible">
-
-                    <EditText
-                        android:id="@+id/etClientStreetName"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv6" />
-
-                    <TextView
-                        android:id="@+id/tv6"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_calle"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientStreetName"
-                        app:layout_constraintStart_toStartOf="@+id/etClientStreetName"
-                        app:layout_constraintTop_toTopOf="parent" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clProvince"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clCity"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clCompanyName"
-                    tools:visibility="visible">
-
-                    <TextView
-                        android:id="@+id/tv7"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_provincia"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientProvince"
-                        app:layout_constraintStart_toStartOf="@+id/etClientProvince"
-                        app:layout_constraintTop_toTopOf="parent" />
-
-                    <EditText
-                        android:id="@+id/etClientProvince"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv7" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-
-                <androidx.constraintlayout.widget.ConstraintLayout
-                    android:id="@+id/clEmail"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:visibility="gone"
-                    app:layout_constraintBottom_toTopOf="@+id/clCompanyName"
-                    app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintHorizontal_bias="0.5"
-                    app:layout_constraintStart_toStartOf="parent"
-                    app:layout_constraintTop_toBottomOf="@+id/clNIF"
-                    tools:visibility="visible">
-
-                    <TextView
-                        android:id="@+id/tv8"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/nif_email"
-                        app:layout_constraintBottom_toTopOf="@+id/etClientEmail"
-                        app:layout_constraintStart_toStartOf="@+id/etClientEmail"
-                        app:layout_constraintTop_toTopOf="parent" />
-
-                    <EditText
-                        android:id="@+id/etClientEmail"
-                        style="@style/Theme.SmartTD.CustomEditText"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_marginStart="16dp"
-                        android:layout_marginEnd="16dp"
-                        android:ems="10"
-                        android:inputType="text"
-                        app:layout_constraintBottom_toBottomOf="parent"
-                        app:layout_constraintEnd_toEndOf="parent"
-                        app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/tv8" />
-                </androidx.constraintlayout.widget.ConstraintLayout>
-            </androidx.constraintlayout.widget.ConstraintLayout>
-        </ScrollView>
-
-    </androidx.constraintlayout.widget.ConstraintLayout>
-
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/pbContainer"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:background="#4D000000"
-        android:theme="@style/Theme.SmartTD"
-        android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/lytContainerFlowMenu"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        tools:visibility="visible"/>
-
-    <GridLayout
-        android:id="@+id/lytContainerFlowMenu"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:background="@color/black"
-        android:columnCount="2"
-        android:horizontalSpacing="6dp"
-        android:rowCount="1"
-        android:verticalSpacing="6dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintDimensionRatio="5:2"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.5"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/container">
-
-
-        <ifac.td.taxi.ui.custom.button.CustomButton
-            android:id="@+id/btnCancel"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:layout_row="0"
-            android:layout_rowWeight="1"
-            android:layout_column="0"
-            android:layout_columnWeight="1"
-            android:layout_gravity="fill"
-            android:layout_margin="1dp"
-            app:customFunction="CANCEL" />
-
-
-        <ifac.td.taxi.ui.custom.button.CustomButton
-            android:id="@+id/btnAccept"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:layout_row="0"
-            android:layout_rowWeight="1"
-            android:layout_column="1"
-            android:layout_columnWeight="1"
-            android:layout_gravity="fill"
-            android:layout_margin="1dp"
-            app:customFunction="ACCEPT" />
-
-    </GridLayout>
-</androidx.constraintlayout.widget.ConstraintLayout>
-                                    
-            Use only android and jetpack compose references
-            
-            """
+            "- provide a jetpack Compose composable function with viewModel that implements the following class \n" +
+            savedComposable +
+            "- Use Compose Navigation and NavController instead of Jetpack Views navigation \n" +
+            "- Use dialog state, lifecycle collection of state/events for dialog handling \n" +
+            "- Replace navigateTo calls with route-based navigation events\n" +
+            "- Use state holders/data classes to fully replace the fragment button logic. This is the viewModel:\n" +
+            "- provide a fully refactored ViewModel version based in the following ViewModel, removing all fragment navigation references and exposing a Compose-friendly `UiState + UiEvent` architecture\n" +
+            savedViewModel +
+            "- Use this shared view model:\n" +
+            savedSharedViewModel +
+            "- Use this layout file for the composable:\n" +
+            savedLayout +
+            "\nUse only android and jetpack compose references"
 
             };
+//            - provide Jetpack Compose Modifier extensions that implement the properties of the android xml styles file styles.xml
+//            - provide a jetpack compose composable function that implements the following layout xml file used in Jetpack Views using those Compose Theme and Modifiers
             String[] answers = new String[questions.length];
             for (int i = 0; i < questions.length; i++) {
                 System.out.println("\n\n****************************************************************************************");

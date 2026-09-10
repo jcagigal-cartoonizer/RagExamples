@@ -22,6 +22,7 @@ import com.cartoonizer.rag.shared.Assistant;
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
 import dev.langchain4j.model.ollama.OllamaChatModel;
+import static java.util.stream.Collectors.joining;
 
 public class OllamaChatWithAugmentor {
     public static void main(String[] args) {

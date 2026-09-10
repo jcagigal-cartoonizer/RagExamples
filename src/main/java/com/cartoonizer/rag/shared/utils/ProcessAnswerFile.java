@@ -1,4 +1,4 @@
-package com.cartoonizer.rag.migration.prompters;
+package com.cartoonizer.rag.shared.utils;
 
 import com.cartoonizer.rag.shared.utils.ReadFile;
 import java.io.PrintWriter;
@@ -8,10 +8,10 @@ import java.util.List;
 public class ProcessAnswerFile {
 
     public static void main(String[] args) {
-        String answerPath = "./output-files/smartTDtheme.txt";
-        String processedAnswerPath = "./processed-files/processed-smartTDtheme.txt";
-        ReadFile reader = new AnswerProcessor(answerPath, processedAnswerPath);
-        reader.load();
+//        String answerPath = "./output-files/smartTDtheme.txt";
+//        String processedAnswerPath = "./processed-files/processed-smartTDtheme.txt";
+//        ReadFile reader = new AnswerProcessor(answerPath, processedAnswerPath);
+//        reader.load();
     }
 
     public static class AnswerProcessor extends ReadFile {

@@ -4,6 +4,7 @@
  */
 package com.cartoonizer.rag.migration.prompters;
 
+import com.cartoonizer.rag.shared.utils.ProcessAnswerFile;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.segment.TextSegment;
@@ -12,6 +13,7 @@ import dev.langchain4j.model.input.Prompt;
 import dev.langchain4j.model.input.PromptTemplate;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import java.io.PrintWriter;
+import static java.util.Arrays.asList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,7 +54,6 @@ public class PrompterViewToCompose {
         String information = relevantEmbeddings.stream()
                 .map(match -> match.embedded().text())
                 .collect(joining("\n\n"));
-
         Map<String, Object> variables = new HashMap<>();
         variables.put("question", question);
         variables.put("information", information);
@@ -61,8 +62,10 @@ public class PrompterViewToCompose {
         AiMessage aiMessage = chatModel.chat(prompt.toUserMessage()).aiMessage();
         String answer = aiMessage.text();
         saveAnswer(answerPath, answer);
-        ProcessAnswerFile.AnswerProcessor reader = new ProcessAnswerFile.AnswerProcessor(answerPath, processedAnswerPath);
-        reader.load();
+        if (answerPath != null && !answerPath.isEmpty() && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
+            ProcessAnswerFile.AnswerProcessor reader = new ProcessAnswerFile.AnswerProcessor(answerPath, processedAnswerPath);
+            reader.load();
+        }
         return answer;
     }
     public void saveAnswer(String path, String answer) {

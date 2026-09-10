@@ -4,7 +4,7 @@ package com.cartoonizer.rag.shared;
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 
-public interface Assistant {
+public interface AssistantWithInfo {
 
     @SystemMessage(
             "Answer the following question to the best of your ability:\n"
@@ -12,6 +12,7 @@ public interface Assistant {
                 + "Question:\n"
                 + "{{question}}\n"
                 + "\n"
-    )
-        String answer(@UserMessage String question);
+                + "Base your answer on the following information:\n"
+                + "{{information}}")
+        String answerWithInfo(@UserMessage String question, @UserMessage String information);
 }

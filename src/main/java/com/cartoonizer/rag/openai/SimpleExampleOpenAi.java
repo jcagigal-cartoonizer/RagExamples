@@ -34,8 +34,14 @@ public class SimpleExampleOpenAi {
             "- Use Compose Navigation and NavController instead of Jetpack Views navigation \n" +
             "- Use dialog state, lifecycle collection of state/events for dialog handling \n" +
             "- Replace navigateTo calls with route-based navigation events\n" +
-            "- Use state holders/data classes to fully replace the fragment button logic. This is the viewModel:\n" +
+            "- Use state holders/data classes to fully replace the fragment button logic. \n" +
+            "- provide a full `HomeButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<HomeUiEffect>` instead of multiple event types\n" +
             "- provide a fully refactored ViewModel version based in the following ViewModel, removing all fragment navigation references and exposing a Compose-friendly `UiState + UiEvent` architecture\n" +
+            "- Provide also a `onResume` replacement with lifecycle collection using `repeatOnLifecycle`" +
+            "- Provide also a full `LocationDialog`, `RoofLightDialog`, `ManualTripDialog`, `PendingTripsDialog`" +
+            "- Provide also a cleaner `HomeEffect` sealed class with route objects instead of plain strings" +
+            "- Provide also a `HomeButtonsState` with exact Compose button styling helpers matching the custom button component more closely" +
+            "- Use this viewModel:" +
             savedViewModel +
             "- Use this shared view model:\n" +
             savedSharedViewModel +

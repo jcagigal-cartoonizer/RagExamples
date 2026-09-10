@@ -2,6 +2,7 @@ package ifac.td.taxi.ui.screen
 
 import android.annotation.SuppressLint
 import android.media.ToneGenerator
+import android.util.Log
 import android.view.View
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
@@ -53,6 +54,7 @@ class HomeFragment :
     }
 
     override fun onResume() {
+        Log.d("HomeFragment", "Init HomeFragment")
         super.onResume()
         if (W2CLocation.isLocationAllowedByCentral()) {
             setButtons()

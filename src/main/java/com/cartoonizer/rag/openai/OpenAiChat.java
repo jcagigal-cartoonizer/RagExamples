@@ -49,6 +49,7 @@ public class OpenAiChat {
     public EmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
     public List<Document> documents;
     public DocumentSplitter splitter;
+    public RetrievalAugmentor retrievalAugmentor;
     public ChatModel chatModel;
     public AssistantWithInfo assistant;
     public String theApiKey = ApiKeys.OPENAI_API_KEY;
@@ -131,6 +132,28 @@ public class OpenAiChat {
         return splitter;
     }
 
+    public void ingest() {
+        documents = FileSystemDocumentLoader.loadDocuments(theFilesPath, documentParser);
+        splitter = createSplitter();
+        ContentRetriever contentRetriever = EmbeddingStoreContentRetriever.builder()
+                .embeddingStore(embeddingStore)
+                .embeddingModel(embeddingModel)
+                .build();
+
+        // Each retrieved segment should include "file_name" and "index" metadata values in the prompt
+        ContentInjector contentInjector = DefaultContentInjector.builder()
+                // .promptTemplate(...) // Formatting can also be changed
+                .metadataKeysToInclude(asList("file_name", "index"))
+                .build();
+        retrievalAugmentor = DefaultRetrievalAugmentor.builder()
+                .contentRetriever(contentRetriever)
+                .contentInjector(contentInjector)
+                .build();
+        for (Document document : documents) {
+            processTextSegments(document, splitter.split(document));
+        }
+    }
+
     protected void processTextSegments(Document document, List<TextSegment> segments) {
         Metadata docMetadata = document.metadata();
         String docFileName = docMetadata.getString("file_name");
@@ -152,24 +175,7 @@ public class OpenAiChat {
     }
 
     public void setup() {
-        // Load the document that includes the information you'd like to "chat" about with the model.
-        documents = FileSystemDocumentLoader.loadDocuments(theFilesPath, documentParser);
-        splitter = createSplitter();
-        ContentRetriever contentRetriever = EmbeddingStoreContentRetriever.builder()
-                .embeddingStore(embeddingStore)
-                .embeddingModel(embeddingModel)
-                .build();
-
-        // Each retrieved segment should include "file_name" and "index" metadata values in the prompt
-        ContentInjector contentInjector = DefaultContentInjector.builder()
-                // .promptTemplate(...) // Formatting can also be changed
-                .metadataKeysToInclude(asList("file_name", "index"))
-                .build();
-        RetrievalAugmentor retrievalAugmentor = DefaultRetrievalAugmentor.builder()
-                .contentRetriever(contentRetriever)
-                .contentInjector(contentInjector)
-                .build();
-
+        ingest();
         chatModel = OpenAiChatModel.builder()
                 .apiKey(theApiKey)
                 .modelName(theModelName)
@@ -180,9 +186,6 @@ public class OpenAiChat {
                 .retrievalAugmentor(retrievalAugmentor)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
                 .build();
-        for (Document document : documents) {
-            processTextSegments(document, splitter.split(document));
-        }
     }
 
 }

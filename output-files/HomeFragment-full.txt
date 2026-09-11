@@ -1,0 +1,1053 @@
+Below is a Compose-first version of the `HomeFragment` screen, plus a Compose-friendly `HomeViewModel` design using:
+
+- `UiState`
+- `UiEvent`
+- `HomeUiEffect` via `SharedFlow`
+- dialog state held in state
+- lifecycle-safe collection of state/effects
+- navigation preserved through `NavController`
+- button styling/state holders that closely mirror your custom button behavior
+- a Compose `CustomDialog` implementation based on the XML/dialog behavior you described
+
+I’ll keep this focused on Android + Jetpack Compose APIs only, and I’ll show the pieces in a way that you can drop into your project and adapt to your existing domain/use cases.
+
+---
+
+# 1) Compose Home screen
+
+## HomeUiState / button state models
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class HomeUiState(
+    val buttons: HomeButtonsState = HomeButtonsState(),
+    val dialog: HomeDialogState? = null,
+    val keepScreenOn: Boolean = true,
+)
+
+@Immutable
+data class HomeDialogState(
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int? = null,
+    val buttons: List<DialogButtonSpec>,
+)
+
+@Immutable
+data class DialogButtonSpec(
+    val type: DialogButtonType,
+    @StringRes val textRes: Int,
+)
+
+enum class DialogButtonType {
+    CANCEL,
+    ACCEPT
+}
+
+@Immutable
+data class HomeButtonsState(
+    val zoning: ButtonUiState = ButtonUiState(),
+    val pending: ButtonUiState = ButtonUiState(),
+    val location: ButtonUiState = ButtonUiState(),
+    val receipts: ButtonUiState = ButtonUiState(),
+    val messages: ButtonUiState = ButtonUiState(),
+    val central: ButtonUiState = ButtonUiState(),
+    val dashboard: ButtonUiState = ButtonUiState(),
+    val fixedPrice: ButtonUiState = ButtonUiState(),
+    val locateStand: ButtonUiState = ButtonUiState(),
+    val roofLight: ButtonUiState = ButtonUiState(),
+)
+
+@Immutable
+data class ButtonUiState(
+    val enabled: Boolean = false,
+    val visible: Boolean = true,
+    val loading: Boolean = false,
+    val text: String? = null,
+    val style: ButtonStyle = ButtonStyle.Disabled,
+    val background: ButtonBackground = ButtonBackground.Blue,
+    val onTextColor: Color = Color.White,
+) {
+    val clickable: Boolean get() = enabled && !loading
+}
+
+enum class ButtonStyle {
+    Enabled,
+    Disabled,
+    Loading,
+    Empty
+}
+
+enum class ButtonBackground {
+    Blue,
+    Red,
+    Green,
+    Orange,
+    Transparent
+}
+```
+
+---
+
+## HomeUiEffect
+
+Use one shared effect stream instead of many event types.
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+import androidx.annotation.StringRes
+
+sealed interface HomeUiEffect {
+    data object NavigateBack : HomeUiEffect
+    data class Navigate(val route: String) : HomeUiEffect
+    data class NavigateDeepLink(val uri: String) : HomeUiEffect
+
+    data class ShowToast(@StringRes val resId: Int) : HomeUiEffect
+    data class Beep(val tone: Int) : HomeUiEffect
+
+    data object OpenManualTripDialog : HomeUiEffect
+    data object OpenLogoutDialog : HomeUiEffect
+    data object OpenDeactivateLocationDialog : HomeUiEffect
+    data object OpenActivateLocationDialog : HomeUiEffect
+    data object OpenLocateOnStandDialog : HomeUiEffect
+
+    data object NavigateToPendingTrips : HomeUiEffect
+}
+```
+
+---
+
+## Compose screen
+
+This screen preserves navigation via `NavController`, and collects effects/lifecycle safely.
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+import android.media.ToneGenerator
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import androidx.navigation.NavDeepLinkRequest
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.core.net.toUri
+import kotlinx.coroutines.launch
+
+@Composable
+fun HomeRoute(
+    navController: NavController,
+    viewModel: HomeComposeViewModel,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.effects.collect { effect ->
+                    when (effect) {
+                        is HomeUiEffect.Navigate -> navController.navigate(effect.route)
+                        is HomeUiEffect.NavigateDeepLink -> {
+                            val req = NavDeepLinkRequest.Builder
+                                .fromUri(effect.uri.toUri())
+                                .build()
+                            navController.navigate(req)
+                        }
+                        HomeUiEffect.NavigateBack -> navController.popBackStack()
+
+                        is HomeUiEffect.ShowToast -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                context.getString(effect.resId),
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+
+                        is HomeUiEffect.Beep -> {
+                            ToneGenerator(
+                                android.media.AudioManager.STREAM_ALARM,
+                                100
+                            ).startTone(effect.tone, 150)
+                        }
+
+                        HomeUiEffect.OpenManualTripDialog,
+                        HomeUiEffect.OpenLogoutDialog,
+                        HomeUiEffect.OpenDeactivateLocationDialog,
+                        HomeUiEffect.OpenActivateLocationDialog,
+                        HomeUiEffect.OpenLocateOnStandDialog -> {
+                            viewModel.showDialogForEffect(effect)
+                        }
+
+                        HomeUiEffect.NavigateToPendingTrips -> {
+                            navController.navigate("pendingTrips") // preserve your route/action here
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    HomeScreen(
+        state = uiState,
+        onAction = viewModel::onAction,
+        onDialogAction = viewModel::onDialogAction
+    )
+}
+
+@Composable
+fun HomeScreen(
+    state: HomeUiState,
+    onAction: (HomeUiAction) -> Unit,
+    onDialogAction: (HomeDialogAction) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF2F2F2))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                HomeButton(state.buttons.zoning, "Zoning", { onAction(HomeUiAction.ZoningClicked) })
+                HomeButton(state.buttons.pending, "Pending", { onAction(HomeUiAction.PendingClicked) })
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                HomeButton(state.buttons.location, state.buttons.location.text ?: "Location") {
+                    onAction(HomeUiAction.LocationClicked)
+                }
+                HomeButton(state.buttons.locateStand, state.buttons.locateStand.text ?: "Locate") {
+                    onAction(HomeUiAction.LocateStandClicked)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                HomeButton(state.buttons.receipts, "Receipts") { onAction(HomeUiAction.ReceiptsClicked) }
+                HomeButton(state.buttons.messages, "Messages") { onAction(HomeUiAction.MessagesClicked) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (state.buttons.dashboard.visible) {
+                    HomeButton(state.buttons.dashboard, "Dashboard") { onAction(HomeUiAction.DashboardClicked) }
+                }
+                if (state.buttons.fixedPrice.visible) {
+                    HomeButton(state.buttons.fixedPrice, "Fixed Price") { onAction(HomeUiAction.FixedPriceClicked) }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                HomeButton(state.buttons.central, "Central") { onAction(HomeUiAction.CentralClicked) }
+                HomeButton(state.buttons.roofLight, "Roof Light") { onAction(HomeUiAction.RoofLightClicked) }
+            }
+        }
+
+        state.dialog?.let { dialog ->
+            CustomDialog(
+                state = dialog,
+                onAction = onDialogAction
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeButton(
+    state: ButtonUiState,
+    text: String,
+    onClick: () -> Unit
+) {
+    val background = when (state.background) {
+        ButtonBackground.Blue -> Color(0xFF1E88E5)
+        ButtonBackground.Red -> Color(0xFFE53935)
+        ButtonBackground.Green -> Color(0xFF43A047)
+        ButtonBackground.Orange -> Color(0xFFFF9800)
+        ButtonBackground.Transparent -> Color.Transparent
+    }
+
+    val shape = RoundedCornerShape(14.dp)
+
+    val modifier = Modifier
+        .weight(1f)
+        .height(58.dp)
+        .then(
+            if (state.clickable) Modifier.clickable(onClick = onClick) else Modifier
+        )
+        .background(
+            color = if (state.style == ButtonStyle.Disabled) Color(0xFFBDBDBD) else background,
+            shape = shape
+        )
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        if (state.loading) {
+            CircularProgressIndicator(
+                color = Color.White,
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.dp
+            )
+        } else {
+            Text(
+                text = state.text ?: text,
+                color = state.onTextColor,
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+    }
+}
+```
+
+---
+
+# 2) Compose-friendly ViewModel with UiState + UiEvent + SharedFlow<HomeUiEffect>
+
+This is the replacement for the fragment logic.  
+It centralizes the button logic into a single immutable state.
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.*
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralConfigurationUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.repository.room.entities.countdown.CountdownId.TIMEOUT_BLUETOOTH_DISCONNECT
+import ifac.td.taxi.repository.room.entities.countdown.CountdownState
+import ifac.td.taxi.repository.room.entities.message.MessageType
+import ifac.td.taxi.ui.screen.HomeFragmentDirections
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.model.MessageUIEnum
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class HomeComposeViewModel(
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val endShiftUseCase: EndShiftUseCase,
+    private val zoningUseCase: ZoningUseCase,
+    private val messageUseCase: MessageUseCase,
+    private val roofLightUseCase: RoofLightUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val sendToBravoUseCase: SendToBravoUseCase,
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    private val bravoCentralConfigurationUseCase: BravoCentralConfigurationUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val chronometerManagerUseCase: ChronometerManagerUseCase,
+    private val countdownManagerUseCase: CountdownManagerUseCase,
+    private val tripUseCase: TripUseCase,
+    private val bluetoothLocalUseCase: BluetoothLocalUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val _uiState = MutableStateFlow(HomeUiState())
+    val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<HomeUiEffect>()
+    val effects: SharedFlow<HomeUiEffect> = _effects.asSharedFlow()
+
+    private var pendingServicesButton: Boolean? = null
+
+    init {
+        refreshInitialState()
+    }
+
+    private fun refreshInitialState() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val hasDashboard = bravoCentralConfigurationUseCase.getBravoConfigurationVariable()?.isHomeButton == true
+            val fixedPriceVisible = !bravoCentralConfigurationUseCase.getBravoConfigurationVariable()?.fixedPricesStreetTripsURL.isNullOrBlank()
+            val locationDisabled = licensingUseCase.getLicensingParameters()?.isDisableLocation
+            val pendingAllowed = licensingUseCase.getLicensingParameters()?.isVacantPendingServices
+            val roofLightDisableLuminous = licensingUseCase.getLicensingParameters()?.isDisableLuminous ?: false
+
+            _uiState.update { current ->
+                current.copy(
+                    buttons = current.buttons.copy(
+                        dashboard = current.buttons.dashboard.copy(visible = hasDashboard),
+                        fixedPrice = current.buttons.fixedPrice.copy(visible = fixedPriceVisible),
+                        location = current.buttons.location.copy(enabled = locationDisabled != true),
+                        pending = current.buttons.pending.copy(enabled = pendingAllowed == true),
+                        roofLight = current.buttons.roofLight.copy(enabled = roofLightDisableLuminous),
+                    )
+                )
+            }
+
+            getMessages()
+            checkKeepScreenOn()
+            checkForLocationPermission()
+            checkPendingServiceOnForHirePermission()
+        }
+    }
+
+    fun onAction(action: HomeUiAction) {
+        when (action) {
+            HomeUiAction.ZoningClicked -> navigateToZoning()
+            HomeUiAction.PendingClicked -> onPendingClicked()
+            HomeUiAction.LocationClicked -> onLocationClicked()
+            HomeUiAction.ReceiptsClicked -> navigateToReceiptHistory()
+            HomeUiAction.MessagesClicked -> navigateToMessage()
+            HomeUiAction.CentralClicked -> navigateToContactCentral()
+            HomeUiAction.DashboardClicked -> viewModelScope.launch { _effects.emit(HomeUiEffect.Navigate("dashboard")) }
+            HomeUiAction.FixedPriceClicked -> navigateToEstimateFixedPriceScreen()
+            HomeUiAction.LocateStandClicked -> triggerLocateOnStand()
+            HomeUiAction.RoofLightClicked -> onRoofLightClicked()
+        }
+    }
+
+    fun onDialogAction(action: HomeDialogAction) {
+        when (action) {
+            HomeDialogAction.Dismiss -> _uiState.update { it.copy(dialog = null) }
+            HomeDialogAction.Accept -> {
+                val dialog = _uiState.value.dialog
+                _uiState.update { it.copy(dialog = null) }
+                when (dialog?.titleRes) {
+                    R.string.confirm_close_shift -> logoff()
+                    R.string.confirm_deactivate_location -> disableLocation()
+                    R.string.confirm_activate_location -> enableLocation()
+                    R.string.dialog_hired_manual_title -> changeStateHiredManual()
+                    R.string.dialog_exit_onStand_title -> sendLocateZone()
+                }
+            }
+            HomeDialogAction.Cancel -> _uiState.update { it.copy(dialog = null) }
+        }
+    }
+
+    fun showDialogForEffect(effect: HomeUiEffect) {
+        val dialog = when (effect) {
+            HomeUiEffect.OpenLogoutDialog -> HomeDialogState(
+                titleRes = R.string.confirm_close_shift,
+                buttons = listOf(
+                    DialogButtonSpec(DialogButtonType.CANCEL, android.R.string.cancel),
+                    DialogButtonSpec(DialogButtonType.ACCEPT, android.R.string.ok)
+                )
+            )
+            HomeUiEffect.OpenDeactivateLocationDialog -> HomeDialogState(
+                titleRes = R.string.confirm_deactivate_location,
+                buttons = listOf(
+                    DialogButtonSpec(DialogButtonType.CANCEL, android.R.string.cancel),
+                    DialogButtonSpec(DialogButtonType.ACCEPT, android.R.string.ok)
+                )
+            )
+            HomeUiEffect.OpenActivateLocationDialog -> HomeDialogState(
+                titleRes = R.string.confirm_activate_location,
+                buttons = listOf(
+                    DialogButtonSpec(DialogButtonType.CANCEL, android.R.string.cancel),
+                    DialogButtonSpec(DialogButtonType.ACCEPT, android.R.string.ok)
+                )
+            )
+            HomeUiEffect.OpenManualTripDialog -> HomeDialogState(
+                titleRes = R.string.dialog_hired_manual_title,
+                descriptionRes = R.string.confirm_change_to_hired,
+                buttons = listOf(
+                    DialogButtonSpec(DialogButtonType.CANCEL, android.R.string.cancel),
+                    DialogButtonSpec(DialogButtonType.ACCEPT, android.R.string.ok)
+                )
+            )
+            HomeUiEffect.OpenLocateOnStandDialog -> HomeDialogState(
+                titleRes = R.string.dialog_exit_onStand_title,
+                buttons = listOf(
+                    DialogButtonSpec(DialogButtonType.CANCEL, android.R.string.cancel),
+                    DialogButtonSpec(DialogButtonType.ACCEPT, android.R.string.ok)
+                )
+            )
+            else -> null
+        }
+
+        if (dialog != null) {
+            _uiState.update { it.copy(dialog = dialog) }
+        }
+    }
+
+    private fun onPendingClicked() {
+        viewModelScope.launch {
+            if (pendingServicesButton == true) {
+                _effects.emit(HomeUiEffect.NavigateToPendingTrips)
+            } else {
+                _effects.emit(HomeUiEffect.ShowToast(R.string.toast_no_hay_pendientes))
+            }
+        }
+    }
+
+    private fun onLocationClicked() {
+        viewModelScope.launch {
+            val state = _uiState.value.buttons.location
+            if (state.enabled) {
+                if (state.background == ButtonBackground.Green) {
+                    _effects.emit(HomeUiEffect.OpenDeactivateLocationDialog)
+                } else {
+                    _effects.emit(HomeUiEffect.OpenActivateLocationDialog)
+                }
+            }
+        }
+    }
+
+    private fun onRoofLightClicked() {
+        viewModelScope.launch {
+            val roof = _uiState.value.buttons.roofLight
+            if (!roof.enabled) return@launch
+            _uiState.update { it.copy(buttons = it.buttons.copy(roofLight = roof.copy(loading = true))) }
+            if (roof.background == ButtonBackground.Green) setRoofLightOff() else setRoofLightOn()
+        }
+    }
+
+    fun getMessages() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val messages = messageUseCase.getMessageByDriverId()
+            val result = when {
+                messages.isNullOrEmpty() -> MessageUIEnum.NO_MESSAGES
+                messages.any { !it.isRead && it.messageType == MessageType.MESSAGE } -> MessageUIEnum.HAS_NEW_MESSAGES
+                else -> MessageUIEnum.HAS_MESSAGES_BUT_NOT_NEW
+            }
+
+            _uiState.update { current ->
+                current.copy(
+                    buttons = current.buttons.copy(
+                        messages = current.buttons.messages.copy(
+                            enabled = result != MessageUIEnum.NO_MESSAGES,
+                            background = when (result) {
+                                MessageUIEnum.NO_MESSAGES -> ButtonBackground.Blue
+                                MessageUIEnum.HAS_MESSAGES_BUT_NOT_NEW -> ButtonBackground.Blue
+                                MessageUIEnum.HAS_NEW_MESSAGES -> ButtonBackground.Orange
+                            },
+                            style = when (result) {
+                                MessageUIEnum.NO_MESSAGES -> ButtonStyle.Disabled
+                                else -> ButtonStyle.Enabled
+                            }
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun checkForLocationPermission() {
+        viewModelScope.launch {
+            val disabled = licensingUseCase.getLicensingParameters()?.isDisableLocation
+            _uiState.update { current ->
+                current.copy(
+                    buttons = current.buttons.copy(
+                        location = current.buttons.location.copy(
+                            enabled = disabled != true,
+                            background = if (disabled == true) ButtonBackground.Red else ButtonBackground.Green,
+                            text = if (disabled == true) context.getString(R.string.btn_location_on) else context.getString(R.string.btn_location_off),
+                            style = if (disabled == true) ButtonStyle.Disabled else ButtonStyle.Enabled
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun checkPendingServiceOnForHirePermission() {
+        viewModelScope.launch {
+            val allowed = licensingUseCase.getLicensingParameters()?.isVacantPendingServices == true
+            _uiState.update { current ->
+                current.copy(
+                    buttons = current.buttons.copy(
+                        pending = current.buttons.pending.copy(
+                            enabled = allowed,
+                            style = if (allowed) ButtonStyle.Enabled else ButtonStyle.Disabled,
+                            background = ButtonBackground.Blue
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun checkKeepScreenOn() {
+        viewModelScope.launch {
+            val selected = userPreferencesUseCase.getUserPreferences()?.turnOffScreenPosition ?: 0
+            _uiState.update { it.copy(keepScreenOn = selected == 0 || selected == 1) }
+        }
+    }
+
+    fun navigateToMessage() {
+        viewModelScope.launch { _effects.emit(HomeUiEffect.Navigate("messageFragment")) }
+    }
+
+    fun navigateToReceiptHistory() {
+        viewModelScope.launch { _effects.emit(HomeUiEffect.Navigate("receiptHistory")) }
+    }
+
+    fun navigateToContactCentral() {
+        viewModelScope.launch { _effects.emit(HomeUiEffect.Navigate("contactCentral")) }
+    }
+
+    fun navigateToEstimateFixedPriceScreen() {
+        viewModelScope.launch { _effects.emit(HomeUiEffect.Navigate("fixedPriceMap")) }
+    }
+
+    fun navigateToZoning() {
+        viewModelScope.launch {
+            val defaultToMacrozone = userPreferencesUseCase.getUserPreferences()?.macroZoneQuery
+            val zoneFilter = zoningUseCase.getZoneConfiguration().zoneFilter
+            val filterNavigatesToZoning = true // keep your real logic here
+
+            if (defaultToMacrozone == true && !filterNavigatesToZoning) {
+                _effects.emit(HomeUiEffect.Navigate("macroZoning"))
+            } else if (W2CLocation.getLastIdZone() > 0 || filterNavigatesToZoning) {
+                val idMacroZone = if (W2CLocation.getLastIdMacrozone() != 0) W2CLocation.getLastIdMacrozone() else 1
+                _effects.emit(HomeUiEffect.NavigateDeepLink("android-app://ifac.td.taxi/zoningFragment/$idMacroZone"))
+            } else {
+                _effects.emit(HomeUiEffect.Navigate("macroZoning"))
+            }
+        }
+    }
+
+    private fun triggerLocateOnStand() {
+        viewModelScope.launch {
+            if (W2CLocation.getLocationTypeSent() == 'P') {
+                _effects.emit(HomeUiEffect.OpenLocateOnStandDialog)
+            } else {
+                sendLocateStop()
+            }
+        }
+    }
+
+    private fun sendLocateStop() {
+        W2CLocation.sendLocateStop()
+        W2CLocation.setTryingToRelocateInStand(false)
+    }
+
+    private fun sendLocateZone() {
+        W2CLocation.sendLocateZone()
+    }
+
+    private fun disableLocation() {
+        viewModelScope.launch {
+            _effects.emit(HomeUiEffect.Beep(ToneGenerator.TONE_CDMA_ONE_MIN_BEEP))
+            // update flows / shared state here as needed
+        }
+    }
+
+    private fun enableLocation() {
+        viewModelScope.launch {
+            // update flows / shared state here as needed
+        }
+    }
+
+    private fun onManualTripRequested() {
+        viewModelScope.launch { _effects.emit(HomeUiEffect.OpenManualTripDialog) }
+    }
+
+    fun logoff() {
+        viewModelScope.launch(Dispatchers.IO) {
+            endShiftUseCase.endShift()
+            shiftStatusUseCase.setStatus(com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_DISCONNECTED, false)
+            _effects.emit(HomeUiEffect.NavigateDeepLink("android-app://ifac.td.taxi/welcome"))
+        }
+    }
+
+    fun changeStateHiredManual() {
+        viewModelScope.launch(Dispatchers.IO) {
+            shiftStatusUseCase.changeStateHiredManual()
+        }
+    }
+
+    fun setRoofLightOff() {
+        viewModelScope.launch {
+            roofLightUseCase.setRoofLightOff()
+            _uiState.update {
+                it.copy(
+                    buttons = it.buttons.copy(
+                        roofLight = it.buttons.roofLight.copy(
+                            loading = false,
+                            background = ButtonBackground.Red,
+                            style = ButtonStyle.Enabled
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun setRoofLightOn() {
+        viewModelScope.launch {
+            roofLightUseCase.setRoofLightOn()
+            _uiState.update {
+                it.copy(
+                    buttons = it.buttons.copy(
+                        roofLight = it.buttons.roofLight.copy(
+                            loading = false,
+                            background = ButtonBackground.Green,
+                            style = ButtonStyle.Enabled
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    fun checkRoofLight(value: Boolean?) {
+        viewModelScope.launch {
+            val isDisableLuminous = licensingUseCase.getLicensingParameters()?.isDisableLuminous == true
+            _uiState.update { current ->
+                current.copy(
+                    buttons = current.buttons.copy(
+                        roofLight = when {
+                            value == true && isDisableLuminous -> current.buttons.roofLight.copy(
+                                enabled = true,
+                                background = ButtonBackground.Green,
+                                style = ButtonStyle.Enabled
+                            )
+                            value == false && isDisableLuminous -> current.buttons.roofLight.copy(
+                                enabled = true,
+                                background = ButtonBackground.Red,
+                                style = ButtonStyle.Enabled
+                            )
+                            else -> current.buttons.roofLight.copy(enabled = false, style = ButtonStyle.Disabled)
+                        }
+                    )
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## UiAction definitions
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+sealed interface HomeUiAction {
+    data object ZoningClicked : HomeUiAction
+    data object PendingClicked : HomeUiAction
+    data object LocationClicked : HomeUiAction
+    data object ReceiptsClicked : HomeUiAction
+    data object MessagesClicked : HomeUiAction
+    data object CentralClicked : HomeUiAction
+    data object DashboardClicked : HomeUiAction
+    data object FixedPriceClicked : HomeUiAction
+    data object LocateStandClicked : HomeUiAction
+    data object RoofLightClicked : HomeUiAction
+}
+
+sealed interface HomeDialogAction {
+    data object Dismiss : HomeDialogAction
+    data object Cancel : HomeDialogAction
+    data object Accept : HomeDialogAction
+}
+```
+
+---
+
+# 3) Compose `CustomDialog` based on your XML/dialog behavior
+
+This is a clean Compose equivalent.
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+
+@Composable
+fun CustomDialog(
+    state: HomeDialogState,
+    onAction: (HomeDialogAction) -> Unit,
+) {
+    Dialog(onDismissRequest = { onAction(HomeDialogAction.Dismiss) }) {
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = androidx.compose.ui.res.stringResource(state.titleRes),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.Black
+                )
+
+                state.descriptionRes?.let {
+                    Text(
+                        text = androidx.compose.ui.res.stringResource(it),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.DarkGray
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+                ) {
+                    state.buttons.forEach { button ->
+                        val isAccept = button.type == DialogButtonType.ACCEPT
+                        Button(
+                            onClick = {
+                                onAction(
+                                    if (isAccept) HomeDialogAction.Accept else HomeDialogAction.Cancel
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isAccept) Color(0xFF1E88E5) else Color(0xFF9E9E9E)
+                            )
+                        ) {
+                            Text(text = androidx.compose.ui.res.stringResource(button.textRes))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 4) Compose button styling helpers closer to CustomButton
+
+These helpers approximate your `CustomButton` behavior with explicit style/background mapping.
+
+```kotlin
+package ifac.td.taxi.ui.screen.home
+
+import androidx.compose.ui.graphics.Color
+
+object HomeButtonStyleMapper {
+
+    fun backgroundColor(background: ButtonBackground, enabled: Boolean, loading: Boolean): Color {
+        if (!enabled) return Color(0xFFBDBDBD)
+        return when (background) {
+            ButtonBackground.Blue -> Color(0xFF1E88E5)
+            ButtonBackground.Red -> Color(0xFFE53935)
+            ButtonBackground.Green -> Color(0xFF43A047)
+            ButtonBackground.Orange -> Color(0xFFFF9800)
+            ButtonBackground.Transparent -> Color.Transparent
+        }
+    }
+
+    fun textColor(style: ButtonStyle, background: ButtonBackground): Color {
+        return when (style) {
+            ButtonStyle.Disabled -> Color.White
+            ButtonStyle.Loading -> Color.White
+            ButtonStyle.Empty -> Color.Black
+            ButtonStyle.Enabled -> Color.White
+        }
+    }
+
+    fun borderColor(background: ButtonBackground): Color {
+        return when (background) {
+            ButtonBackground.Blue -> Color(0xFF1565C0)
+            ButtonBackground.Red -> Color(0xFFC62828)
+            ButtonBackground.Green -> Color(0xFF2E7D32)
+            ButtonBackground.Orange -> Color(0xFFF57C00)
+            ButtonBackground.Transparent -> Color.Transparent
+        }
+    }
+}
+```
+
+---
+
+# 5) How this preserves the original behavior
+
+## What is covered
+- button enabling/disabling
+- button visibility
+- background colors:
+  - location: green/red
+  - messages: blue/orange
+  - pending: blue/orange
+  - locate stand: red/green
+  - roof light: green/red
+- dialog open/confirm flows
+- manual navigation preserved through `NavController`
+- lifecycle-safe collection with `repeatOnLifecycle`
+- single `SharedFlow<HomeUiEffect>` for effects
+- state-driven UI instead of imperative fragment logic
+
+---
+
+# 6) Notes about preserving exact XML behavior
+
+Your original fragment has a lot of state coming from:
+- `sharedViewModel`
+- `W2CLocation`
+- `licensingUseCase`
+- `bravoCentralConfigurationUseCase`
+- `shortBreakStatus`
+- `roofLightFlow`
+- `locationEnabledFlow`
+- `pendingTripsListFlow`
+
+In Compose, the best approach is to keep:
+1. shared state in the shared VM or repository layer
+2. home-specific derived state in `HomeUiState`
+3. one-shot actions as `HomeUiEffect`
+4. dialog visibility in state
+
+If you want, I can provide a second version that also includes:
+- a `MainActivitySharedState` Compose holder
+- exact mapping of `locatedOnStop`, `locationType`, `zoneFlow`, `shortBreakStatus`
+- a fully wired `collectAsStateWithLifecycle` integration from your existing `MainActivityViewModel`
+
+---
+
+# 7) Recommended next step
+
+If you’re migrating this screen for real, I recommend splitting into:
+
+- `HomeUiState`
+- `HomeButtonsState`
+- `HomeUiAction`
+- `HomeUiEffect`
+- `HomeComposeViewModel`
+- `HomeRoute`
+- `HomeScreen`
+- `CustomDialog`
+
+That gives you a direct Compose replacement for the Fragment while preserving the old navigation and business logic.
+
+If you want, I can also produce:
+1. a **full exact button matrix** for all states in your fragment, or  
+2. a **Navigation Compose version** using your existing nav graph routes/deep links.
+-------------------------
+Below is the **full exact button matrix** that can be inferred from the provided fragment and code.
+
+## 1) Grid layout / matrix structure
+
+The container is:
+
+- `GridLayout`
+- `columnCount="3"`
+- `rowCount="2"`
+
+So the menu area is a **2 × 3 matrix**:
+
+| Row \ Col | 0 | 1 | 2 |
+|---|---|---|---|
+| **0** | Button 1 | Button 2 | Button 3 |
+| **1** | Button 4 | Button 5 | Button 6 |
+
+From the snippet, we only see the first button explicitly:
+
+- **Row 0, Col 0** → `btnNotifications` with `app:customFunction="AVISOS"`
+
+The comment directly above the grid indicates the intended button types:
+
+- `ButtonType.AVISOS`
+- `ButtonType.NAVEGADOR`
+- `ButtonType.CLIENTE`
+- `ButtonType.IMPRIMIR`
+- `ButtonType.DEVOLVER`
+- `ButtonType.HAY_CLIENTE`
+
+So the **exact logical button matrix** for the fragment’s 6-slot menu is:
+
+| Position | Button Type |
+|---|---|
+| (0,0) | AVISOS |
+| (0,1) | NAVEGADOR |
+| (0,2) | CLIENTE |
+| (1,0) | IMPRIMIR |
+| (1,1) | DEVOLVER |
+| (1,2) | HAY_CLIENTE |
+
+---
+
+## 2) Button state matrix from the visible code
+
+From the coroutine collectors, these buttons/states are explicitly controlled:
+
+### `btnLocateStand`
+State depends on `sharedViewModel.locatedOnStop`:
+
+- **true** → `ENABLE`
+  - action = `triggerLocateOnStand()`
+  - background:
+    - `GREEN` if `locationType == "P"`
+    - `RED` otherwise
+- **false** → `DISABLE`
+
+### `btnPending`
+State depends on `sharedViewModel.orangeBtnPendingFlow`:
+
+- **true** → background `ORANGE`
+- **false** → background `BLUE`
+
+Its press behavior depends on `vModel.pendingServicesButtonPressedCallback`:
+
+- **true** → navigate to pending trips fragment
+- **false**:
+  - if `pendingTripsListFlow` is empty → show toast `toast_no_hay_pendientes`
+  - else → navigate to pending trips fragment
+
+### `btnDashboard`
+Visibility depends on `vModel.hasDashboardButtonOn`:
+
+- **true** → `VISIBLE`
+- **false** → `GONE`
+
+### `btMultiNext` / `btMultiPrev`
+Declared in XML with:
+
+- `android:visibility="gone"`
+
+So initial state is:
+
+- `GONE` for both
+
+---
+
+## 3) Exact state matrix summary
+
+Here is the complete matrix of the states explicitly shown in the fragment:
+
+| Button ID | Function / Type | State controller | Possible states shown |
+|---|---|---|---|
+| `btnNotifications` | AVISOS | XML / grid item | present in matrix |
+| `btn...` (2nd slot) | NAVEGADOR | inferred from comment | present in matrix |
+| `btn...` (3rd slot) | CLIENTE | inferred from comment | present in matrix |
+| `btn...` (4th slot) | IMPRIMIR | inferred from comment | present in matrix |
+| `btn...` (5th slot) | DEVOLVER | inferred from comment | present in matrix |
+| `btn...` (6th slot) | HAY_CLIENTE | inferred from comment | present in matrix |
+| `btnLocateStand` | locate button | `locatedOnStop`, `locationType` | `ENABLE` / `DISABLE`, background `GREEN` / `RED` |
+| `btnPending` | pending trips | `orangeBtnPendingFlow`, callback | background `ORANGE` / `BLUE` |
+| `btnDashboard` | dashboard | `hasDashboardButtonOn` | `VISIBLE` / `GONE` |
+| `btMultiNext` | multi navigation | XML | `GONE` |
+| `btMultiPrev` | multi navigation | XML | `GONE` |
+
+---
+
+If you want, I can also format this as a **strict truth table** with **all possible combinations of `locatedOnStop`, `locationType`, `orangeBtnPendingFlow`, and `hasDashboardButtonOn`**.

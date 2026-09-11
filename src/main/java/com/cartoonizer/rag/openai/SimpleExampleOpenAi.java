@@ -13,12 +13,12 @@ public class SimpleExampleOpenAi {
         String answerPath = "./output-files/" + fileToGenerate + ".txt";
         String processedAnswerPath = "./processed-files/processed-" + fileToGenerate + ".txt";
         
-        String pathForComposable = documentsPath  + "/" + fileToGenerate + ".kt";
+        String pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
         String pathViewModel = documentsPath  + "/HomeViewModel.kt";
         String pathLayout = documentsPath  + "/fragment_home.xml";
         String pathSharedViewModel = documentsPath  + "/MainActivityViewModel.kt";
         
-        String savedComposable = Utils.readFullFile(pathForComposable);
+        String savedViewClass = Utils.readFullFile(pathForViewClass);
         String savedViewModel = Utils.readFullFile(pathViewModel);
         String savedLayout = Utils.readFullFile(pathLayout);
         String savedSharedViewModel = Utils.readFullFile(pathSharedViewModel);
@@ -29,24 +29,16 @@ public class SimpleExampleOpenAi {
             OpenAiChat chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
             chat.setup();
             String[] questions = {
-            "- provide a jetpack Compose composable function with viewModel that implements the following class \n" +
-            savedComposable +
-            "- Use Compose Navigation and NavController instead of Jetpack Views navigation \n" +
-            "- Use dialog state, lifecycle collection of state/events for dialog handling \n" +
-            "- Replace navigateTo calls with route-based navigation events\n" +
-            "- Use state holders/data classes to fully replace the fragment button logic. \n" +
-            "- provide a full `HomeButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<HomeUiEffect>` instead of multiple event types\n" +
-            "- provide a fully refactored ViewModel version based in the following ViewModel, removing all fragment navigation references and exposing a Compose-friendly `UiState + UiEvent` architecture\n" +
-            "- Provide also a `onResume` replacement with lifecycle collection using `repeatOnLifecycle`" +
-            "- Provide also a full `LocationDialog`, `RoofLightDialog`, `ManualTripDialog`, `PendingTripsDialog`" +
-            "- Provide also a cleaner `HomeEffect` sealed class with route objects instead of plain strings" +
-            "- Provide also a `HomeButtonsState` with exact Compose button styling helpers matching the custom button component more closely" +
-            "- Use this viewModel:" +
+            "1. provide a jetpack Compose composable that implements the following jetpack views class class \n" +
+            savedViewClass +
+            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" +
             savedViewModel +
-            "- Use this shared view model:\n" +
-            savedSharedViewModel +
-            "- Use this layout file for the composable:\n" +
-            savedLayout +
+            "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
+            "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
+            "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
+            "6. provide a full `HomeButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<HomeUiEffect>` instead of multiple event types\n" +
+            "7. Provide a compose CustomDialog implementation based on the custom_dialog.xml file and the dialog implemented in the CustomDialog.kt file " +
+            "8. Provide also a `HomeButtonsState` with exact Compose button styling helpers matching the custom button component more closely" +
             "\nUse only android and jetpack compose references"
 
             };

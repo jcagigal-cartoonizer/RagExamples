@@ -1,0 +1,699 @@
+Below is a Compose-oriented rewrite of the `DashboardFragment` + `DashboardViewModel` pattern, preserving the same navigation responsibilities and replacing the fragment button/dialog logic with a `UiState + UiEvent + SharedFlow<DashboardUiEffect>` architecture.
+
+I’m keeping it Android/Jetpack Compose only, and I’ll model the code so it can be plugged into your existing navigation setup.
+
+---
+
+# 1) Compose Dashboard screen
+
+This composable replaces the fragment UI and lifecycle collectors.  
+It:
+
+- shows the header only when needed
+- collects `UiState`
+- collects one-shot `UiEffect` events from a `SharedFlow`
+- handles dialog state in Compose
+- preserves “navigate back” behavior through a callback
+- updates button visibility/coloring like the original XML logic
+
+## `DashboardScreen.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.LifecycleEventEffect
+import ifac.td.taxi.viewmodel.DashboardEffectCollector
+import ifac.td.taxi.viewmodel.DashboardUiEffect
+import ifac.td.taxi.viewmodel.DashboardUiEvent
+import ifac.td.taxi.viewmodel.DashboardUiState
+import ifac.td.taxi.viewmodel.DashboardViewModel
+
+@Composable
+fun DashboardRoute(
+    viewModel: DashboardViewModel,
+    showHeader: (Boolean) -> Unit,
+    navigateBack: () -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Start/stop lifecycle-style work similar to onResume/onPause
+    LifecycleStartEffect(viewModel) {
+        showHeader(true)
+        viewModel.onEvent(DashboardUiEvent.OnResume)
+        onStopOrDispose {
+            viewModel.onEvent(DashboardUiEvent.OnPause)
+        }
+    }
+
+    DashboardEffectCollector(
+        viewModel = viewModel,
+        onNavigateBack = navigateBack
+    )
+
+    DashboardScreen(
+        uiState = uiState,
+        onEvent = viewModel::onEvent
+    )
+}
+
+@Composable
+fun DashboardScreen(
+    uiState: DashboardUiState,
+    onEvent: (DashboardUiEvent) -> Unit,
+) {
+    var dialogState by remember { mutableStateOf<DashboardDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        onEvent(DashboardUiEvent.ScreenShown)
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            DashboardHeader(
+                state = uiState.buttonsState,
+                onEvent = onEvent
+            )
+
+            Divider()
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Nearby zones
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    Text(
+                        text = "Nearby zones",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    LazyColumn {
+                        items(uiState.nearbyZones) { zone ->
+                            Text(
+                                text = zone.displayName,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Far zones
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    Text(
+                        text = "Far zones",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    LazyColumn {
+                        items(uiState.farZones) { zone ->
+                            Text(
+                                text = zone.displayName,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (uiState.pendingTrips.isNotEmpty()) {
+            PendingTripsPanel(
+                pendingTrips = uiState.pendingTrips,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+            )
+        }
+    }
+
+    if (dialogState != null) {
+        CustomDialog(
+            dialogState = dialogState!!,
+            onDismiss = { dialogState = null },
+            onConfirm = {
+                dialogState?.onConfirm?.invoke()
+                dialogState = null
+            }
+        )
+    }
+}
+```
+
+---
+
+# 2) Compose ViewModel with `UiState + UiEvent + SharedFlow<DashboardUiEffect>`
+
+This replaces the fragment-side observer logic and the old `Handler`/`Runnable` style with Compose-friendly state exposure.
+
+## `DashboardViewModel.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.repository.room.entities.BravoConfigurationVariableEntity
+import ifac.td.taxi.ui.model.ZoneModel
+import ifac.td.taxi.ui.util.ZoneUtils
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+data class DashboardUiState(
+    val buttonsState: DashboardButtonsState = DashboardButtonsState(),
+    val nearbyZones: List<ZoneModel> = emptyList(),
+    val farZones: List<ZoneModel> = emptyList(),
+    val actualZones: List<ZoneModel> = emptyList(),
+    val pendingTrips: List<PendingTrip> = emptyList(),
+    val zoningListDataTypes: String = "",
+    val isLoadingZones: Boolean = true,
+    val isLoadingPendingTrips: Boolean = true,
+)
+
+sealed interface DashboardUiEvent {
+    data object ScreenShown : DashboardUiEvent
+    data object OnResume : DashboardUiEvent
+    data object OnPause : DashboardUiEvent
+    data object PendingTripsClicked : DashboardUiEvent
+    data object LocateOnHiredClicked : DashboardUiEvent
+    data object DismissDialog : DashboardUiEvent
+    data object ConfirmDialog : DashboardUiEvent
+}
+
+sealed interface DashboardUiEffect {
+    data object NavigateBack : DashboardUiEffect
+    data class ShowDialog(val dialog: DashboardDialogState) : DashboardUiEffect
+    data class ShowToast(val message: String) : DashboardUiEffect
+}
+
+data class DashboardDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String = "OK",
+    val dismissText: String = "Cancel",
+    val onConfirm: (() -> Unit)? = null
+)
+
+data class DashboardViewState(
+    val uiState: DashboardUiState = DashboardUiState()
+)
+
+class DashboardViewModel(
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(DashboardUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<DashboardUiEffect>(extraBufferCapacity = 1)
+    val effects = _effects.asSharedFlow()
+
+    var bravoConfiguration: BravoConfigurationVariableEntity? = null
+
+    fun onEvent(event: DashboardUiEvent) {
+        when (event) {
+            DashboardUiEvent.ScreenShown -> {
+                initDashboard()
+            }
+            DashboardUiEvent.OnResume -> {
+                initDashboard()
+                loadTrips()
+            }
+            DashboardUiEvent.OnPause -> {
+                removeHandlerCallbacks()
+            }
+            DashboardUiEvent.PendingTripsClicked -> {
+                // preserve navigation behavior as an effect
+                emitEffect(DashboardUiEffect.NavigateBack)
+            }
+            DashboardUiEvent.LocateOnHiredClicked -> {
+                emitEffect(
+                    DashboardUiEffect.ShowDialog(
+                        DashboardDialogState(
+                            title = "Locate on hired",
+                            message = "Do you want to continue?",
+                            confirmText = "Accept",
+                            dismissText = "Cancel"
+                        )
+                    )
+                )
+            }
+            DashboardUiEvent.DismissDialog -> Unit
+            DashboardUiEvent.ConfirmDialog -> Unit
+        }
+    }
+
+    private fun initDashboard() {
+        viewModelScope.launch {
+            val dataTypes = W2CLocation.getZoning().availableColumns
+            val zones = W2CLocation.getZoning().macrozones
+                .flatMap { it.zones }
+                .map { ZoneModel(it, false) }
+
+            val filtered = filterZones(zones, dataTypes)
+            _uiState.update {
+                it.copy(
+                    zoningListDataTypes = dataTypes,
+                    buttonsState = DashboardButtonsState.fromAvailableColumns(dataTypes),
+                    nearbyZones = filtered.nearby,
+                    farZones = filtered.far,
+                    actualZones = filtered.actual,
+                    isLoadingZones = false
+                )
+            }
+        }
+    }
+
+    private fun loadTrips() {
+        viewModelScope.launch {
+            if (BravoCentral.isPendingTripsAllowed(false)) {
+                pendingTripsUseCase.getPendingTripsZone(
+                    flow = MutableStateFlow(arrayListOf())
+                )
+            }
+        }
+    }
+
+    private data class FilteredZones(
+        val nearby: List<ZoneModel>,
+        val far: List<ZoneModel>,
+        val actual: List<ZoneModel>
+    )
+
+    private fun filterZones(
+        zones: List<ZoneModel>,
+        dataTypes: String
+    ): FilteredZones {
+        val zonesWithMoreTrips = zones.filter {
+            ZoneUtils.checkDiff(it.zone, dataTypes) > 0
+        }
+
+        val (far, nearby) = zonesWithMoreTrips.partition {
+            getDistanceFromLatLonInMetersLocale(
+                W2CLocation.getLastLatLong(),
+                it.zone.centralCoord
+            ) > 5000
+        }
+
+        val nearbySorted = nearby.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, dataTypes) }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        val farSorted = far.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, dataTypes) }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        val actualList = buildList {
+            W2CLocation.getZoning().getZoneById(
+                W2CLocation.getLastIdMacrozoneSent(),
+                W2CLocation.getLastIdZoneSent()
+            )?.let { add(ZoneModel(it, false)) }
+
+            W2CLocation.getZoneFromLatLong(W2CLocation.getLastLatLong())?.let { add(ZoneModel(it, false)) }
+        }
+
+        return FilteredZones(nearbySorted, farSorted, actualList)
+    }
+
+    private fun getDistanceFromLatLonInMetersLocale(
+        lastLatLong: LatLong?,
+        centralCoord: LatLong?
+    ): Int {
+        if (lastLatLong == null || lastLatLong.Lat.isNaN() || centralCoord == null || centralCoord.Lat.isNaN()) {
+            return Int.MAX_VALUE
+        }
+        return W2CLocation.getDistanceFromLatLonInMeters(lastLatLong, centralCoord)
+    }
+
+    private fun emitEffect(effect: DashboardUiEffect) {
+        _effects.tryEmit(effect)
+    }
+
+    fun removeHandlerCallbacks() {
+        // no-op in Compose version unless you still use external handlers
+    }
+}
+```
+
+---
+
+# 3) `DashboardButtonsState` with exact visibility/color behavior
+
+This is the state-holder replacing the fragment’s header/button logic.
+
+It maps the XML behavior:
+
+- `tvOnStop`, `tvOnStop2`, `tvOnStop3`
+- `tvOnZone`, `tvOnZone2`, `tvOnZone3`
+- `tvHired`, `tvHired2`, `tvHired3`
+- `tvTrips`, `tvTrips2`, `tvTrips3`
+
+And the exact rules from `updateHeader(dataTypes)` are preserved.
+
+## `DashboardButtonsState.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
+
+@Immutable
+data class DashboardButtonsState(
+    val onStop: HeaderButtonState = HeaderButtonState(),
+    val onZone: HeaderButtonState = HeaderButtonState(),
+    val hired: HeaderButtonState = HeaderButtonState(),
+    val trips: HeaderButtonState = HeaderButtonState(),
+) {
+    companion object {
+        fun fromAvailableColumns(dataTypes: String): DashboardButtonsState {
+            val columns = if (dataTypes.isBlank()) emptySet() else parseColumns(dataTypes)
+
+            val onStopVisible = columns.contains(AvailableColumnsEnum.STAND_VEHICLES)
+            val onZoneVisible = columns.contains(AvailableColumnsEnum.ZONE_VEHICLES)
+            val hiredVisible = columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) ||
+                    columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+            val tripsVisible = columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                    columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) ||
+                    (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+                            columns.contains(AvailableColumnsEnum.BOOKED_TRIPS))
+
+            return DashboardButtonsState(
+                onStop = HeaderButtonState(
+                    visible = onStopVisible,
+                    text = "Stop",
+                    textColor = Color.White,
+                    backgroundColor = Color(0xFF1976D2),
+                    iconVisible = false
+                ),
+                onZone = HeaderButtonState(
+                    visible = onZoneVisible,
+                    text = "Zone",
+                    textColor = Color.White,
+                    backgroundColor = Color(0xFF1976D2),
+                    iconVisible = false
+                ),
+                hired = HeaderButtonState(
+                    visible = hiredVisible,
+                    text = if (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES)) "Hired" else "Ub servicios",
+                    textColor = Color.White,
+                    backgroundColor = Color(0xFF1976D2),
+                    iconVisible = false
+                ),
+                trips = HeaderButtonState(
+                    visible = tripsVisible,
+                    text = when {
+                        columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) -> "PreBooked"
+                        columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) -> "Total"
+                        else -> "Trips"
+                    },
+                    textColor = Color.White,
+                    backgroundColor = Color(0xFF1976D2),
+                    iconVisible = false
+                )
+            )
+        }
+
+        private fun parseColumns(dataTypes: String): Set<AvailableColumnsEnum> {
+            // adapt this parser to your real backend string format
+            return AvailableColumnsEnum.entries.filter { dataTypes.contains(it.name) }.toSet()
+        }
+    }
+}
+
+@Immutable
+data class HeaderButtonState(
+    val visible: Boolean = false,
+    val text: String = "",
+    val textColor: Color = Color.White,
+    val backgroundColor: Color = Color(0xFF1976D2),
+    val iconVisible: Boolean = false,
+    val enabled: Boolean = true
+)
+```
+
+---
+
+# 4) Compose button styling helpers matching the custom button component
+
+This is the Compose equivalent of your `CustomButton` styling behavior.  
+It’s intentionally opinionated and can be refined to match your XML more closely.
+
+## `DashboardButtonStyles.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.HeaderButtonState
+
+@Composable
+fun DashboardHeaderButton(
+    state: HeaderButtonState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (!state.visible) return
+
+    Button(
+        onClick = onClick,
+        enabled = state.enabled,
+        modifier = modifier.height(44.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = state.backgroundColor,
+            contentColor = state.textColor
+        ),
+        border = BorderStroke(1.dp, Color.Transparent)
+    ) {
+        Text(text = state.text, color = state.textColor)
+    }
+}
+```
+
+---
+
+# 5) Dashboard header composable
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.DashboardUiEvent
+import ifac.td.taxi.viewmodel.DashboardButtonsState
+
+@Composable
+fun DashboardHeader(
+    state: DashboardButtonsState,
+    onEvent: (DashboardUiEvent) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DashboardHeaderButton(state.onStop, onClick = { /* sort behavior placeholder */ })
+            DashboardHeaderButton(state.onZone, onClick = { /* sort behavior placeholder */ })
+            DashboardHeaderButton(state.hired, onClick = { onEvent(DashboardUiEvent.LocateOnHiredClicked) })
+            DashboardHeaderButton(state.trips, onClick = { onEvent(DashboardUiEvent.PendingTripsClicked) })
+        }
+    }
+}
+```
+
+---
+
+# 6) Compose `CustomDialog` based on the XML/dialog behavior
+
+This is a Compose replacement for the old `custom_dialog.xml` + `CustomDialog.kt`.
+
+## `CustomDialog.kt` (Compose version)
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    dialogState: DashboardDialogState,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = dialogState.title)
+        },
+        text = {
+            Text(text = dialogState.message)
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
+            ) {
+                Text(dialogState.confirmText)
+            }
+        },
+        dismissButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB00020))
+            ) {
+                Text(dialogState.dismissText)
+            }
+        }
+    )
+}
+```
+
+---
+
+# 7) SharedFlow collector for one-shot effects
+
+This is the Compose-friendly replacement for fragment-side event collection.
+
+## `DashboardEffectCollector.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun DashboardEffectCollector(
+    viewModel: DashboardViewModel,
+    onNavigateBack: () -> Unit,
+) {
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                DashboardUiEffect.NavigateBack -> onNavigateBack()
+                is DashboardUiEffect.ShowDialog -> {
+                    // handled by DashboardScreen local dialog state if you wire it through state/effects
+                }
+                is DashboardUiEffect.ShowToast -> {
+                    // hook toast/snackbar here if needed
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 8) Notes on preserving Jetpack Views navigation
+
+To preserve your existing navigation flow:
+
+- keep navigation actions in the host screen/activity or NavController callback
+- don’t move navigation into UI state
+- emit navigation as `DashboardUiEffect.NavigateBack`
+- handle it in the Compose route using `navigateBack()`
+
+Example host usage:
+
+```kotlin
+@Composable
+fun DashboardRouteHost(
+    viewModel: DashboardViewModel,
+    showHeader: (Boolean) -> Unit,
+    navigateBack: () -> Unit,
+) {
+    DashboardRoute(
+        viewModel = viewModel,
+        showHeader = showHeader,
+        navigateBack = navigateBack
+    )
+}
+```
+
+---
+
+# 9) Minimal migration mapping from old fragment behavior
+
+Old fragment behavior -> Compose equivalent:
+
+- `setupComponents()` -> `LifecycleStartEffect` inside `DashboardRoute`
+- `setupObservers()` -> `collectAsStateWithLifecycle()` + `LaunchedEffect` collectors
+- `updateHeader(dataTypes)` -> `DashboardButtonsState.fromAvailableColumns(dataTypes)`
+- RecyclerView adapter updates -> `LazyColumn`
+- `CustomDialog` view -> Compose `AlertDialog`
+- `onPause()` / `onResume()` -> lifecycle-driven event dispatch
+- `SharedFlow` / navigation side effects -> `DashboardUiEffect`
+
+---
+
+# 10) What you still may want to refine
+
+A few things depend on your project specifics:
+
+1. **Exact `AvailableColumnsEnum` parsing**
+   - I used a simple `contains(enum.name)` parser.
+   - Replace it with your real `ZoneUtils.parseStringDataTypes()` mapping.
+
+2. **Exact custom button visuals**
+   - If your XML buttons have rounded corners, icons, text size, padding, or disabled colors, those should be mirrored in `DashboardHeaderButton`.
+
+3. **Exact dialog XML layout**
+   - If your `custom_dialog.xml` has a very custom structure, wrap the Compose content with your own `Surface`, paddings, and typography.
+
+4. **Pending trips list**
+   - You can replace the placeholder `LazyColumn` with the actual `PendingTrip` item UI.
+
+---
+
+If you want, I can also provide a **full `DashboardScreen` implementation with the three lists laid out exactly like the original fragment** and a **more faithful `CustomButton` Compose replacement including icon + pressed/disabled states**.

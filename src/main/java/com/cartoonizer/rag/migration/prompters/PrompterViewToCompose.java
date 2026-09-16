@@ -4,6 +4,7 @@
  */
 package com.cartoonizer.rag.migration.prompters;
 
+import com.cartoonizer.rag.shared.utils.FragmentAnswerProcessor.AnswerProcessor;
 import com.cartoonizer.rag.shared.utils.ProcessAnswerFile;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.AiMessage;
@@ -63,7 +64,7 @@ public class PrompterViewToCompose {
         String answer = aiMessage.text();
         saveAnswer(answerPath, answer);
         if (answerPath != null && !answerPath.isEmpty() && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
-            ProcessAnswerFile.AnswerProcessor reader = new ProcessAnswerFile.AnswerProcessor(answerPath, processedAnswerPath);
+            AnswerProcessor reader = new AnswerProcessor(answerPath, processedAnswerPath);
             reader.load();
         }
         return answer;

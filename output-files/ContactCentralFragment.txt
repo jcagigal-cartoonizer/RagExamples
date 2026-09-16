@@ -1,30 +1,131 @@
-Below is a Compose-first refactor of the `ContactCentralFragment` screen and its `ContactCentralViewModel`.
+Below is a Compose-first rewrite that keeps the same behavior as the fragment, but replaces:
 
-It follows your requirements:
+- multiple LiveData/Flow collectors in the Fragment
+- direct button mutations
+- dialog callbacks tied to Fragment APIs
 
-- Uses **Jetpack Compose**
-- Uses **NavController / route-based navigation**
-- Uses **UiState + UiEvent**
-- Handles **dialog state** in Compose
-- Collects **lifecycle-aware state/events**
-- Removes **fragment navigation references**
-- Uses only **android + jetpack compose** references in the UI layer
+with:
+
+- a single `UiState`
+- a single `SharedFlow<ContactCentralUiEffect>`
+- state-driven Compose buttons
+- lifecycle-aware effect collection
+- a Compose dialog that mirrors the old `CustomDialog`
+
+I’ll provide:
+
+1. `ContactCentralUiState`, `ContactCentralButtonsState`, `ContactCentralUiEffect`
+2. a Compose-friendly `ContactCentralViewModel`
+3. a `ContactCentralScreen` composable preserving navigation and dialog handling
+4. a Compose `CustomDialog`
+5. Compose button styling helpers that mimic the old `CustomButton`
+6. notes on exact visibility/color logic matching the fragment behavior
 
 ---
 
-## 1) Refactored ViewModel
+# 1) Compose state + effect models
 
-This version exposes:
+```kotlin
+package ifac.td.taxi.ui.screen
 
-- `StateFlow<ContactCentralUiState>`
-- `SharedFlow<ContactCentralUiEvent>`
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
 
-It removes all fragment `navigateTo(...)` calls and does not know anything about `NavDirections`.
+@Immutable
+data class ContactCentralUiState(
+    val buttons: ContactCentralButtonsState = ContactCentralButtonsState(),
+    val isLoadingShortBreakAction: Boolean = false,
+    val dialog: ContactCentralDialogState? = null,
+)
+
+@Immutable
+data class ContactCentralButtonsState(
+    val cancel: ContactCentralButtonStyle = ContactCentralButtonStyle(),
+    val shortBreak: ContactCentralButtonStyle = ContactCentralButtonStyle(),
+    val voiceCall: ContactCentralButtonStyle = ContactCentralButtonStyle(),
+    val messages: ContactCentralButtonStyle = ContactCentralButtonStyle(),
+    val information: ContactCentralButtonStyle = ContactCentralButtonStyle(),
+) {
+    companion object {
+        fun initial() = ContactCentralButtonsState(
+            cancel = ContactCentralButtonStyle(
+                visible = true,
+                enabled = true,
+                text = "CANCEL",
+                background = ContactCentralButtonBackground.DEFAULT,
+            ),
+            shortBreak = ContactCentralButtonStyle(
+                visible = true,
+                enabled = false,
+                text = "SHORT BREAK",
+                background = ContactCentralButtonBackground.GREEN,
+            ),
+            voiceCall = ContactCentralButtonStyle(
+                visible = true,
+                enabled = true,
+                text = "VOICE CALL",
+                background = ContactCentralButtonBackground.RED,
+            ),
+            messages = ContactCentralButtonStyle(
+                visible = true,
+                enabled = false,
+                text = "MESSAGES",
+                background = ContactCentralButtonBackground.DEFAULT,
+            ),
+            information = ContactCentralButtonStyle(
+                visible = true,
+                enabled = true,
+                text = "INFORMATION",
+                background = ContactCentralButtonBackground.DEFAULT,
+            ),
+        )
+    }
+}
+
+@Immutable
+data class ContactCentralButtonStyle(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val text: String = "",
+    val background: ContactCentralButtonBackground = ContactCentralButtonBackground.DEFAULT,
+)
+
+enum class ContactCentralButtonBackground {
+    DEFAULT,
+    RED,
+    GREEN,
+}
+
+@Immutable
+data class ContactCentralDialogState(
+    val title: String,
+    val message: String? = null,
+    val acceptText: String = "ACCEPT",
+    val cancelText: String = "CANCEL",
+)
+
+sealed interface ContactCentralUiEffect {
+    data object NavigateBack : ContactCentralUiEffect
+    data object NavigateToPredefinedMessages : ContactCentralUiEffect
+    data object NavigateToInformationMessages : ContactCentralUiEffect
+    data object ShowShortBreakForcedToast : ContactCentralUiEffect
+    data class ShowVoiceRequestDialog(val title: String) : ContactCentralUiEffect
+}
+```
+
+---
+
+# 2) Compose-friendly ViewModel with `UiState + UiEffect`
+
+This version preserves the business logic and turns all UI mutations into state changes.
 
 ```kotlin
 package ifac.td.taxi.viewmodel
 
 import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
@@ -32,550 +133,531 @@ import ifac.td.taxi.domain.usecase.PredefinedMessagesUseCase
 import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
 import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralConfigurationUseCase
 import ifac.td.taxi.framework.sdk.usecase.VoicePetitionUseCase
-import ifac.td.taxi.framework.util.Logs
 import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.ui.screen.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-data class ContactCentralUiState(
-    val hasPredefinedMessages: Boolean = false,
-    val hasShortBreak: Boolean = false,
-    val isITopTaximeter: Boolean = false,
-    val shortBreakStatus: ShortBreakStatus? = null,
-    val zone: String? = null,
-    val voiceEnabled: Boolean = false,
-    val showShortBreakButton: Boolean = true,
-    val shortBreakButtonEnabled: Boolean = true,
-    val shortBreakButtonLoading: Boolean = false,
-    val shortBreakButtonTextRes: Int = R.string.btn_short_break,
-    val shortBreakButtonColor: ShortBreakButtonColor = ShortBreakButtonColor.Green,
-    val voiceCallButtonTextRes: Int = R.string.btn_cancel_voice_request,
-    val voiceCallButtonColor: VoiceCallButtonColor = VoiceCallButtonColor.Red,
-    val showForcedBreakToast: Boolean = false,
-    val dialogState: ContactCentralDialogState? = null
-)
-
-enum class ShortBreakButtonColor { Green, Red, Disabled }
-enum class VoiceCallButtonColor { Red, Default }
-
-sealed class ContactCentralDialogState {
-    data class VoiceRequestConfirm(val titleRes: Int = R.string.btn_voice_request) : ContactCentralDialogState()
-}
-
-sealed class ContactCentralUiEvent {
-    data class Navigate(val route: String) : ContactCentralUiEvent()
-    data class ShowToast(val messageRes: Int) : ContactCentralUiEvent()
-    data object NavigateBack : ContactCentralUiEvent()
-    data object OpenShortBreak : ContactCentralUiEvent()
-    data class SendVoiceRequest(val enabled: Boolean) : ContactCentralUiEvent()
-}
-
-class ContactCentralViewModel(
+class ContactCentralComposeViewModel(
     private val bravoCentralConfigurationUseCase: BravoCentralConfigurationUseCase,
     private val shiftStatusUseCase: ShiftStatusUseCase,
     private val predefinedMessagesUseCase: PredefinedMessagesUseCase,
     private val voicePetitionUseCase: VoicePetitionUseCase,
     private val bluetoothLocalUseCase: BluetoothLocalUseCase,
-    context: Application,
-) : BaseViewModel(context) {
-
-    private val TAG = "ContactCentralViewModel"
+    application: Application,
+) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(ContactCentralUiState())
-    val uiState = _uiState.asStateFlow()
+    val uiState: StateFlow<ContactCentralUiState> = _uiState.asStateFlow()
 
-    private val _uiEvent = MutableSharedFlow<ContactCentralUiEvent>()
-    val uiEvent = _uiEvent.asSharedFlow()
+    private val _uiEffect = MutableSharedFlow<ContactCentralUiEffect>()
+    val uiEffect: SharedFlow<ContactCentralUiEffect> = _uiEffect.asSharedFlow()
 
-    init {
+    private var hasShortBreak: Boolean = false
+    private var hasPredefinedMessages: Boolean = false
+    private var isITopTaximeter: Boolean = false
+
+    fun initialize() {
         viewModelScope.launch(Dispatchers.IO) {
-            val hasPredefined = predefinedMessagesUseCase.getPredefinedMessages().isNotEmpty()
-            val hasShortBreak = bravoCentralConfigurationUseCase.getBravoConfigurationVariable()?.hasShortBreak ?: false
+            hasPredefinedMessages = predefinedMessagesUseCase.getPredefinedMessages().isNotEmpty()
+            hasShortBreak = bravoCentralConfigurationUseCase.getBravoConfigurationVariable()?.hasShortBreak ?: false
+            isITopTaximeter = bluetoothLocalUseCase.isCurrentBluetoothItop()
 
-            _uiState.update {
-                it.copy(
-                    hasPredefinedMessages = hasPredefined,
-                    hasShortBreak = hasShortBreak
-                )
-            }
+            reduceButtons()
         }
     }
 
-    fun checkITopTaximeter() {
-        viewModelScope.launch {
-            val isITop = bluetoothLocalUseCase.isCurrentBluetoothItop()
-            Logs.d(TAG, "isITopTaximeter: $isITop")
-            _uiState.update { it.copy(isITopTaximeter = isITop) }
-        }
+    fun onCancelClick() {
+        emitEffect(ContactCentralUiEffect.NavigateBack)
     }
 
-    fun onCancelClicked() {
-        viewModelScope.launch {
-            _uiEvent.emit(ContactCentralUiEvent.NavigateBack)
-        }
-    }
-
-    fun onShortBreakClicked() {
-        val forced = _uiState.value.shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK_FORCED
-        if (forced) {
-            viewModelScope.launch {
-                _uiEvent.emit(ContactCentralUiEvent.ShowToast(R.string.short_break_forced))
-            }
+    fun onShortBreakClick(shortBreakStatus: ShortBreakStatus, hasLocation: Boolean) {
+        if (shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK_FORCED) {
+            emitEffect(ContactCentralUiEffect.ShowShortBreakForcedToast)
             return
         }
 
-        viewModelScope.launch {
-            _uiState.update { it.copy(shortBreakButtonLoading = true) }
-            _uiEvent.emit(ContactCentralUiEvent.OpenShortBreak)
+        _uiState.update {
+            it.copy(
+                buttons = it.buttons.copy(
+                    shortBreak = it.buttons.shortBreak.copy(loading = true, enabled = false)
+                ),
+                isLoadingShortBreakAction = true
+            )
         }
+        // Preserves old fragment behavior: action was delegated to activity
     }
 
-    fun onVoiceCallClicked() {
-        if (_uiState.value.voiceEnabled) {
-            viewModelScope.launch {
-                _uiState.update {
-                    it.copy(
-                        dialogState = ContactCentralDialogState.VoiceRequestConfirm()
-                    )
-                }
-            }
+    fun onVoiceCallClick(voiceValue: Boolean) {
+        if (voiceValue) {
+            emitEffect(ContactCentralUiEffect.ShowVoiceRequestDialog(
+                title = getApplication<Application>().getString(R.string.btn_voice_request)
+            ))
         } else {
-            cancelVoiceRequest()
+            voicePetitionUseCase.voiceRequest(false)
+            emitEffect(ContactCentralUiEffect.NavigateBack)
         }
     }
 
-    fun onMessagesClicked() {
-        viewModelScope.launch {
-            _uiEvent.emit(ContactCentralUiEvent.Navigate("predefined_messages?fromCentral=true&requestId=-1"))
+    fun onVoiceRequestDialogAccept() {
+        voicePetitionUseCase.voiceRequest(true)
+        emitEffect(ContactCentralUiEffect.NavigateBack)
+    }
+
+    fun onMessagesClick() {
+        emitEffect(ContactCentralUiEffect.NavigateToPredefinedMessages)
+    }
+
+    fun onInformationClick() {
+        emitEffect(ContactCentralUiEffect.NavigateToInformationMessages)
+    }
+
+    fun onShortBreakStatusChanged(status: ShortBreakStatus?, hasLocation: Boolean) {
+        if (status == null) return
+        reduceButtons(shortBreakStatus = status, hasLocation = hasLocation)
+    }
+
+    fun onLocationTypeChanged(locationType: String?) {
+        reduceButtons(locationType = locationType)
+    }
+
+    fun onBravoVoiceChanged(voiceValue: Boolean) {
+        _uiState.update { state ->
+            state.copy(
+                buttons = state.buttons.copy(
+                    voiceCall = state.buttons.voiceCall.copy(
+                        background = if (voiceValue) ContactCentralButtonBackground.DEFAULT else ContactCentralButtonBackground.RED,
+                        text = if (voiceValue) "VOICE REQUEST" else "CANCEL VOICE REQUEST",
+                        enabled = true
+                    )
+                )
+            )
         }
     }
 
-    fun onInformationClicked() {
-        viewModelScope.launch {
-            _uiEvent.emit(ContactCentralUiEvent.Navigate("information_messages"))
-        }
+    fun onHasPredefinedMessagesChanged(hasMessages: Boolean) {
+        hasPredefinedMessages = hasMessages
+        reduceButtons()
     }
 
-    fun onDialogDismissed() {
-        _uiState.update { it.copy(dialogState = null) }
+    fun onHasShortBreakChanged(hasShortBreakValue: Boolean) {
+        hasShortBreak = hasShortBreakValue
+        reduceButtons()
     }
 
-    fun onVoiceRequestDialogResult(accepted: Boolean) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(dialogState = null) }
-            if (accepted) {
-                sendVoiceRequest(true)
-                _uiEvent.emit(ContactCentralUiEvent.NavigateBack)
-            }
-        }
+    fun onIsITopTaximeterChanged(isITop: Boolean) {
+        isITopTaximeter = isITop
+        reduceButtons()
     }
 
-    fun updateSharedValues(
-        shortBreakStatus: ShortBreakStatus?,
-        zone: String?,
-        voiceEnabled: Boolean,
-        bravoVoiceValue: Boolean
+    private fun reduceButtons(
+        shortBreakStatus: ShortBreakStatus? = null,
+        hasLocation: Boolean = true,
+        locationType: String? = null
     ) {
-        val hasLocation = !zone.isNullOrBlank()
+        val current = _uiState.value.buttons
 
-        val shortBreakUi = buildShortBreakUiState(shortBreakStatus, hasLocation)
-        val voiceTextRes = if (bravoVoiceValue) R.string.btn_voice_request else R.string.btn_cancel_voice_request
-        val voiceColor = if (bravoVoiceValue) VoiceCallButtonColor.Default else VoiceCallButtonColor.Red
+        val shortBreakButton = when {
+            locationType != null && locationType != "Z" -> current.shortBreak.copy(
+                enabled = false,
+                loading = false,
+                visible = true,
+                background = ContactCentralButtonBackground.GREEN,
+                text = "SHORT BREAK"
+            )
+
+            shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK ||
+                shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK_FORCED -> {
+                current.shortBreak.copy(
+                    enabled = true,
+                    loading = false,
+                    visible = true,
+                    background = ContactCentralButtonBackground.RED,
+                    text = "END SHORT BREAK"
+                )
+            }
+
+            shortBreakStatus == ShortBreakStatus.CAN_START_SHORT_BREAK -> {
+                current.shortBreak.copy(
+                    enabled = true,
+                    loading = false,
+                    visible = true,
+                    background = ContactCentralButtonBackground.GREEN,
+                    text = "SHORT BREAK"
+                )
+            }
+
+            shortBreakStatus == ShortBreakStatus.SHORT_BREAK_DISABLED -> {
+                current.shortBreak.copy(
+                    enabled = false,
+                    loading = false,
+                    visible = true,
+                    background = ContactCentralButtonBackground.GREEN,
+                    text = "SHORT BREAK"
+                )
+            }
+
+            !hasLocation && shortBreakStatus != ShortBreakStatus.IN_SHORT_BREAK &&
+                shortBreakStatus != ShortBreakStatus.IN_SHORT_BREAK_FORCED -> {
+                current.shortBreak.copy(
+                    enabled = false,
+                    loading = false,
+                    visible = true,
+                    background = ContactCentralButtonBackground.GREEN,
+                    text = "SHORT BREAK"
+                )
+            }
+
+            else -> current.shortBreak
+        }
+
+        val cancelVisible = !(hasShortBreak && shortBreakStatus != null &&
+            shortBreakStatus != ShortBreakStatus.IN_SHORT_BREAK &&
+            shortBreakStatus != ShortBreakStatus.IN_SHORT_BREAK_FORCED)
+
+        val messagesEnabled = hasPredefinedMessages
+
+        val voiceEnabled = !isITopTaximeter
 
         _uiState.update {
             it.copy(
-                shortBreakStatus = shortBreakStatus,
-                zone = zone,
-                voiceEnabled = bravoVoiceValue,
-                shortBreakButtonEnabled = shortBreakUi.enabled,
-                shortBreakButtonLoading = shortBreakUi.loading,
-                shortBreakButtonTextRes = shortBreakUi.textRes,
-                shortBreakButtonColor = shortBreakUi.color,
-                voiceCallButtonTextRes = voiceTextRes,
-                voiceCallButtonColor = voiceColor,
+                buttons = current.copy(
+                    cancel = current.cancel.copy(
+                        visible = cancelVisible,
+                        enabled = true,
+                        background = ContactCentralButtonBackground.DEFAULT,
+                        text = "CANCEL"
+                    ),
+                    shortBreak = shortBreakButton,
+                    voiceCall = current.voiceCall.copy(
+                        enabled = voiceEnabled,
+                        background = current.voiceCall.background,
+                    ),
+                    messages = current.messages.copy(
+                        enabled = messagesEnabled,
+                        background = ContactCentralButtonBackground.DEFAULT,
+                    ),
+                    information = current.information.copy(
+                        enabled = true,
+                        background = ContactCentralButtonBackground.DEFAULT,
+                    )
+                )
             )
         }
     }
 
-    fun setHasPredefinedMessages(value: Boolean) {
-        _uiState.update { it.copy(hasPredefinedMessages = value) }
-    }
-
-    fun setHasShortBreak(value: Boolean) {
-        _uiState.update { it.copy(hasShortBreak = value) }
-    }
-
-    fun setIsITopTaximeter(value: Boolean) {
-        _uiState.update { it.copy(isITopTaximeter = value) }
-    }
-
-    private fun cancelVoiceRequest() {
-        sendVoiceRequest(false)
-        viewModelScope.launch {
-            _uiEvent.emit(ContactCentralUiEvent.NavigateBack)
-        }
-    }
-
-    private fun sendVoiceRequest(value: Boolean?) {
-        voicePetitionUseCase.voiceRequest(value ?: true)
-    }
-
-    private data class ShortBreakUi(
-        val enabled: Boolean,
-        val loading: Boolean,
-        val textRes: Int,
-        val color: ShortBreakButtonColor
-    )
-
-    private fun buildShortBreakUiState(
-        shortBreakStatus: ShortBreakStatus?,
-        hasLocation: Boolean
-    ): ShortBreakUi {
-        return if (hasLocation) {
-            when (shortBreakStatus) {
-                ShortBreakStatus.IN_SHORT_BREAK,
-                ShortBreakStatus.IN_SHORT_BREAK_FORCED -> ShortBreakUi(
-                    enabled = true,
-                    loading = false,
-                    textRes = R.string.btn_end_short_break,
-                    color = ShortBreakButtonColor.Red
-                )
-
-                ShortBreakStatus.CAN_START_SHORT_BREAK -> ShortBreakUi(
-                    enabled = true,
-                    loading = false,
-                    textRes = R.string.btn_short_break,
-                    color = ShortBreakButtonColor.Green
-                )
-
-                ShortBreakStatus.SHORT_BREAK_DISABLED -> ShortBreakUi(
-                    enabled = false,
-                    loading = false,
-                    textRes = R.string.btn_short_break,
-                    color = ShortBreakButtonColor.Green
-                )
-
-                null -> ShortBreakUi(
-                    enabled = false,
-                    loading = false,
-                    textRes = R.string.btn_short_break,
-                    color = ShortBreakButtonColor.Disabled
-                )
-            }
-        } else {
-            val enabled = shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK ||
-                shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK_FORCED
-
-            ShortBreakUi(
-                enabled = enabled,
-                loading = false,
-                textRes = if (enabled) R.string.btn_end_short_break else R.string.btn_short_break,
-                color = if (enabled) ShortBreakButtonColor.Red else ShortBreakButtonColor.Green
-            )
-        }
+    private fun emitEffect(effect: ContactCentralUiEffect) {
+        viewModelScope.launch { _uiEffect.emit(effect) }
     }
 }
 ```
 
 ---
 
-## 2) Compose Screen
+# 3) Compose screen with lifecycle collection, navigation preservation, and dialog handling
 
-This composable:
-
-- collects state using lifecycle-aware collection
-- shows a dialog based on `uiState.dialogState`
-- uses `NavController` for navigation
-- uses buttons matching the old fragment logic
-- uses the same layout intent: title + 2x2 grid of actions
+This composable assumes you still have a NavController and want to preserve the same navigation targets.
 
 ```kotlin
 package ifac.td.taxi.ui.screen
 
-import android.widget.Toast
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Arrangement.SpaceEvenly
-import androidx.compose.foundation.layout.Arrangement.Center
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.paddingFromBaseline
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import ifac.td.taxi.R
 import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-import ifac.td.taxi.viewmodel.ContactCentralDialogState
-import ifac.td.taxi.viewmodel.ContactCentralUiEvent
-import ifac.td.taxi.viewmodel.ContactCentralUiState
-import ifac.td.taxi.viewmodel.ContactCentralViewModel
-import ifac.td.taxi.viewmodel.MainActivityViewModel
 import kotlinx.coroutines.flow.collectLatest
 
 @Composable
-fun ContactCentralRoute(
+fun ContactCentralScreen(
     navController: NavController,
-    viewModel: ContactCentralViewModel,
-    sharedViewModel: MainActivityViewModel,
-    onShowHeader: (Boolean) -> Unit
+    viewModel: ContactCentralComposeViewModel,
+    sharedUiState: SharedContactCentralState, // from activity/shared VM state holder
+    onShortBreakButtonPressed: () -> Unit,      // preserves old iMainActivity.shortBreakButtonPressed()
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         onShowHeader(true)
-        viewModel.checkITopTaximeter()
+        viewModel.initialize()
     }
 
-    LaunchedEffect(sharedViewModel.shortBreakStatus, sharedViewModel.bravoStateFlow, sharedViewModel.zoneFlow) {
-        val shortBreakStatus = sharedViewModel.shortBreakStatus.value
-        val zone = sharedViewModel.zoneFlow.value
-        val bravoVoiceValue = sharedViewModel.bravoStateFlow.value.voiceValue
+    // lifecycle-aware effect collection
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ContactCentralUiEffect.NavigateBack -> navController.popBackStack()
+                is ContactCentralUiEffect.NavigateToPredefinedMessages ->
+                    navController.navigate(R.id.action_contactCentralFragment_to_predefinedMessageFragment)
 
-        viewModel.updateSharedValues(
-            shortBreakStatus = shortBreakStatus,
-            zone = zone,
-            voiceEnabled = bravoVoiceValue,
-            bravoVoiceValue = bravoVoiceValue
-        )
-    }
+                is ContactCentralUiEffect.NavigateToInformationMessages ->
+                    navController.navigate(R.id.action_contactCentralFragment_to_informationMessageFragment)
 
-    LaunchedEffect(Unit) {
-        viewModel.uiEvent.collectLatest { event ->
-            when (event) {
-                is ContactCentralUiEvent.Navigate -> {
-                    navController.navigate(event.route)
-                }
+                is ContactCentralUiEffect.ShowShortBreakForcedToast ->
+                    onShowToast(R.string.short_break_forced)
 
-                ContactCentralUiEvent.NavigateBack -> {
-                    navController.popBackStack()
-                }
-
-                is ContactCentralUiEvent.ShowToast -> {
-                    Toast.makeText(context, context.getString(event.messageRes), Toast.LENGTH_SHORT).show()
-                }
-
-                ContactCentralUiEvent.OpenShortBreak -> {
-                    // Route-based navigation / action placeholder
-                    // Replace with your Compose navigation route or shared activity action
-                    sharedViewModel.navigateTo("short_break")
-                }
-
-                is ContactCentralUiEvent.SendVoiceRequest -> {
-                    // optional if you want to route this through the UI layer
+                is ContactCentralUiEffect.ShowVoiceRequestDialog -> {
+                    // handled by dialog state in UI; easiest is to set local dialog state
                 }
             }
         }
     }
 
-    ContactCentralScreen(
-        uiState = uiState,
-        onCancelClicked = viewModel::onCancelClicked,
-        onShortBreakClicked = viewModel::onShortBreakClicked,
-        onVoiceCallClicked = viewModel::onVoiceCallClicked,
-        onMessagesClicked = viewModel::onMessagesClicked,
-        onInformationClicked = viewModel::onInformationClicked,
-        onDialogDismissed = viewModel::onDialogDismissed,
-        onDialogAccept = { viewModel.onVoiceRequestDialogResult(true) },
-        onDialogCancel = { viewModel.onVoiceRequestDialogResult(false) }
+    val dialogState = remember { mutableStateOf<ContactCentralDialogState?>(null) }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ContactCentralUiEffect.ShowVoiceRequestDialog -> dialogState.value =
+                    ContactCentralDialogState(title = effect.title)
+
+                else -> Unit
+            }
+        }
+    }
+
+    ContactCentralDialogHost(
+        dialogState = dialogState.value,
+        onDismiss = { dialogState.value = null },
+        onAccept = {
+            dialogState.value = null
+            viewModel.onVoiceRequestDialogAccept()
+        }
     )
+
+    ContactCentralContent(
+        state = uiState,
+        sharedUiState = sharedUiState,
+        onCancel = { viewModel.onCancelClick() },
+        onShortBreak = {
+            val status = sharedUiState.shortBreakStatus
+            if (status == ShortBreakStatus.IN_SHORT_BREAK_FORCED) {
+                onShowToast(R.string.short_break_forced)
+            } else {
+                viewModel.onShortBreakClick(status, !sharedUiState.zone.isNullOrBlank())
+                onShortBreakButtonPressed()
+            }
+        },
+        onVoiceCall = { viewModel.onVoiceCallClick(sharedUiState.voiceValue) },
+        onMessages = { viewModel.onMessagesClick() },
+        onInformation = { viewModel.onInformationClick() }
+    )
+}
+
+@Composable
+private fun ContactCentralContent(
+    state: ContactCentralUiState,
+    sharedUiState: SharedContactCentralState,
+    onCancel: () -> Unit,
+    onShortBreak: () -> Unit,
+    onVoiceCall: () -> Unit,
+    onMessages: () -> Unit,
+    onInformation: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        ContactCentralButton(
+            style = state.buttons.cancel,
+            onClick = onCancel
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        if (state.buttons.shortBreak.visible) {
+            ContactCentralButton(
+                style = state.buttons.shortBreak,
+                onClick = onShortBreak
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        ContactCentralButton(
+            style = state.buttons.voiceCall,
+            onClick = onVoiceCall
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        ContactCentralButton(
+            style = state.buttons.messages,
+            onClick = onMessages
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        ContactCentralButton(
+            style = state.buttons.information,
+            onClick = onInformation
+        )
+    }
 }
 ```
 
 ---
 
-## 3) Screen UI Composable
+# 4) Shared state holder for the activity-viewmodel part
 
-This is the actual UI that mirrors the XML layout.
+This replaces `MainActivityViewModel` dependencies in a Compose-friendly way.
 
 ```kotlin
+package ifac.td.taxi.ui.screen
+
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+
+data class SharedContactCentralState(
+    val shortBreakStatus: ShortBreakStatus? = null,
+    val voiceValue: Boolean = false,
+    val zone: String? = null,
+)
+```
+
+---
+
+# 5) Compose `CustomDialog` implementation
+
+This mirrors the old `CustomDialog` idea: title + buttons + optional content.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+
 @Composable
-fun ContactCentralScreen(
-    uiState: ContactCentralUiState,
-    onCancelClicked: () -> Unit,
-    onShortBreakClicked: () -> Unit,
-    onVoiceCallClicked: () -> Unit,
-    onMessagesClicked: () -> Unit,
-    onInformationClicked: () -> Unit,
-    onDialogDismissed: () -> Unit,
-    onDialogAccept: () -> Unit,
-    onDialogCancel: () -> Unit,
+fun ContactCentralDialogHost(
+    dialogState: ContactCentralDialogState?,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit,
 ) {
+    if (dialogState == null) return
+
+    Dialog(
+        onDismissRequest = onDismiss
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(20.dp)
+            ) {
+                Text(
+                    text = dialogState.title,
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                dialogState.message?.let {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(text = dialogState.cancelText)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onAccept) {
+                        Text(text = dialogState.acceptText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 6) Compose button styling helpers matching the custom button behavior
+
+This is the closest Compose equivalent to the old `CustomButton.StyleButton` and background colors.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun ContactCentralButton(
+    style: ContactCentralButtonStyle,
+    onClick: () -> Unit,
+) {
+    if (!style.visible) return
+
+    val bgColor = when (style.background) {
+        ContactCentralButtonBackground.DEFAULT -> MaterialTheme.colorScheme.primary
+        ContactCentralButtonBackground.RED -> Color(0xFFD32F2F)
+        ContactCentralButtonBackground.GREEN -> Color(0xFF2E7D32)
+    }
+
+    val contentColor = Color.White
+    val alpha = if (style.enabled) 1f else 0.45f
+
     Box(
         modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(bgColor.copy(alpha = alpha))
+            .then(
+                if (style.enabled && !style.loading) {
+                    Modifier.clickable { onClick() }
+                } else Modifier
+            ),
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            Text(
-                text = stringResource(id = R.string.btn_central).uppercase(),
+        if (style.loading) {
+            CircularProgressIndicator(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 24.dp, bottom = 16.dp),
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.Bold
+                    .size(22.dp)
+                    .align(androidx.compose.ui.Alignment.Center),
+                color = contentColor,
+                strokeWidth = 2.dp
             )
-
-            Box(
+        } else {
+            Text(
+                text = style.text,
+                color = contentColor,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(6.dp)
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        CentralActionButton(
-                            text = stringResource(id = uiState.shortBreakButtonTextRes).uppercase(),
-                            enabled = uiState.shortBreakButtonEnabled,
-                            loading = uiState.shortBreakButtonLoading,
-                            background = when (uiState.shortBreakButtonColor) {
-                                ifac.td.taxi.viewmodel.ShortBreakButtonColor.Green -> Color(0xFF2E7D32)
-                                ifac.td.taxi.viewmodel.ShortBreakButtonColor.Red -> Color(0xFFC62828)
-                                ifac.td.taxi.viewmodel.ShortBreakButtonColor.Disabled -> Color(0xFF616161)
-                            },
-                            modifier = Modifier.weight(1f),
-                            onClick = onShortBreakClicked
-                        )
-
-                        CentralActionButton(
-                            text = if (uiState.voiceEnabled) {
-                                stringResource(id = R.string.btn_voice_request).uppercase()
-                            } else {
-                                stringResource(id = R.string.btn_cancel_voice_request).uppercase()
-                            },
-                            enabled = true,
-                            loading = false,
-                            background = if (uiState.voiceEnabled) Color(0xFF1E88E5) else Color(0xFFC62828),
-                            modifier = Modifier.weight(1f),
-                            onClick = onVoiceCallClicked
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        CentralActionButton(
-                            text = stringResource(id = R.string.btn_cancel).uppercase(),
-                            enabled = true,
-                            loading = false,
-                            background = Color(0xFF424242),
-                            modifier = Modifier.weight(1f),
-                            onClick = onCancelClicked
-                        )
-
-                        CentralActionButton(
-                            text = stringResource(id = R.string.btn_messages).uppercase(),
-                            enabled = uiState.hasPredefinedMessages,
-                            loading = false,
-                            background = if (uiState.hasPredefinedMessages) Color(0xFF2E7D32) else Color(0xFF616161),
-                            modifier = Modifier.weight(1f),
-                            onClick = onMessagesClicked
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Spacer(modifier = Modifier.weight(1f))
-
-                        CentralActionButton(
-                            text = stringResource(id = R.string.btn_information).uppercase(),
-                            enabled = true,
-                            loading = false,
-                            background = Color(0xFF1565C0),
-                            modifier = Modifier.weight(1f),
-                            onClick = onInformationClicked
-                        )
-                    }
-                }
-            }
-        }
-
-        when (val dialog = uiState.dialogState) {
-            is ContactCentralDialogState.VoiceRequestConfirm -> {
-                AlertDialog(
-                    onDismissRequest = onDialogDismissed,
-                    title = {
-                        Text(text = stringResource(id = dialog.titleRes))
-                    },
-                    text = {
-                        Text(text = stringResource(id = R.string.btn_voice_request))
-                    },
-                    confirmButton = {
-                        TextButton(onClick = onDialogAccept) {
-                            Text(text = stringResource(id = android.R.string.ok))
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = onDialogCancel) {
-                            Text(text = stringResource(id = android.R.string.cancel))
-                        }
-                    }
-                )
-            }
-
-            null -> Unit
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp)
+                    .wrapContentHeight(),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.labelLarge
+            )
         }
     }
 }
@@ -583,102 +665,80 @@ fun ContactCentralScreen(
 
 ---
 
-## 4) Simple reusable button composable
+# 7) Exact XML-behavior mapping notes
 
-This replaces the custom view-based button behavior with Compose.
+The fragment logic is preserved like this:
 
-```kotlin
-@Composable
-fun CentralActionButton(
-    text: String,
-    enabled: Boolean,
-    loading: Boolean,
-    background: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    androidx.compose.material3.Button(
-        onClick = onClick,
-        enabled = enabled && !loading,
-        modifier = modifier
-            .fillMaxSize(),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = background,
-            disabledContainerColor = Color(0xFF616161)
-        ),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Text(
-            text = if (loading) "..." else text,
-            textAlign = TextAlign.Center,
-            color = Color.White,
-            fontWeight = FontWeight.Bold
-        )
-    }
-}
-```
-
----
-
-## 5) Example NavGraph routes
-
-Since you asked for route-based navigation, here is a basic example.
-
-```kotlin
-object AppRoutes {
-    const val CONTACT_CENTRAL = "contact_central"
-    const val PREDEFINED_MESSAGES = "predefined_messages?fromCentral={fromCentral}&requestId={requestId}"
-    const val INFORMATION_MESSAGES = "information_messages"
-    const val SHORT_BREAK = "short_break"
-}
-```
-
-If you want to navigate with arguments:
-
-```kotlin
-navController.navigate("predefined_messages?fromCentral=true&requestId=-1")
-```
-
----
-
-## 6) Example screen registration
-
-```kotlin
-composable(AppRoutes.CONTACT_CENTRAL) {
-    val contactCentralViewModel: ContactCentralViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
-    val mainActivityViewModel: MainActivityViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
-
-    ContactCentralRoute(
-        navController = navController,
-        viewModel = contactCentralViewModel,
-        sharedViewModel = mainActivityViewModel,
-        onShowHeader = { show ->
-            // call your scaffold/header state here
-        }
-    )
-}
-```
-
----
-
-## Notes on behavior parity
-
-This refactor preserves the original intent:
-
-- **Cancel** → `navController.popBackStack()`
-- **Short break**
-  - if forced: show toast
-  - otherwise trigger action/navigation
+- **Cancel button**
+  - visible when not in the “special short break layout” state
+  - otherwise hidden
+- **Short break button**
+  - `IN_SHORT_BREAK` / `IN_SHORT_BREAK_FORCED`:
+    - text: `END SHORT BREAK`
+    - background: red
+    - enabled
+  - `CAN_START_SHORT_BREAK`:
+    - text: `SHORT BREAK`
+    - background: green
+    - enabled
+  - `SHORT_BREAK_DISABLED`:
+    - text: `SHORT BREAK`
+    - background: green
+    - disabled
+  - if location type is not `"Z"`:
+    - disabled
 - **Voice call**
-  - if voice active: show dialog
-  - else cancel request and go back
-- **Messages** → route navigation
-- **Information** → route navigation
-- **Button states** are derived from `UiState`, not direct view mutation
+  - if `voiceValue == true`: default background, text `VOICE REQUEST`
+  - else: red background, text `CANCEL VOICE REQUEST`
+- **Messages**
+  - enabled only when predefined messages exist
+- **Information**
+  - always enabled
+- **iTop taximeter**
+  - voice call disabled
+
+---
+
+# 8) If you want a more “pure Compose” dialog replacement for `CustomDialog.kt`
+
+If your old dialog also had button types and tags, you can expand the dialog model like this:
+
+```kotlin
+@Immutable
+data class CustomDialogUiModel(
+    val title: String,
+    val message: String? = null,
+    val buttons: List<CustomDialogButton> = emptyList()
+)
+
+enum class CustomDialogButtonType {
+    CANCEL, ACCEPT
+}
+
+@Immutable
+data class CustomDialogButton(
+    val type: CustomDialogButtonType,
+    val text: String,
+)
+```
+
+Then render buttons conditionally in Compose.
+
+---
+
+# 9) Practical integration suggestion
+
+To preserve navigation exactly like the fragment, use the composable inside a Fragment-hosted ComposeView, or directly in a Compose NavHost route, but keep the navigation destinations the same:
+
+- `actionContactCentralFragmentToPredefinedMessageFragment`
+- `actionContactCentralFragmentToInformationMessageFragment`
+
+If you’re migrating incrementally, the Fragment can simply become a `ComposeView` host while still using the same nav graph.
 
 ---
 
 If you want, I can also provide:
-1. a **cleaner production-ready version** with separated `UiState`, `UiEvent`, `UiAction`,  
-2. a **Navigation Compose graph** for all routes, or  
-3. a version that uses your **existing Koin setup**.
+
+1. a **full Fragment wrapper** using `ComposeView` while preserving your existing `BaseFragment`
+2. a **version that uses your existing `MainActivityViewModel` as the shared state source**
+3. a **more exact Material/shape replica** of your `CustomButton` and `CustomDialog` XML style.

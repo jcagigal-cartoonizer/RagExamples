@@ -1,58 +1,43 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.shared.utils.ApiKeys;
+import com.cartoonizer.rag.shared.utils.FragmentAnswerProcessor;
+import com.cartoonizer.rag.shared.utils.FragmentQuestionsProcessor;
 import com.cartoonizer.rag.shared.utils.ModelNames;
 import com.cartoonizer.rag.shared.utils.Utils;
 import java.io.File;
 
 public class SimpleExampleOpenAi {
 
+//    public static final String PREFIX = "InfoDispatch";
+//    public static final String LAYOUT = "fragment_info_dispatch.xml";
+    public static String PREFIX = "ContactCentral";
+    public static String LAYOUT = "fragment_contact_central.xml";
+    public static String[] PREFIXES = {
+            "ContactCentral",
+            "Dashboard",
+            "Home",
+            "InfoDispatch",
+            "DispatchReceived",
+            "LoginUser",
+        };
+        public static String[] LAYOUTS = {
+            "fragment_contact_central.xml",
+            "fragment_dashboard.xml",
+            "fragment_home.xml",
+            "fragment_info_dispatch.xml",
+            "fragment_dispatch_received.xml",
+            "fragment_login_user.xml",
+        };
     public static void main(String[] args) {
-        String documentsPath = "./example-files";
-        String fileToGenerate = "HomeFragment";
-        String answerPath = "./output-files/" + fileToGenerate + ".txt";
-        String processedAnswerPath = "./processed-files/processed-" + fileToGenerate + ".txt";
-        
-        String pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
-        String pathViewModel = documentsPath  + "/HomeViewModel.kt";
-        String pathLayout = documentsPath  + "/fragment_home.xml";
-        String pathSharedViewModel = documentsPath  + "/MainActivityViewModel.kt";
-        
-        String savedViewClass = Utils.readFullFile(pathForViewClass);
-        String savedViewModel = Utils.readFullFile(pathViewModel);
-        String savedLayout = Utils.readFullFile(pathLayout);
-        String savedSharedViewModel = Utils.readFullFile(pathSharedViewModel);
-        
-        File f = new File(documentsPath);
-        if (f.exists()) {
-            System.out.println("Before setup ");
-            OpenAiChat chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
-            chat.setup();
-            String[] questions = {
-            "1. provide a jetpack Compose composable that implements the following jetpack views class class \n" +
-            savedViewClass +
-            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" +
-            savedViewModel +
-            "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
-            "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
-            "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
-            "6. provide a full `HomeButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<HomeUiEffect>` instead of multiple event types\n" +
-            "7. Provide a compose CustomDialog implementation based on the custom_dialog.xml file and the dialog implemented in the CustomDialog.kt file " +
-            "8. Provide also a `HomeButtonsState` with exact Compose button styling helpers matching the custom button component more closely" +
-            "\nUse only android and jetpack compose references"
-
-            };
-//            - provide Jetpack Compose Modifier extensions that implement the properties of the android xml styles file styles.xml
-//            - provide a jetpack compose composable function that implements the following layout xml file used in Jetpack Views using those Compose Theme and Modifiers
-            String[] answers = new String[questions.length];
-            for (int i = 0; i < questions.length; i++) {
-                System.out.println("\n\n****************************************************************************************");
-                String question = questions[i];
-                System.out.println("QUESTION: " + question);
-                answers[i] = chat.askQuestion(question, 3, 0.7);
-                System.out.println("ANSWER: " + answers[i]);
+        for (int i = 0; i < LAYOUTS.length; i++) {
+            LAYOUT = LAYOUTS[i];
+            PREFIX = PREFIXES[i];
+            FragmentQuestionsProcessor.askQuestions();
+            try {
+                Thread.sleep(10000);
+            } catch (InterruptedException ex) {
             }
-            System.out.println("\n\n****************************************************************************************");
         }
     }
 

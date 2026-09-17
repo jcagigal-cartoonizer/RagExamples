@@ -1,6 +1,7 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.shared.utils.FragmentQuestionsProcessor;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 
 public class SimpleExampleOpenAi {
 
@@ -28,6 +29,9 @@ public class SimpleExampleOpenAi {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
+            if (!PREFIX.equals(ONLY_THIS)) {
+                continue;
+            }
             FragmentQuestionsProcessor.askQuestions();
             try {
                 Thread.sleep(10000);

@@ -4,6 +4,8 @@ import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.LAYOUT;
 import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.LAYOUTS;
 import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIX;
 import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIXES;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FILE_NAME;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -17,12 +19,17 @@ public class GenerateComposeFiles {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if (!PREFIX.equals("InfoDispatch")) {
+            if (!PREFIX.equals(ONLY_THIS)) {
                 continue;
             }
-            String processedAnswerPath = "./processed-files/processed-" + PREFIX + "Fragment.txt";
+            FILE_NAME = PREFIX + "Fragment.txt";
+            String answerPath = "./output-files/" + FILE_NAME;
+            String processedAnswerPath = "./processed-files/processed-" + FILE_NAME;
+            GeneralAnswerProcessor answerProcessor = new GeneralAnswerProcessor(answerPath, processedAnswerPath);
+            answerProcessor.load();
+            
 //            System.out.println("GenerateFiles from " + processedAnswerPath);
-            GenerateFiles reader = new GenerateFiles(processedAnswerPath, PREFIX);
+            GenerateFiles reader = new GenerateFiles(answerProcessor, processedAnswerPath, PREFIX);
             reader.load();
         }
     }
@@ -37,9 +44,11 @@ public class GenerateComposeFiles {
         private boolean insideDialogStateLet;
         private boolean canOpenPendingTrips;
         private IGeneralBlocks iface;
+        private GeneralAnswerProcessor answerProcessor;
 
-        public GenerateFiles(String processedAnswerPath, String prefix) {
+        public GenerateFiles(GeneralAnswerProcessor answerProcessor, String processedAnswerPath, String prefix) {
             super(processedAnswerPath);
+            this.answerProcessor = answerProcessor;
         }
         public HashMap<String, String> imports = new HashMap<>();
         public HashMap<String, String> lines = new HashMap<>();
@@ -161,38 +170,11 @@ public class GenerateComposeFiles {
             print("import androidx.compose.runtime.remember");
             print("import ifac.td.taxi.R");
             if (path.contains("ViewModel")) {
-                print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiEvent");
-                print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiEffect");
-                print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiState");
                 print("import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl");
                 print("import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip");
-                if (PREFIX.equals("Dashboard")) {
-                    print("import ifac.td.taxi.ui.screen.state.DashboardDialogState");
-                    print("import ifac.td.taxi.ui.screen.state.DashboardButtonsState");
-                } else {
-//                    print("import ifac.td.taxi.ui.screen.state.ComposeButtonState");
-//                    print("import ifac.td.taxi.ui.screen.state.MessageUiState");
-                }
             }
             if (path.endsWith("Screen.kt")) {
-                print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiEffect");
                 print("import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel");
-                print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiEvent");
-                print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiState");
-                print("import ifac.td.taxi.ui.screen.state.ActionButtonState");
-                print("import ifac.td.taxi.ui.screen.state.ButtonBackground");
-                if (path.contains("Dashboard")) {
-                    print("import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogState");
-                    print("import ifac.td.taxi.ui.screen.state." + PREFIX + "HeaderState");
-                    print("import ifac.td.taxi.ui.screen.state." + PREFIX + "ButtonsState");
-                    print("import ifac.td.taxi.ui.screen.state." + PREFIX + "ButtonConfig");
-                }
-            }
-            if (path.contains("DialogState")) {
-                print("import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel");
-                print("import ifac.td.taxi.ui.screen." + PREFIX + "Screen");
-                print("import ifac.td.taxi.ui.screen.ComposeButtonBackground");
-                print("import ifac.td.taxi.ui.screen.ComposeButtonConfig");
             }
             if (path.contains("CustomDialog")) {
                 print("import androidx.compose.ui.window.Dialog");
@@ -240,20 +222,20 @@ public class GenerateComposeFiles {
         }
 
         private String processBlocks(IGeneralBlocks iface, String line) {
-            for (int i = 0; i < iface.getBLOCKS().length; i++) {
+            for (int i = 0; i < answerProcessor.blocksList.length; i++) {
                 if (line.trim().startsWith("This ") || line.trim().startsWith("You ") || line.trim().startsWith("Single ") || 
-                        line.contains("Note: ") || line.trim().startsWith("- ") || line.trim().startsWith("Only one ")) {
+                        line.contains("Note: ") || line.trim().startsWith("- ") || line.trim().startsWith("Only one ") || line.trim().startsWith("Use ")) {
                     line = "// " + line;
                 }
-                if (line.trim().contains(iface.getBLOCKS()[i])) {
+                if (line.trim().contains(answerProcessor.blocksList[i])) {
                     line = "// " + line;
                     printAlways = true;
                     if (outputPath != null && !outputPath.isEmpty()) {
                         closeFile();
                     }
-                    outputPath = iface.getFILES()[i];
-                    System.out.println("*** processBlocks call openFile " + outputPath + " block = " + iface.getBLOCKS()[i]);
-                    openFile(outputPath, iface.getPACKAGES()[i]);
+                    outputPath = answerProcessor.blockFilesList[i];
+                    System.out.println("*** processBlocks call openFile " + outputPath + " block = " + answerProcessor.blocksList[i]);
+                    openFile(outputPath, answerProcessor.packagesArray[i]);
                 }
             }
             return line;
@@ -287,33 +269,33 @@ public class GenerateComposeFiles {
                 if (line.contains(PREFIX + "ComposeViewModel") && !line.startsWith("import ") && !outputPath.contains("ComposeViewModel")) {
                         String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                 } else if (line.contains(PREFIX + "CustomDialog") && !line.startsWith("import ")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.components." + PREFIX + "CustomDialog";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                 } else if (line.contains(PREFIX + "Screen") && !line.startsWith("import ")) {
                         String lineImport = "import ifac.td.taxi.ui.screen." + PREFIX + "Screen";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                 } else if ((line.contains(PREFIX + "DialogState") || line.contains(PREFIX + "DialogType") || line.contains(PREFIX + "ButtonsState") || line.contains(PREFIX + "Buttons")) &&
                         !line.startsWith("import ")) {
                     if (line.contains(PREFIX + "DialogState")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogState";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                     } else if (line.contains(PREFIX + "DialogType")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogType";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                     } else if (line.contains(PREFIX + "ButtonsState")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "ButtonsState";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                     } else if (line.contains(PREFIX + "Buttons")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "Buttons";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        internalImports.put(lineImport, lineImport);
+                        // internalImports.put(lineImport, lineImport);
                     }
                 }
             }

@@ -2,7 +2,7 @@ package com.cartoonizer.rag.shared.utils;
 
 import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIX;
 
-public class GeneralBlocks implements IGeneralBlocks {
+public class LoginUserBlocks implements IGeneralBlocks {
 // # 1) Compose screen for `DispatchReceivedFragment`
 // # 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
 // # 3) `UiState`, `UiEvent`, `UiEffect`, dialog state, button state
@@ -30,7 +30,7 @@ public class GeneralBlocks implements IGeneralBlocks {
 
     @Override
     public String getEndTag() {
-        return "# 7) ";
+        return "# 6) ";
     } 
     @Override
     public String[] getBLOCKS() {

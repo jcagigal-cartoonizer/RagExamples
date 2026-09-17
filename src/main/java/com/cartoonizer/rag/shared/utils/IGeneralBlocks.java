@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.shared.utils;
 
-interface IGeneralBlocks {
+public interface IGeneralBlocks {
     String[] getBLOCKS();
     String[] getFILES();
     String[] getPACKAGES();

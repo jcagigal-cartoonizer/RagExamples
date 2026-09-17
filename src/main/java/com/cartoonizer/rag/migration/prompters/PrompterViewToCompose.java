@@ -4,7 +4,7 @@
  */
 package com.cartoonizer.rag.migration.prompters;
 
-import com.cartoonizer.rag.shared.utils.ProcessAnswerFile.FragmentAnswerProcessor.AnswerProcessor;
+import com.cartoonizer.rag.old.ProcessAnswerFileOld.FragmentAnswerProcessor.AnswerProcessor;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.segment.TextSegment;

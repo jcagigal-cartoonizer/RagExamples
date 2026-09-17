@@ -6,153 +6,178 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import ifac.td.taxi.ui.screen.state.InfoDispatchUiEvent
-import ifac.td.taxi.ui.screen.state.InfoDispatchUiState
-import ifac.td.taxi.ui.screen.state.MessageUiState
-import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl
-import ifac.td.taxi.ui.screen.state.DashboardDialogState
-import ifac.td.taxi.ui.screen.state.DashboardButtonsState
-import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
-import ifac.td.taxi.ui.screen.state.ComposeButtonState
 import ifac.td.taxi.ui.screen.state.InfoDispatchUiEffect
-// // ## `InfoDispatchComposeViewModel.kt`
+import ifac.td.taxi.ui.screen.state.InfoDispatchUiState
+import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+// // # 4) Compose ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+// This keeps the logic centralized and Compose-friendly.
 
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
 import ifac.td.taxi.framework.sdk.usecase.PhoneCallUseCaseImpl
-import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import ifac.td.taxi.ui.screen.infodispatch.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 class InfoDispatchComposeViewModel(
     application: Application,
-    private val legacyVm: ifac.td.taxi.viewmodel.InfoDispatchViewModel
+    // inject your existing dependencies here
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(InfoDispatchUiState())
     val uiState: StateFlow<InfoDispatchUiState> = _uiState.asStateFlow()
 
-    private val _effects = MutableSharedFlow<InfoDispatchUiEffect>()
-    val effects: SharedFlow<InfoDispatchUiEffect> = _effects.asSharedFlow()
-
-    fun bindDispatch(dispatch: InfoDispatchModel?) {
-        _uiState.update { current ->
-            current.copy(
-                dispatch = dispatch,
-                buttons = current.buttons.copy(
-                    notifications = current.buttons.notifications.copy(
-                        visible = true
-                    )
-                )
-            )
-        }
-        dispatch?.let { dispatch ->
-            refreshButtons(dispatch)
-            refreshDetails(dispatch)
-        }
-    }
+    private val _uiEffect = MutableSharedFlow<InfoDispatchUiEffect>()
+    val uiEffect: SharedFlow<InfoDispatchUiEffect> = _uiEffect.asSharedFlow()
 
     fun onEvent(event: InfoDispatchUiEvent) {
         when (event) {
-            InfoDispatchUiEvent.NavigateClicked -> {
-                viewModelScope.launch { _effects.emit(InfoDispatchUiEffect.NavigateToDirections) }
+            InfoDispatchUiEvent.OnBackPressed -> emitEffect(InfoDispatchUiEffect.NavigateToHome)
+            InfoDispatchUiEvent.OnNavigateDirections -> emitEffect(InfoDispatchUiEffect.NavigateToDirections)
+            InfoDispatchUiEvent.OnNavigateMeetingSign -> {
+                val colors = _uiState.value.meetingSignColors
+                emitEffect(InfoDispatchUiEffect.NavigateToMeetingSign(colors.first, colors.second))
             }
-
-            InfoDispatchUiEvent.VoiceCallClicked -> {
-                val dispatch = uiState.value.dispatch ?: return
-                legacyVm.stopTTS()
-                legacyVm.startCall(dispatch.customerPhoneNumber ?: "")
+            InfoDispatchUiEvent.OnClickNotifications -> handleNotifications()
+            InfoDispatchUiEvent.OnClickVoiceCall -> handleVoiceCall()
+            InfoDispatchUiEvent.OnClickPrint -> { /* call print use case */ }
+            InfoDispatchUiEvent.OnClickNoClient -> handleNoClient()
+            InfoDispatchUiEvent.OnClickReturn -> { /* open dialog via effect */ }
+            InfoDispatchUiEvent.OnClickFlightCode -> {
+                val colors = _uiState.value.meetingSignColors
+                emitEffect(InfoDispatchUiEffect.NavigateToMeetingSign(colors.first, colors.second))
             }
+            is InfoDispatchUiEvent.OnTabSelected -> selectTab(event.index)
+            is InfoDispatchUiEvent.OnDialogButtonClicked -> handleDialogAction(event.button)
+        }
+    }
 
-            InfoDispatchUiEvent.PrintClicked -> {
-                uiState.value.dispatch?.let { legacyVm.printInfoDispatch(it) }
+    fun emitEffect(effect: InfoDispatchUiEffect) {
+        viewModelScope.launch { _uiEffect.emit(effect) }
+    }
+
+    fun updateState(reducer: (InfoDispatchUiState) -> InfoDispatchUiState) {
+        _uiState.update(reducer)
+    }
+
+    fun handleNotifications() {
+        val dispatch = _uiState.value.dispatch ?: return
+        val atDoor = dispatch.isAtDoorNotificationEnabled && !dispatch.isAtDoorNotificationSent
+        val rider = dispatch.riderInCab && !dispatch.isRiderInCabNotificationSent
+
+        when {
+            atDoor && rider -> {
+                emitEffect(
+                    InfoDispatchUiEffect.OpenDialog(
+                        InfoDispatchDialogState(
+                            type = DialogType.SELECT_NOTIFICATION,
+                            title = "Select notification",
+                            description = buildDispatchDescription(dispatch),
+                            buttons = listOf(
+                                DialogButton(DialogButtonType.AT_DOOR, "AT DOOR"),
+                                DialogButton(DialogButtonType.RIDER_IN_CAB, "RIDER IN CAB")
+                            )
+                        )
+                    )
+                )
             }
+            atDoor -> {
+                emitEffect(
+                    InfoDispatchUiEffect.OpenDialog(
+                        InfoDispatchDialogState(
+                            type = DialogType.SELECT_NOTIFICATION,
+                            title = "Select notification",
+                            description = buildDispatchDescription(dispatch),
+                            buttons = listOf(DialogButton(DialogButtonType.AT_DOOR, "AT DOOR"))
+                        )
+                    )
+                )
+            }
+            rider -> {
+                emitEffect(
+                    InfoDispatchUiEffect.OpenDialog(
+                        InfoDispatchDialogState(
+                            type = DialogType.SELECT_NOTIFICATION,
+                            title = "Select notification",
+                            description = buildDispatchDescription(dispatch),
+                            buttons = listOf(DialogButton(DialogButtonType.RIDER_IN_CAB, "RIDER IN CAB"))
+                        )
+                    )
+                )
+            }
+        }
+    }
 
-            InfoDispatchUiEvent.NoClientClicked -> {
-                _uiState.update { it.copy(dialogState = InfoDispatchDialogState(
-                    visible = true,
+    fun handleVoiceCall() {
+        val dispatch = _uiState.value.dispatch ?: return
+        if (dispatch.isBridgeCall) {
+            when (_uiState.value.bridgeCallState) {
+                0 -> updateState { it.copy(buttons = it.buttons.copy(voiceCall = ComposeButtonState.loading())) }
+                1, 2 -> { /* cancel bridge call */ }
+            }
+        } else {
+            if (dispatch.customerPhoneNumber.isBlank()) return
+            emitEffect(InfoDispatchUiEffect.OpenExternalPhoneCall(dispatch.customerPhoneNumber))
+        }
+    }
+
+    fun handleNoClient() {
+        emitEffect(
+            InfoDispatchUiEffect.OpenDialog(
+                InfoDispatchDialogState(
+                    type = DialogType.CONFIRM_NO_CLIENT,
                     title = "Confirm no client",
-                    description = "",
-                    buttons = listOf(InfoDispatchDialogAction.CANCEL, InfoDispatchDialogAction.ACCEPT)
-                )) }
-            }
-
-            InfoDispatchUiEvent.ReturnClicked -> {
-                _uiState.update { it.copy(dialogState = InfoDispatchDialogState(
-                    visible = true,
-                    title = "Return dispatch",
-                    description = "Confirm change to hired",
-                    buttons = listOf(InfoDispatchDialogAction.CANCEL, InfoDispatchDialogAction.ACCEPT)
-                )) }
-            }
-
-            InfoDispatchUiEvent.NotificationsClicked -> {
-                _uiState.update { it.copy(dialogState = InfoDispatchDialogState(
-                    visible = true,
-                    title = "Select notification",
-                    description = "",
-                    buttons = listOf(InfoDispatchDialogAction.AT_DOOR, InfoDispatchDialogAction.RIDER_IN_CAB)
-                )) }
-            }
-
-            InfoDispatchUiEvent.DismissDialog -> {
-                _uiState.update { it.copy(dialogState = InfoDispatchDialogState()) }
-            }
-
-            is InfoDispatchUiEvent.SelectDispatchTab -> Unit
-            is InfoDispatchUiEvent.DialogAction -> onDialogAction(event.action)
-        }
-    }
-
-    fun onDialogAction(action: InfoDispatchDialogAction) {
-        val dispatch = uiState.value.dispatch
-        when (action) {
-            InfoDispatchDialogAction.CANCEL -> onEvent(InfoDispatchUiEvent.DismissDialog)
-            InfoDispatchDialogAction.ACCEPT -> {
-                // host decides depending on dialog context
-                onEvent(InfoDispatchUiEvent.DismissDialog)
-            }
-            InfoDispatchDialogAction.AT_DOOR -> {
-                dispatch?.let { legacyVm.sendAtTheDoorNotification(it) }
-                onEvent(InfoDispatchUiEvent.DismissDialog)
-            }
-            InfoDispatchDialogAction.RIDER_IN_CAB -> {
-                dispatch?.let { legacyVm.sendInCabNotification(it) }
-                onEvent(InfoDispatchUiEvent.DismissDialog)
-            }
-        }
-    }
-
-    private fun refreshButtons(dispatch: InfoDispatchModel) {
-        val hasAtDoorAction = dispatch.isAtDoorNotificationEnabled() && dispatch.isAtDoorNotificationSent == false
-        val hasRiderInCabAction = (dispatch.riderInCab ?: false) && dispatch.isRiderInCabNotificationSent == false
-
-        val notificationsState = when {
-            hasAtDoorAction && hasRiderInCabAction -> ButtonUiState(true, true, ButtonStyleUi.Enabled, ButtonBackgroundUi.Blue, "AVISOS")
-            !hasAtDoorAction && hasRiderInCabAction -> ButtonUiState(true, true, ButtonStyleUi.Enabled, ButtonBackgroundUi.Green, "RIDER IN CAB")
-            hasAtDoorAction -> ButtonUiState(true, true, ButtonStyleUi.Enabled, ButtonBackgroundUi.Orange, "AT DOOR")
-            else -> ButtonUiState(true, false, ButtonStyleUi.Disabled, ButtonBackgroundUi.Gray, "AVISOS")
-        }
-
-        _uiState.update {
-            it.copy(
-                buttons = it.buttons.copy(
-                    notifications = notificationsState,
-                    noClient = it.buttons.noClient.copy(visible = true),
-                    voiceCall = it.buttons.voiceCall.copy(visible = true),
-                    returnDispatch = it.buttons.returnDispatch.copy(visible = true),
-                    print = it.buttons.print.copy(visible = true),
-                    navigate = it.buttons.navigate.copy(visible = true),
+                    buttons = listOf(
+                        DialogButton(DialogButtonType.CANCEL, "CANCEL"),
+                        DialogButton(DialogButtonType.ACCEPT, "ACCEPT")
+                    )
                 )
             )
+        )
+    }
+
+    fun handleDialogAction(button: DialogButtonType) {
+        when (button) {
+            DialogButtonType.CANCEL -> emitEffect(InfoDispatchUiEffect.CloseDialog)
+            DialogButtonType.ACCEPT -> emitEffect(InfoDispatchUiEffect.CloseDialog)
+            DialogButtonType.AT_DOOR -> emitEffect(InfoDispatchUiEffect.CloseDialog)
+            DialogButtonType.RIDER_IN_CAB -> emitEffect(InfoDispatchUiEffect.CloseDialog)
         }
     }
 
-    private fun refreshDetails(dispatch: InfoDispatchModel) {
-        _uiState.update { it.copy(details = listOfNotNull(dispatch.pickUpAdress, dispatch.destinyAdress?.joinToString("\n"))) }
+    fun selectTab(index: Int) {
+        val dispatch = _uiState.value.multiDispatch.getOrNull(index) ?: return
+        // update selected dispatch in repo/use case
+        updateState { it.copy(selectedTabIndex = index) }
     }
+
+    fun buildDispatchDescription(dispatch: InfoDispatchUiModel): String =
+        listOf(dispatch.dispatchName.orEmpty(), dispatch.pickUpAdress.orEmpty(), dispatch.longDispatchNumber.orEmpty())
+            .joinToString("\n")
 }
 
+data class InfoDispatchUiModel(
+    val id: Long,
+    val dispatchName: String? = null,
+    val pickUpAdress: String? = null,
+    val longDispatchNumber: String = "",
+    val customerPhoneNumber: String = "",
+    val isBridgeCall: Boolean = false,
+    val isAtDoorNotificationEnabled: Boolean = false,
+    val isAtDoorNotificationSent: Boolean = false,
+    val riderInCab: Boolean = false,
+    val isRiderInCabNotificationSent: Boolean = false
+)
 
-// // # 9) Navigation preservation
+data class DispatchExtraUiModel(
+    val externalTripId: Int = 0,
+    val tolls: Int? = null,
+    val customerRequirements: String? = null
+)
+
+

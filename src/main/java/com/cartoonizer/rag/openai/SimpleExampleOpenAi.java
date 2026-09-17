@@ -1,11 +1,6 @@
 package com.cartoonizer.rag.openai;
 
-import com.cartoonizer.rag.shared.utils.ApiKeys;
-import com.cartoonizer.rag.shared.utils.FragmentAnswerProcessor;
 import com.cartoonizer.rag.shared.utils.FragmentQuestionsProcessor;
-import com.cartoonizer.rag.shared.utils.ModelNames;
-import com.cartoonizer.rag.shared.utils.Utils;
-import java.io.File;
 
 public class SimpleExampleOpenAi {
 
@@ -14,16 +9,16 @@ public class SimpleExampleOpenAi {
     public static String PREFIX = "ContactCentral";
     public static String LAYOUT = "fragment_contact_central.xml";
     public static String[] PREFIXES = {
-            "ContactCentral",
             "Dashboard",
+            "ContactCentral",
             "Home",
             "InfoDispatch",
             "DispatchReceived",
             "LoginUser",
         };
         public static String[] LAYOUTS = {
-            "fragment_contact_central.xml",
             "fragment_dashboard.xml",
+            "fragment_contact_central.xml",
             "fragment_home.xml",
             "fragment_info_dispatch.xml",
             "fragment_dispatch_received.xml",

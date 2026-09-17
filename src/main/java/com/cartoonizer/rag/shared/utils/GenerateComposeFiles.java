@@ -12,12 +12,16 @@ import java.util.Map.Entry;
 import java.util.regex.Pattern;
 
 public class GenerateComposeFiles {
-
+    //Revisar: solo procesa Home
     public static void main(String[] args) {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
+            if (!PREFIX.equals("InfoDispatch")) {
+                continue;
+            }
             String processedAnswerPath = "./processed-files/processed-" + PREFIX + "Fragment.txt";
+//            System.out.println("GenerateFiles from " + processedAnswerPath);
             GenerateFiles reader = new GenerateFiles(processedAnswerPath, PREFIX);
             reader.load();
         }
@@ -67,12 +71,6 @@ public class GenerateComposeFiles {
             if (printAlways) {
 //                    System.out.println(line);
 // R.string. navigate -> btn_navegar
-                if (line.contains("R.string.abrevZone")) {
-                    line = line.replaceAll(Pattern.quote("R.string.abrevZone"), "R.string.abrevUbZona");
-                }
-                if (line.contains("R.string.abrevStop")) {
-                    line = line.replaceAll(Pattern.quote("R.string.abrevStop"), "R.string.abrevUbParada");
-                }
                 if (line.contains("R.string.btn_notifications")) {
                     line = line.replaceAll(Pattern.quote("R.string.btn_notifications"), "R.string.btn_avisos");
                 }
@@ -135,23 +133,22 @@ public class GenerateComposeFiles {
 // End processing
             if (line.trim().contains(iface.getEndTag())) {
                 printAlways = false;
-                closeFile();
             }
         }
 
         @Override
         public void end() {
             super.end();
-            closeFile();
+            if (writer != null) {
+                closeFile();
+            }
         }
 
         private void closeFile() {
-            System.out.println("*** closeFile " + outputPath + " writer " + (writer == null ? " IS NULL" : " NOT NULL"));
-            if (secondPass != null) {
+            System.out.println("*** closeFile outputPath " + outputPath + " writer " + (writer == null ? " IS NULL" : " NOT NULL"));
+            if (secondPass != null && writer != null) {
                 secondPass.printAll(lines, orderedLines);
             }
-            lines.clear();
-            orderedLines.clear();
             if (writer != null) {
                 writer.close();
             }
@@ -168,12 +165,13 @@ public class GenerateComposeFiles {
                 print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiEffect");
                 print("import ifac.td.taxi.ui.screen.state." + PREFIX + "UiState");
                 print("import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl");
+                print("import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip");
+                if (PREFIX.equals("Dashboard")) {
                     print("import ifac.td.taxi.ui.screen.state.DashboardDialogState");
                     print("import ifac.td.taxi.ui.screen.state.DashboardButtonsState");
-                print("import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip");
-                if (!PREFIX.equals("Dashboard")) {
-                    print("import ifac.td.taxi.ui.screen.state.ComposeButtonState");
-                    print("import ifac.td.taxi.ui.screen.state.MessageUiState");
+                } else {
+//                    print("import ifac.td.taxi.ui.screen.state.ComposeButtonState");
+//                    print("import ifac.td.taxi.ui.screen.state.MessageUiState");
                 }
             }
             if (path.endsWith("Screen.kt")) {
@@ -207,8 +205,13 @@ public class GenerateComposeFiles {
             if (path != null && !path.isEmpty()) {
                 try {
                     outputPath = path;
+                    if (writer != null) {
+                        closeFile();
+                    }
                     writer = new PrintWriter(outputPath);
                     secondPass = new SecondPass(writer, outputPath);
+                    lines.clear();
+                    orderedLines.clear();
                     print("package " + packageName);
                     for (Map.Entry<String, String> entry : secondPass.internalImports.entrySet()) {
                         print(entry.getKey());
@@ -249,7 +252,7 @@ public class GenerateComposeFiles {
                         closeFile();
                     }
                     outputPath = iface.getFILES()[i];
-                    System.out.println("*** openFile " + outputPath + " block = " + iface.getBLOCKS()[i]);
+                    System.out.println("*** processBlocks call openFile " + outputPath + " block = " + iface.getBLOCKS()[i]);
                     openFile(outputPath, iface.getPACKAGES()[i]);
                 }
             }
@@ -279,37 +282,37 @@ public class GenerateComposeFiles {
         }
 
         private void addImportForInternalVars(HashMap<String, String> lines, ArrayList<String> orderedLines) {
-            System.out.println("==> addImportForInternalVars " + outputPath + " orderedLines  " + orderedLines.size());
+//            System.out.println("==> addImportForInternalVars " + outputPath + " orderedLines  " + orderedLines.size());
             for (String line : orderedLines) {
                 if (line.contains(PREFIX + "ComposeViewModel") && !line.startsWith("import ") && !outputPath.contains("ComposeViewModel")) {
                         String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                 } else if (line.contains(PREFIX + "CustomDialog") && !line.startsWith("import ")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.components." + PREFIX + "CustomDialog";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                 } else if (line.contains(PREFIX + "Screen") && !line.startsWith("import ")) {
                         String lineImport = "import ifac.td.taxi.ui.screen." + PREFIX + "Screen";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                 } else if ((line.contains(PREFIX + "DialogState") || line.contains(PREFIX + "DialogType") || line.contains(PREFIX + "ButtonsState") || line.contains(PREFIX + "Buttons")) &&
                         !line.startsWith("import ")) {
                     if (line.contains(PREFIX + "DialogState")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogState";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                     } else if (line.contains(PREFIX + "DialogType")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogType";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                     } else if (line.contains(PREFIX + "ButtonsState")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "ButtonsState";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                     } else if (line.contains(PREFIX + "Buttons")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "Buttons";
-                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
                         internalImports.put(lineImport, lineImport);
                     }
                 }
@@ -318,7 +321,7 @@ public class GenerateComposeFiles {
 
         private void printAll(HashMap<String, String> lines, ArrayList<String> orderedLines) {
             addImportForInternalVars(lines, orderedLines);
-            System.out.println("*** printAll " + outputPath + " orderedLines  " + orderedLines.size());
+//            System.out.println("*** printAll " + outputPath + " orderedLines  " + orderedLines.size());
             for (String line : orderedLines) {
                 if (line.trim().startsWith("import ")) {
                     String val = internalImports.get(line);
@@ -329,7 +332,7 @@ public class GenerateComposeFiles {
                             addedImports.put(line, line);
                         }
                     } else {
-                        System.out.println("*** printAll interrnal " + val + " added  " + added);
+//                        System.out.println("*** printAll interrnal " + val + " added  " + added);
                         if (added == null) {
                             addedImports.put(line, line);
                         }

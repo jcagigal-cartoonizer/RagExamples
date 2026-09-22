@@ -1,11 +1,10 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 197-3: import androidx.compose.foundation.layout.*
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -13,7 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-// import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
 import ifac.td.taxi.ui.custom.button.ButtonType
 import ifac.td.taxi.viewmodel.MessagesViewModel
 import kotlinx.coroutines.flow.collectLatest

@@ -4,9 +4,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 39-2: import androidx.compose.runtime.Immutable
-// import androidx.compose.runtime.Immutable
-// // import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
 @Immutable
 data class LoginUserRedSysButtonsState(
     val cancelVisible: Boolean = true,
@@ -39,8 +38,6 @@ data class LoginUserRedSysButtonsState(
         )
     }
 }
-// // # Block 78-3: import androidx.compose.ui.graphics.Color
-// // import androidx.compose.ui.graphics.Color
 object LoginUserRedSysButtonStyles {
     val Green = Color(0xFF2E7D32)
     val GreenDisabled = Color(0xFFA5D6A7)

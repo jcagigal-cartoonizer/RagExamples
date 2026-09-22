@@ -1,10 +1,10 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 @Composable
-fun FixedPriceFixedPriceCustomDialog(
+fun FixedPriceCustomDialog(
     title: String,
     message: String,
     positiveText: String,
@@ -68,4 +68,3 @@ fun FixedPriceFixedPriceCustomDialog(
         }
     }
 }
-// // # Block 509-4: import androidx.compose.foundation.layout.*

@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
 @Immutable
 data class ChangeUserPasswordUiState(
     val currentPassword: String = "",
@@ -29,8 +29,6 @@ data class ChangeUserPasswordDialogState(
 enum class ChangeUserPasswordDialogButton {
     Accept
 }
-// // # Block 35-2: import androidx.compose.runtime.Immutable
-// // import androidx.compose.runtime.Immutable
 @Immutable
 data class ChangeUserPasswordButtonsState(
     val accept: ButtonAppearance = ButtonAppearance.Primary,

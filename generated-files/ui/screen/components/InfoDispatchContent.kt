@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -32,13 +32,10 @@ fun InfoDispatchScreen(
                     navController.navigate(/* meeting sign route */ "meeting_sign/${effect.textColor}/${effect.backgroundColor}")
                 }
                 InfoDispatchUiEffect.RequestPhonePermission -> {
-                    // launch permission flow from host if desired
                 }
                 is InfoDispatchUiEffect.ShowToast -> {
-                    // host-side toast/snackbar handling
                 }
                 is InfoDispatchUiEffect.OpenExternalPhoneCall -> {
-                    // use host / activity to start phone intent
                 }
                 is InfoDispatchUiEffect.OpenDialog -> dialogState = effect.dialog
                 InfoDispatchUiEffect.CloseDialog -> dialogState = null
@@ -66,10 +63,8 @@ fun InfoDispatchScreen(
         )
     }
 }
-// // # Block 420-6: import androidx.compose.foundation.layout.*
-// // import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-// import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Composable
 @Composable
 fun InfoDispatchContent(
     modifier: Modifier = Modifier,
@@ -94,7 +89,6 @@ fun InfoDispatchContent(
             }
         }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            // Dispatch fields here
         }
     }
 }

@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
 import ifac.td.taxi.domain.usecase.PendingTripsUseCase
 import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
 import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase

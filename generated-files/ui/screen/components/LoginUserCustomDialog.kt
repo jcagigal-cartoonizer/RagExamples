@@ -5,7 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -55,8 +55,6 @@ fun LoginUserRoute(
                     ).show()
                 }
                 LoginUserUiEffect.StartBravoService -> {
-                    // Preserved from fragment behavior. Call your activity hook here if needed.
-                    // e.g. (context as? MainActivityHost)?.startBravoService()
                 }
                 LoginUserUiEffect.DownloadBravoConfiguration -> {
                     viewModel.onEvent(LoginUserUiEvent.DownloadBravoConfiguration)
@@ -181,7 +179,7 @@ fun LoginUserScreen(
             }
         }
         if (showConfigPasswordDialog) {
-            LoginUserLoginUserCustomDialog(
+            LoginUserCustomDialog(
                 title = "PIN actual",
                 description = "Introduce el PIN actual",
                 pinMode = true,

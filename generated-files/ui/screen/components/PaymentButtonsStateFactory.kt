@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 import ifac.td.taxi.domain.model.PaymentMethod
 import ifac.td.taxi.viewmodel.model.RedSysPaymentState
 enum class PaymentButtonStyle {

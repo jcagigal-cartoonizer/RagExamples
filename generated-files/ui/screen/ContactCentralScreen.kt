@@ -1,17 +1,16 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 299-3: import androidx.compose.foundation.layout.*
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
-// import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
 import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun ContactCentralScreen(
@@ -28,7 +27,6 @@ fun ContactCentralScreen(
         onShowHeader(true)
         viewModel.initialize()
     }
-    // lifecycle-aware effect collection
     LaunchedEffect(viewModel) {
         viewModel.uiEffect.collectLatest { effect ->
             when (effect) {
@@ -40,7 +38,6 @@ fun ContactCentralScreen(
                 is ContactCentralUiEffect.ShowShortBreakForcedToast ->
                     onShowToast(R.string.short_break_forced)
                 is ContactCentralUiEffect.ShowVoiceRequestDialog -> {
-                    // handled by dialog state in UI; easiest is to set local dialog state
                 }
             }
         }
@@ -120,8 +117,6 @@ fun ContactCentralContent(
         )
     }
 }
-// // # Block 421-4: import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-// import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
 data class SharedContactCentralState(
     val shortBreakStatus: ShortBreakStatus? = null,
     val voiceValue: Boolean = false,

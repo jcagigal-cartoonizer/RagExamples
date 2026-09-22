@@ -1,10 +1,10 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import android.content.Intent
+import android.content.Intent
 import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -297,8 +297,6 @@ class OnTripComposeViewModel(
         }
     }
 }
-// // # Block 422-4: import android.content.Intent
-// import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -401,7 +399,7 @@ fun OnTripScreen(
         }
     }
     dialogState?.let { dialog ->
-        OnTripOnTripCustomDialog(
+        OnTripCustomDialog(
             state = dialog,
             onDismiss = { dialogState = null },
             onButtonClicked = { button ->

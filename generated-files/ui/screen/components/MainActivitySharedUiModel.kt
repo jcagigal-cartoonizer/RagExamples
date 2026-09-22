@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.Trip
 import ifac.td.taxi.domain.model.monei.GeneratePaymentRequest
 import ifac.td.taxi.domain.model.monei.InfoPayment
 import ifac.td.taxi.domain.model.monei.MoneiPaymentInfo
@@ -207,7 +207,6 @@ class PaymentMoneiComposeViewModel(
         when (uiState.value.status) {
             StatusPayments.SUCCEEDED -> {
                 _effects.tryEmit(PaymentMoneiUiEffect.HideDialog)
-                // actual finish is triggered from UI via shared trip if needed
             }
             else -> _effects.tryEmit(PaymentMoneiUiEffect.HideDialog)
         }
@@ -242,7 +241,7 @@ class PaymentMoneiComposeViewModel(
         EXPIRED
     }
 }
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 data class PaymentMoneiUiState(
     val isLoading: Boolean = false,

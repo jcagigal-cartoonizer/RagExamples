@@ -1,10 +1,10 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // // // import android.net.Uri
+import android.net.Uri
 sealed interface CropImageUiEvent {
     data class ServiceIdChanged(val serviceId: String?) : CropImageUiEvent
     data class ImageSelected(val uri: Uri) : CropImageUiEvent
@@ -14,8 +14,6 @@ sealed interface CropImageUiEvent {
     data object DialogDismissed : CropImageUiEvent
     data object DialogConfirmed : CropImageUiEvent
 }
-// // # Block 48-3: import android.net.Uri
-// // // // import android.net.Uri
 sealed interface CropImageUiEffect {
     data class ShowToast(val messageResId: Int) : CropImageUiEffect
     data class RequestCropImage(val uri: Uri?) : CropImageUiEffect

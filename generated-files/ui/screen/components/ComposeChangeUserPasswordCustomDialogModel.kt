@@ -30,7 +30,6 @@ fun ChangeUserPasswordRoute(
                     when (effect) {
                         is ChangeUserPasswordUiEffect.NavigateBack -> onNavigateBack()
                         is ChangeUserPasswordUiEffect.ShowDialog -> {
-                            // Dialog is state-driven; handled below by state
                         }
                         ChangeUserPasswordUiEffect.OpenUserPresenter -> Unit
                     }

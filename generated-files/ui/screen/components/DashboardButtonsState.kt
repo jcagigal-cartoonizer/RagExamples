@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 311-3: import androidx.compose.runtime.Immutable
-// import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
 @Immutable
@@ -62,7 +61,6 @@ data class DashboardButtonsState(
             )
         }
         fun parseColumns(dataTypes: String): Set<AvailableColumnsEnum> {
-            // adapt this parser to your real backend string format
             return AvailableColumnsEnum.entries.filter { dataTypes.contains(it.name) }.toSet()
         }
     }

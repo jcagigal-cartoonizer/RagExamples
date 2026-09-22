@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.LifecycleEventEffect
-import ifac.td.taxi.viewmodel.DashboardUiEffectCollector
+import ifac.td.taxi.viewmodel.DashboardEffectCollector
 import ifac.td.taxi.viewmodel.DashboardUiEffect
 import ifac.td.taxi.viewmodel.DashboardUiEvent
 import ifac.td.taxi.viewmodel.DashboardUiState
@@ -34,7 +34,6 @@ fun DashboardRoute(
     navigateBack: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    // Start/stop lifecycle-style work similar to onResume/onPause
     LifecycleStartEffect(viewModel) {
         showHeader(true)
         viewModel.onEvent(DashboardUiEvent.OnResume)
@@ -42,7 +41,7 @@ fun DashboardRoute(
             viewModel.onEvent(DashboardUiEvent.OnPause)
         }
     }
-    DashboardUiEffectCollector(
+    DashboardEffectCollector(
         viewModel = viewModel,
         onNavigateBack = navigateBack
     )
@@ -68,7 +67,6 @@ fun DashboardScreen(
             )
             Divider()
             Row(modifier = Modifier.fillMaxSize()) {
-                // Nearby zones
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     Text(
                         text = "Nearby zones",
@@ -84,7 +82,6 @@ fun DashboardScreen(
                         }
                     }
                 }
-                // Far zones
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     Text(
                         text = "Far zones",

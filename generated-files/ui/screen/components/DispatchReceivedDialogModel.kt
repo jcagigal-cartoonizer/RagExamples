@@ -4,14 +4,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.foundation.background
-// // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 data class DispatchReceivedDialogModel(
     val title: String,
@@ -27,7 +27,7 @@ data class DispatchReceivedDialogResult(
     val buttonPressed: DispatchReceivedDialogButtonSpec
 )
 @Composable
-fun DispatchReceivedDispatchReceivedCustomDialog(
+fun DispatchReceivedCustomDialog(
     model: DispatchReceivedDialogModel,
     onDismiss: () -> Unit,
     onResult: (DispatchReceivedDialogResult) -> Unit
@@ -84,7 +84,7 @@ fun DispatchReceivedDialogHost(
     onResult: (DispatchReceivedDialogResult) -> Unit
 ) {
     if (dialog != null) {
-        DispatchReceivedDispatchReceivedCustomDialog(
+        DispatchReceivedCustomDialog(
             model = dialog,
             onDismiss = onDismiss,
             onResult = onResult
@@ -111,15 +111,11 @@ class DispatchReceivedComposeFragment : Fragment() {
                     )
                 },
                 onCloseDialog = { tag ->
-                    // bridge to your existing activity/dialog system
                     (activity as? YourMainActivityInterface)?.closeDialog(tag)
                 },
                 onOpenDialog = { dialog ->
-                    // bridge to your existing custom dialog manager
-                    // open dialog in Compose or forward to activity
                 },
                 onRequestPhonePermission = {
-                    // bridge to permission request flow
                 }
             )
         }

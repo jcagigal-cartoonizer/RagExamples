@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -28,7 +28,6 @@ fun PaymentScreen(
                     navController.navigate(effect.routeId)
                 }
                 is PaymentUiEffect.NavigateToDirections -> {
-                    // if using generated SafeArgs/Directions
                 }
                 is PaymentUiEffect.OpenDialog -> dialogState = effect.dialog
                 is PaymentUiEffect.ShowToast -> onShowToast(effect.messageRes)
@@ -43,7 +42,6 @@ fun PaymentScreen(
         }
     }
     BackHandler(enabled = true) {
-        // preserve your fragment back behavior if needed
     }
     Scaffold(
         topBar = {
@@ -76,7 +74,7 @@ fun PaymentScreen(
         }
     }
     if (dialogState != null) {
-        PaymentPaymentCustomDialog(
+        PaymentCustomDialog(
             dialog = dialogState!!,
             onDismiss = { dialogState = null },
             onButtonClick = { button, text ->
@@ -86,8 +84,6 @@ fun PaymentScreen(
         )
     }
 }
-// // # Block 496-7: import androidx.compose.foundation.layout.*
-// import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 @Composable

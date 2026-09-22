@@ -3,14 +3,14 @@ package com.cartoonizer.rag.shared.utils;
 import java.io.File;
 
 public class RemoveFilesWithoutContent extends ProcessFolder {
-    public int filesWithContent = 0;
-    public int filesWithoutContent = 0;
+    public static int filesWithContent = 0;
+    public static int filesWithoutContent = 0;
     public boolean remove = false;
     public static void main(String[] args) {
         String path = "/Cagi/Portfolio/RagUtils/RagExamples/generated-files";
         RemoveFilesWithoutContent reader = new RemoveFilesWithoutContent(new File(path));
         reader.process();
-        System.out.println("*** filesWithContent = " + reader.filesWithContent + " filesWithoutContent = " + reader.filesWithoutContent);
+        System.out.println("*** filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
     }
 
     public RemoveFilesWithoutContent(File origen) {
@@ -39,6 +39,17 @@ public class RemoveFilesWithoutContent extends ProcessFolder {
     }
 
     public class FileReader extends ReadFile{
+
+        @Override
+        public void end() {
+            super.end();
+        }
+
+        @Override
+        public void begin() {
+            super.begin();
+            numLines = 0;
+        }
 
         public int numLines;
 

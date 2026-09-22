@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 @Immutable
 data class OnTripUiState(
     val buttons: OnTripButtonsState = OnTripButtonsState(),
@@ -68,8 +68,6 @@ data class OnTripButtonState(
 enum class ButtonStyle { Enabled, Disabled, Loading }
 enum class ButtonTypeUi { Default, Empty, AtDoor, RiderInCab }
 enum class ButtonBackground { Default, Red, Green, Blue, Orange, Gray }
-// // # Block 86-2: import androidx.compose.ui.graphics.Color
-// import androidx.compose.ui.graphics.Color
 object OnTripButtonStyles {
     val red = Color(0xFFD32F2F)
     val green = Color(0xFF2E7D32)

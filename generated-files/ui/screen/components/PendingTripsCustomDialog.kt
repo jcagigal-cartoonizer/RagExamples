@@ -5,7 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
-// // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -25,16 +25,12 @@ fun PendingTripsScreen(
     onShowHeader: (Boolean) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    // Dialog state
     var dialogState by remember { mutableStateOf<PendingTripsDialogState?>(null) }
-    // Effects collector
     LaunchedEffect(Unit) {
         viewModel.effects.collectLatest { effect ->
             when (effect) {
                 PendingTripsUiEffect.NavigateBack -> onNavigateBack()
                 is PendingTripsUiEffect.ShowToast -> {
-                    // Let parent host show toast if needed
-                    // Or handle here with Snackbar
                 }
                 is PendingTripsUiEffect.OpenConfirmDialog -> {
                     dialogState = PendingTripsDialogState(
@@ -46,7 +42,6 @@ fun PendingTripsScreen(
             }
         }
     }
-    // Screen enter behavior: similar to onResume/setupComponents
     LaunchedEffect(Unit) {
         onShowHeader(true)
         viewModel.onScreenStarted()
@@ -67,7 +62,7 @@ fun PendingTripsScreen(
         }
     )
     dialogState?.let { state ->
-        PendingTripsPendingTripsCustomDialog(
+        PendingTripsCustomDialog(
             title = state.title,
             description = state.description,
             buttonsState = uiState.buttonsState.dialogButtonsState,
@@ -97,7 +92,6 @@ fun PendingTripsContent(
 ) {
     Scaffold(
         topBar = {
-            // Put your custom top bar here if needed
         }
     ) { padding ->
         Column(

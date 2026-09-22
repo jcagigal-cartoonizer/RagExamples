@@ -4,9 +4,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 485-4: import androidx.compose.foundation.BorderStroke
-// import androidx.compose.foundation.BorderStroke
-// // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -48,13 +47,11 @@ fun ComposeCustomButton(
         Text(text)
     }
 }
-// // # Block 535-5: import androidx.compose.foundation.layout.*
-// // import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 @Composable
-fun LoginUserLoginUserCustomDialog(
+fun LoginUserCustomDialog(
     title: String,
     description: String,
     pinMode: Boolean,

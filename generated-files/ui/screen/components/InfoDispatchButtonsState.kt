@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
 @Immutable
 data class InfoDispatchUiState(
     val isHeaderVisible: Boolean = true,
@@ -87,8 +87,6 @@ sealed interface InfoDispatchUiEffect {
     data class OpenDialog(val dialog: InfoDispatchDialogState) : InfoDispatchUiEffect
     data object CloseDialog : InfoDispatchUiEffect
 }
-// // # Block 94-2: import androidx.compose.runtime.Immutable
-// import androidx.compose.runtime.Immutable
 @Immutable
 data class InfoDispatchButtonsState(
     val notifications: ComposeButtonState = ComposeButtonState.disabled(),

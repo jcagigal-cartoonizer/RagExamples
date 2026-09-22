@@ -137,6 +137,8 @@ public class GeneralAnswerProcessor extends ReadFile {
             return new DashboardBlocks();
         } else if ("LoginUser".equals(PREFIX)) {
             return new LoginUserBlocks();
+        } else if ("MessageDetail".equals(PREFIX)) {
+            return new MessageDetailBlocks();
         } else if ("Shared".equals(PREFIX) && "CommonDialog".equals(SUFFIX)) {
             return new CommonDialogBlocks();
         } else {
@@ -203,9 +205,6 @@ public class GeneralAnswerProcessor extends ReadFile {
             return;
         }
         if (line.trim().startsWith("import ")) {
-            if (line.contains("import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus")) {
-//                System.out.println("*** firstImport = " + firstImport + " block = " + blockLine + " importsMap.get(line) = " + importsMap.get(line));
-            }
             if (!firstImport) {
                 firstImport = true;
                 hasImports = true;
@@ -273,16 +272,10 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
         if (iface.isEndTag(line)) {
             printAlways = false;
-            if (super.origen.getName().contains("ContactCentralFragment")) {
-                System.out.println("-> printAlways = " + printAlways + " isEndTag = " + iface.isEndTag(line) + " " + line);
-            }
         }
-        if (!printAlways) {
-            if (super.origen.getName().contains("ContactCentralFragment")) {
-                System.out.println("-> printAlways = " + printAlways + " isEndTag = " + iface.isEndTag(line) + " " + line);
-            }
-            return;
-        }
+//        if (!printAlways) {
+//            return;
+//        }
         if (line.contains("DialogButtonSpec")) {
             line = line.replaceAll(Pattern.quote("DialogButtonSpec"), PREFIX +  "DialogButtonSpec");
         }
@@ -380,6 +373,7 @@ public class GeneralAnswerProcessor extends ReadFile {
         for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
             String path = "./generated-files/ui/screen/components/";
             String fileName = entry.getValue();
+            fileName = normalizeFileName(fileName);
             if (fileName.contains("Screen.kt")) {
                 path = "./generated-files/ui/screen/";
             } else if (fileName.contains("ViewModel.kt")) {
@@ -390,28 +384,60 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
         idx = 0;
         packagesArray = new String[blockFiles.size()];
+        String thePackage = "ifac.td.taxi.ui.screen.components";
         for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
-            if (entry.getKey().contains("Screen.kt")) {
-                packagesArray[idx] = "ifac.td.taxi.ui.screen";
-            } else if (entry.getKey().contains("ViewModel.kt")) {
-                packagesArray[idx] = "ifac.td.taxi.compose.viewmodel";
+            if (entry.getValue().contains("Screen.kt")) {
+                thePackage = "ifac.td.taxi.ui.screen";
+            } else if (entry.getValue().contains("ViewModel.kt")) {
+                thePackage = "ifac.td.taxi.compose.viewmodel";
             } else {
-                packagesArray[idx] = "ifac.td.taxi.ui.screen.components";
+                thePackage = "ifac.td.taxi.ui.screen.components";
             }
+            packagesArray[idx] = thePackage;
             idx++;
         }
     }
 
     private String extractFileNameFromClass(String line) {
-        return line.trim().replaceAll("data class ", "").replaceAll("class ", "").replaceAll(Pattern.quote("("), "").replaceAll(" ", "").trim() + ".kt";
+        String className = line.trim().replaceAll("data class ", "").replaceAll("class ", "").replaceAll(" ", "").trim(); 
+        int idx = className.indexOf(":");
+        if (idx < 0) {
+            idx = className.indexOf("(");
+        }
+        if (idx > 0) {
+            className = className.substring(0, idx);
+        }
+        return className + ".kt";
     }
 
     private String extractFileNameFromFun(String line) {
 // fun ContactCentralScreen(
-        return line.replaceAll("fun ", "").replaceAll(Pattern.quote("("), "").replaceAll(" ", "").trim() + ".kt";
+        String funName = line.trim().replaceAll("fun ", "").replaceAll(" ", "").trim(); 
+        System.out.println("extractFileNameFromFun BEFORE " + funName);
+        int idx = funName.indexOf("(");
+        if (idx > 0) {
+            funName = funName.substring(0, 1).toUpperCase() + funName.substring(1, idx);
+        }
+        System.out.println("extractFileNameFromFun AFTER " + funName);
+        return funName + ".kt";
     }
     private String extractFileNameFromObject(String line) {
 // object ComposeCustomButtonDefaults
         return line.replaceAll("object ", "").replaceAll(Pattern.quote("{"), "").replaceAll(" ", "").trim() + ".kt";
+    }
+
+    private String normalizeFileName(String original) {
+        String fileName = original.replace(':', '_').replace('(', '_').replace(')', '_').replace('{', '_').replace('}', '_');
+        System.out.println("=== fileName = " + fileName);
+        fileName = fileName.replaceAll("__", "_");
+        int idx = fileName.indexOf("_");
+        if (idx > 0) {
+            fileName = fileName.substring(0, idx);
+        }
+        if (fileName.equals(".kt")) {
+            fileName = original;
+        }
+        System.out.println("=== fileName normalized = " + fileName);
+        return fileName;
     }
 }

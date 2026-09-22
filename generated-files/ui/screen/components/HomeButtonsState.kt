@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.annotation.StringRes
+import androidx.annotation.StringRes
 data class HomeUiState(
     val buttons: HomeButtonsState = HomeButtonsState(),
     val dialog: HomeDialogState? = null
@@ -46,8 +46,6 @@ sealed interface HomeDialogButton {
     data object Cancel : HomeDialogButton
     data object Accept : HomeDialogButton
 }
-// // # Block 174-3: import androidx.annotation.StringRes
-// // import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.Color
 data class HomeButtonsState(
     val zoning: HomeButtonUiState = HomeButtonUiState(),

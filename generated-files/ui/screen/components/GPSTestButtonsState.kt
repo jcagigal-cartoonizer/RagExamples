@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color as ComposeColor
 @Immutable
 data class GPSTestUiState(
@@ -43,8 +43,6 @@ sealed interface DialogState {
         val negativeText: String? = null
     ) : DialogState
 }
-// // # Block 62-2: import androidx.compose.runtime.Immutable
-// import androidx.compose.runtime.Immutable
 @Immutable
 data class GPSTestButtonsState(
     val accept: ButtonState = ButtonState(

@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
 @Immutable
 data class DeviceSettingsUiState(
     val canWriteSettings: Boolean = false,
@@ -54,8 +54,6 @@ data class DeviceSettingsDialogState(
     val confirmText: String,
     val dismissText: String? = null,
 )
-// // # Block 284-3: import androidx.compose.runtime.Immutable
-// // import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 @Immutable
 data class DeviceSettingsButtonsState(

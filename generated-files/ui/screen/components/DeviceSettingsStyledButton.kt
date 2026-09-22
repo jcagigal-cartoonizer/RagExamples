@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 552-7: import androidx.compose.foundation.BorderStroke
-// import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
@@ -43,8 +42,6 @@ class DeviceSettingsComposeFragment : Fragment() {
     ) = ComposeView(requireContext()).apply {
         setContent {
             val navController = rememberNavController()
-            // obtain viewModel from DI or factory
-            // DeviceSettingsScreen(navController, viewModel)
         }
     }
 }

@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 132-2: import android.app.Application
-// import android.app.Application
+import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
@@ -79,7 +78,6 @@ class DashboardComposeViewModel(
                 removeHandlerCallbacks()
             }
             DashboardUiEvent.PendingTripsClicked -> {
-                // preserve navigation behavior as an effect
                 emitEffect(DashboardUiEffect.NavigateBack)
             }
             DashboardUiEvent.LocateOnHiredClicked -> {
@@ -174,6 +172,5 @@ class DashboardComposeViewModel(
         _effects.tryEmit(effect)
     }
     fun removeHandlerCallbacks() {
-        // no-op in Compose version unless you still use external handlers
     }
 }

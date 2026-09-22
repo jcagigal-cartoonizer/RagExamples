@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -29,18 +29,14 @@ fun FixedPriceMapScreen(
         viewModel.uiEffect.collectLatest { effect ->
             when (effect) {
                 is FixedPriceUiEffect.ShowToast -> {
-                    // Handle in host if needed
                 }
                 is FixedPriceUiEffect.UpdateMapPickup -> {
-                    // Hook map update here
                 }
                 is FixedPriceUiEffect.UpdateMapDropOff -> {
-                    // Hook map update here
                 }
                 is FixedPriceUiEffect.OpenDialog -> dialogState = effect.dialog
                 FixedPriceUiEffect.CloseDialog -> dialogState = null
                 FixedPriceUiEffect.HideKeyboard -> {
-                    // host should hide keyboard
                 }
                 FixedPriceUiEffect.NavigateBack -> {
                     navController.popBackStack()
@@ -103,8 +99,6 @@ fun FixedPriceMapScreen(
         }
     }
 }
-// // # Block 615-5: import androidx.compose.foundation.layout.*
-// // import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import ifac.td.taxi.viewmodel.FixedPriceUiState
 @Composable
@@ -163,9 +157,7 @@ fun PriceRow(label: String, state: PriceButtonState) {
         Text("$label: $text")
     }
 }
-// // # Block 684-6: import androidx.compose.foundation.clickable
-// import androidx.compose.foundation.clickable
-// // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
@@ -218,7 +210,6 @@ fun FixedPriceMapView(
         modifier = modifier,
         factory = { context ->
             com.nexusgeographics.cercalia.maps.CercaliaMapView(context).apply {
-                // initialize map here
             }
         },
         update = { /* update map state */ }

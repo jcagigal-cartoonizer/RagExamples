@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 11-1: import androidx.annotation.ColorInt
-// import androidx.annotation.ColorInt
+import androidx.annotation.ColorInt
 data class MeetingSignUiState(
     val message: String = "",
     @ColorInt val textColor: Int = 0,

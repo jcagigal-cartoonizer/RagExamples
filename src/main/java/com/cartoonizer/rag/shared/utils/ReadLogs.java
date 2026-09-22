@@ -15,7 +15,7 @@ public class ReadLogs extends ReadFile {
     public void processLine(String line) {
 //        if (line.contains("OPEN ") || line.contains("OPEN:") || line.contains("CLOSE ") || line.contains("CLOSED ") || line.contains("CLOSED:") ||
 //                line.contains("isEndTag") || line.contains("DEBUG!!!") || line.contains("*** processBlocks call openFile")) {
-        if (line.contains("About")) {
+        if (line.contains("MessageDetail")) {
             System.out.println(line);
         }
     }

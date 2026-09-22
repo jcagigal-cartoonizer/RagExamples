@@ -4,11 +4,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 566-4: import androidx.compose.material3.ButtonColors
-// import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 data class PaymentMoneiButtonsState(
     val cancel: ButtonState = ButtonState.cancel(),
     val print: ButtonState = ButtonState.print(hidden = true)
@@ -70,7 +69,7 @@ data class PaymentMoneiButtonsState(
     }
 }
 @Composable
-fun PaymentMoneiPaymentMoneiCustomDialog(
+fun PaymentMoneiCustomDialog(
     title: String,
     message: String,
     confirmText: String,
@@ -102,8 +101,7 @@ fun PaymentMoneiPaymentMoneiCustomDialog(
         containerColor = Color.White
     )
 }
-// // # Block 673-5: import ifac.td.taxi.domain.model.Trip
-// import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.Trip
 data class MainActivitySharedUiModel(
     val trip: Trip? = null
 )

@@ -4,7 +4,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import ifac.td.taxi.R
 import ifac.td.taxi.domain.model.Trip
 import ifac.td.taxi.domain.usecase.TripUseCase
 import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
@@ -247,8 +246,6 @@ fun String.toCents(): Int {
         .trim()
         .toIntOrNull() ?: 0
 }
-// // # Block 402-3: import ifac.td.taxi.R
-// import ifac.td.taxi.R
 data class AddAmountUiState(
     val serviceAmount: Int = 0,
     val extraAmount: Int = 0,
@@ -287,8 +284,7 @@ data class AddAmountDialogState(
     val descriptionRes: Int = R.string.warning,
     val acceptText: String = "OK"
 )
-// // # Block 447-4: import androidx.compose.ui.graphics.Color
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 data class AddAmountButtonsState(
     val acceptEnabled: Boolean = true,
     val cancelEnabled: Boolean = true,

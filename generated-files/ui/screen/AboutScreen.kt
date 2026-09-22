@@ -1,12 +1,11 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 70-2: import androidx.compose.foundation.Image
-// import androidx.compose.foundation.Image
-// import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.MaterialTheme
@@ -65,7 +64,6 @@ fun AboutScreen(
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(modifier = Modifier.height(16.dp))
-            // logo tap area (can be Image in real UI)
             Text(
                 text = uiState.logoText,
                 style = MaterialTheme.typography.bodySmall,

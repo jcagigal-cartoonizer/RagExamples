@@ -1,11 +1,10 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 11-1: import android.media.ToneGenerator
-// import android.media.ToneGenerator
+import android.media.ToneGenerator
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -98,7 +97,7 @@ fun HomeScreen(
             )
         }
         dialogState?.let { dialog ->
-            HomeHomeCustomDialog(
+            HomeCustomDialog(
                 dialog = dialog,
                 onDismiss = {
                     onEvent(HomeUiEvent.DialogDismissed)

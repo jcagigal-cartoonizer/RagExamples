@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 341-2: import androidx.compose.foundation.BorderStroke
-// import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
@@ -93,5 +92,3 @@ object FixedPriceButtonStyle {
         disabledContentColor = Color(0xFF9E9E9E)
     )
 }
-// // # Block 436-3: import androidx.compose.foundation.background
-// import androidx.compose.foundation.background

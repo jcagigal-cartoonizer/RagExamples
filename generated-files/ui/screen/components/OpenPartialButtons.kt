@@ -4,7 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // // import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -55,8 +55,6 @@ fun TicketViewer(
         Text(text = content)
     }
 }
-// // # Block 317-5: import androidx.compose.foundation.layout.*
-// // // import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 @Composable
 fun OpenPartialButtons(

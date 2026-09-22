@@ -4,8 +4,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// import androidx.compose.foundation.background
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -61,10 +61,7 @@ fun ContactCentralDialogHost(
         }
     }
 }
-// // # Block 496-6: import androidx.compose.foundation.background
-// // import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-// import androidx.compose.foundation.layout.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 @Composable

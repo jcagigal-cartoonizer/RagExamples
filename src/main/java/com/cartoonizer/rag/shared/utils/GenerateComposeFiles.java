@@ -45,6 +45,7 @@ public class GenerateComposeFiles {
         }
         RemoveFilesWithoutContent purge = new RemoveFilesWithoutContent(new File("./generated-files"), true);
         purge.process();
+        System.out.println("*** filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
     }
 
     public static class GenerateFiles extends ReadFile {
@@ -100,10 +101,15 @@ public class GenerateComposeFiles {
                 printAlways = false;
             }
             if (!isEnd && outputPath != null) {
+                doPrint = true;
                 printAlways = true;
             }
 //            System.out.println("*** currentFile = " + currentFile);
 //            System.out.println("=== outputPath = " + outputPath);
+            if (outputPath != null && outputPath.contains("MessageDetailScreen")) {
+                System.out.println("printAlways = " + printAlways + " isEnd = " + isEnd + " " + line);
+                
+            }
             if (printAlways) {
 // R.string. navigate -> btn_navegar
                 if (line.contains("R.string.btn_notifications")) {
@@ -169,6 +175,7 @@ public class GenerateComposeFiles {
 // End processing
             if (isEnd) {
                 printAlways = false;
+                doPrint = false;
             }
         }
 
@@ -214,10 +221,10 @@ public class GenerateComposeFiles {
                     writer.close();
                 }
             } else {
-                System.out.println("*** generateComposeFile CLOSE FILE outputPath = " + (outputPath == null ? "NULL" : "NOT NULL") + " writer = " + (writer == null ? "NULL" : "NOT NULL"));
+                System.out.println("*** generateComposeFile CLOSE FILE outputPath = " + (outputPath == null ? "NULL" : outputPath) + " writer = " + (writer == null ? "NULL" : "NOT NULL"));
             }
-//            outputPath = null;
-//            writer = null;
+            outputPath = null;
+            writer = null;
         }
 
         private void printOtherImports(String path) {
@@ -250,7 +257,7 @@ public class GenerateComposeFiles {
                     outputPath = path;
                     System.out.println("*** GenerarComposeFiles OPEN FILE orderedLines size = " + orderedLines.size() + " " + path);
                     if (writer != null) {
-                        closeFile();
+                        writer.close();
                     }
                     writer = new PrintWriter(outputPath);
                     secondPass = new SecondPass(this, writer, outputPath);
@@ -297,17 +304,15 @@ public class GenerateComposeFiles {
 //                }
                 if (answerProcessor.blocksList[i].replaceAll("// ", "").contains(line.replaceAll("// ", ""))) {
 //                    line = "// " + line;
-                    printAlways = true;
                     if (answerProcessor.blockFilesList[i] != null && openFiles.get(answerProcessor.blockFilesList[i]) != null) {
                         continue;
                     }
                     if (outputPath != null && !outputPath.isEmpty() && !answerProcessor.blockFilesList[i].equals(outputPath)) {
                         closeFile();
                     }
+                    printAlways = true;
+                    doPrint = true;
                     outputPath = answerProcessor.blockFilesList[i];
-                    if (openFiles.get(outputPath) == null) {
-                        openFiles.put(outputPath, orderedLines.size());
-                    }
                     System.out.println("*** processBlocks line = " + numLines + " call openFile " + outputPath + " block = " + answerProcessor.blocksList[i] + " line = " + line);
                     openFile(outputPath, answerProcessor.packagesArray[i]);
                     break;
@@ -334,7 +339,7 @@ public class GenerateComposeFiles {
 
         private void print(String line) {
             // print in second pass
-            if (shouldIgnore(line) || line.trim().startsWith("#") || (line.trim().startsWith("package ") && packageSet)) {
+            if (shouldIgnore(line) || line.trim().startsWith("#") || line.trim().startsWith("// ") || (line.trim().startsWith("package ") && packageSet)) {
                 return;
             }
             if (line.trim().startsWith("package ")) {

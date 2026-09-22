@@ -5,9 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
-// // # Block 562-8: import androidx.compose.foundation.clickable
-// import androidx.compose.foundation.clickable
-// import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
@@ -17,7 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 @Composable
-fun PaymentPaymentCustomDialog(
+fun PaymentCustomDialog(
     dialog: PaymentDialogState,
     onDismiss: () -> Unit,
     onButtonClick: (PaymentDialogButton, String?) -> Unit,

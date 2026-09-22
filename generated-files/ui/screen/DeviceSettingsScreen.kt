@@ -1,11 +1,10 @@
-package ifac.td.taxi.ui.screen.components
+package ifac.td.taxi.ui.screen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 352-4: import android.content.Intent
-// import android.content.Intent
+import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
@@ -43,7 +42,6 @@ fun DeviceSettingsScreen(
                             context.startActivity(intent)
                         }
                         is DeviceSettingsUiEffect.ShowToast -> {
-                            // host-side toast/snackbar handling
                         }
                         is DeviceSettingsUiEffect.OpenDialog -> dialogState = effect.dialog
                     }

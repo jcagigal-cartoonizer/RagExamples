@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 10-1: import androidx.annotation.StringRes
-// import androidx.annotation.StringRes
+import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.Color
 import ifac.td.taxi.domain.model.Trip
 import ifac.td.taxi.ui.model.FiscalData

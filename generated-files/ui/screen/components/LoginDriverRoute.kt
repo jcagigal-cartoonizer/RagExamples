@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 277-3: import android.widget.Toast
-// import android.widget.Toast
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.*
@@ -47,7 +46,6 @@ fun LoginDriverRoute(
                     LoginDriverUiEffect.ShowErrorLoginToast ->
                         Toast.makeText(context, context.getString(ifac.td.taxi.R.string.error_login), Toast.LENGTH_SHORT).show()
                     is LoginDriverUiEffect.ShowIncorrectCredentials -> {
-                        // handled in composable dialog state below
                     }
                     is LoginDriverUiEffect.SetLastSessionDriver -> Unit
                     is LoginDriverUiEffect.SetButtonLoading -> Unit

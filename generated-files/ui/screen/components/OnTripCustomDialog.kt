@@ -5,7 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
-// // import androidx.compose.foundation.background
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -76,12 +76,11 @@ fun OnTripActionButton(
         Text(text = if (state.text.isNotBlank()) state.text else fallbackLabel)
     }
 }
-// // import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
-// import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 @Composable
-fun OnTripOnTripCustomDialog(
+fun OnTripCustomDialog(
     state: OnTripDialogState,
     onDismiss: () -> Unit,
     onButtonClicked: (OnTripDialogButton) -> Unit

@@ -4,8 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // # Block 124-2: import androidx.annotation.DrawableRes
-// import androidx.annotation.DrawableRes
+import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import ifac.td.taxi.framework.sdk.model.BluetoothInfo
 data class BluetoothDiscoveryUiState(

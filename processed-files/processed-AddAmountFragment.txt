@@ -1,0 +1,636 @@
+I’ll keep this fully based on Android + Jetpack Compose APIs.
+---
+# 1) Compose `AddAmountScreen`
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 5-1: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun AddAmountRoute(
+    viewModel: AddAmountComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onShowDialog: (AddAmountDialogState) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val dialogState by viewModel.dialogState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.effects.collectLatest { effect ->
+                when (effect) {
+                    AddAmountUiEffect.NavigateBack -> onNavigateBack()
+                    is AddAmountUiEffect.ShowDialog -> onShowDialog(effect.dialogState)
+                }
+            }
+        }
+    }
+    AddAmountScreen(
+        uiState = uiState,
+        dialogState = dialogState,
+        onEvent = viewModel::onEvent
+    )
+}
+@Composable
+fun AddAmountScreen(
+    uiState: AddAmountUiState,
+    dialogState: AddAmountDialogState?,
+    onEvent: (AddAmountUiEvent) -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(text = "Add Amount") }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            AmountField(
+                label = "Service amount",
+                value = uiState.serviceAmountText,
+                enabled = uiState.buttonsState.serviceEnabled,
+                placeholder = uiState.serviceAmountHint,
+                onValueChange = { onEvent(AddAmountUiEvent.ServiceAmountChanged(it)) }
+            )
+            if (uiState.buttonsState.extraVisible) {
+                Spacer(Modifier.height(12.dp))
+                AmountField(
+                    label = "Extras",
+                    value = uiState.extraAmountText,
+                    enabled = uiState.buttonsState.extraEnabled,
+                    placeholder = uiState.extraAmountHint,
+                    onValueChange = { onEvent(AddAmountUiEvent.ExtraAmountChanged(it)) }
+                )
+            }
+            if (uiState.buttonsState.tollsVisible) {
+                Spacer(Modifier.height(12.dp))
+                AmountField(
+                    label = "Tolls",
+                    value = uiState.tollAmountText,
+                    enabled = uiState.buttonsState.tollsEnabled,
+                    placeholder = uiState.tollAmountHint,
+                    onValueChange = { onEvent(AddAmountUiEvent.TollAmountChanged(it)) }
+                )
+            }
+            if (uiState.buttonsState.tipsVisible) {
+                Spacer(Modifier.height(12.dp))
+                AmountField(
+                    label = "Tips",
+                    value = uiState.tipAmountText,
+                    enabled = uiState.buttonsState.tipsEnabled,
+                    placeholder = uiState.tipAmountHint,
+                    onValueChange = { onEvent(AddAmountUiEvent.TipAmountChanged(it)) }
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            Text(
+                text = "Total: ${uiState.totalAmountText}",
+                style = MaterialTheme.typography.titleLarge
+            )
+            Spacer(Modifier.height(24.dp))
+            AddAmountButtons(
+                state = uiState.buttonsState,
+                onAccept = { onEvent(AddAmountUiEvent.AcceptClicked) },
+                onCancel = { onEvent(AddAmountUiEvent.CancelClicked) }
+            )
+        }
+    }
+    if (dialogState != null && dialogState.visible) {
+        CustomDialog(
+            dialog = dialogState,
+            onDismiss = { onEvent(AddAmountUiEvent.DismissDialog) },
+            onAccept = { onEvent(AddAmountUiEvent.DialogAccept) }
+        )
+    }
+}
+@Composable
+fun AmountField(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    placeholder: String,
+    onValueChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        modifier = Modifier.fillMaxWidth(),
+        value = value,
+        onValueChange = onValueChange,
+        enabled = enabled,
+        label = { Text(label) },
+        placeholder = { Text(placeholder) },
+        singleLine = true,
+        keyboardOptions = androidx.compose.ui.text.input.KeyboardOptions(
+            keyboardType = KeyboardType.Number
+        )
+    )
+}
+```
+---
+# 2) Compose-friendly `AddAmountViewModel`
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 151-2: import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
+import ifac.td.taxi.domain.usecase.TTSUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.domain.model.PaymentModifiers
+import ifac.td.taxi.domain.model.PaymentModifiers.ModifyImports.ALWAYS
+import ifac.td.taxi.domain.model.PaymentModifiers.ModifyImports.NOT_ALLOWED
+import ifac.td.taxi.domain.model.PaymentModifiers.ModifyImports.ONLY_IMPORT_0
+import ifac.td.taxi.domain.model.TTSType
+import ifac.td.taxi.domain.usecase.TTSUseCaseImpl
+import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class AddAmountComposeViewModel(
+    private val tripUseCase: TripUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val bluetoothLocalUseCase: BluetoothLocalUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val ttsUseCase: TTSUseCase,
+) : ViewModel() {
+    private val TAG = "AddAmountComposeViewModel"
+    private val _uiState = MutableStateFlow(AddAmountUiState())
+    val uiState: StateFlow<AddAmountUiState> = _uiState.asStateFlow()
+    private val _dialogState = MutableStateFlow<AddAmountDialogState?>(null)
+    val dialogState: StateFlow<AddAmountDialogState?> = _dialogState.asStateFlow()
+    private val _effects = MutableSharedFlow<AddAmountUiEffect>()
+    val effects: SharedFlow<AddAmountUiEffect> = _effects.asSharedFlow()
+    private var paymentModifiers: PaymentModifiers = PaymentModifiers()
+    private var trip: Trip? = null
+    private var originalServiceAmount: Int = 0
+    private var originalExtraAmount: Int = 0
+    init {
+        viewModelScope.launch {
+            paymentModifiers = licensingUseCase.getPaymentModifiers()
+        }
+    }
+    fun onEvent(event: AddAmountUiEvent) {
+        when (event) {
+            is AddAmountUiEvent.Init -> bindTrip(event.trip)
+            is AddAmountUiEvent.ServiceAmountChanged -> updateService(event.value)
+            is AddAmountUiEvent.ExtraAmountChanged -> updateExtra(event.value)
+            is AddAmountUiEvent.TollAmountChanged -> updateToll(event.value)
+            is AddAmountUiEvent.TipAmountChanged -> updateTip(event.value)
+            AddAmountUiEvent.AcceptClicked -> collectAmount()
+            AddAmountUiEvent.CancelClicked -> emitBack()
+            AddAmountUiEvent.DismissDialog -> _dialogState.value = null
+            AddAmountUiEvent.DialogAccept -> _dialogState.value = null
+        }
+    }
+    fun bindTrip(trip: Trip) {
+        this.trip = trip
+        val allowTolls = allowsTolls(null)
+        val allowTips = allowsTips(null)
+        val service = trip.taximeterAmount ?: 0
+        val extras = trip.extra1 + trip.extra2 + trip.extra3 + trip.extra4 + (trip.extrasAuto ?: 0)
+        val tolls = trip.tolls ?: 0
+        val tips = trip.tips ?: 0
+        val total = service + extras + tolls + tips
+        originalServiceAmount = service
+        originalExtraAmount = extras
+        _uiState.value = _uiState.value.copy(
+            serviceAmount = service,
+            extraAmount = extras,
+            tollAmount = tolls,
+            tipAmount = tips,
+            totalAmount = total,
+            serviceAmountText = service.toCurrency(),
+            extraAmountText = extras.toCurrency(),
+            tollAmountText = tolls.toCurrency(),
+            tipAmountText = tips.toCurrency(),
+            totalAmountText = total.toCurrency(),
+            serviceAmountHint = if (service == 0) service.toCurrency() else "",
+            extraAmountHint = if (extras == 0) extras.toCurrency() else "",
+            tollAmountHint = if (tolls == 0) tolls.toCurrency() else "",
+            tipAmountHint = if (tips == 0) tips.toCurrency() else "",
+            buttonsState = buildButtonsState(
+                trip = trip,
+                serviceEnabled = allowsModifyCash(
+                    amountIsZero = service == 0,
+                    isManual = trip.taximeterTripId == null,
+                    isSubscriber = false,
+                    isAmountFromDispatch = trip.fromDispatch
+                ),
+                tollsVisible = allowTolls,
+                tipsVisible = allowTips
+            )
+        )
+        checkIfWorksWithoutTx()
+        useTTSForAmount(service, extras, tolls, tips, total)
+    }
+    fun updateService(value: String) {
+        val cents = value.toCents()
+        val current = _uiState.value
+        val updatedExtras = if (originalExtraAmount != 0) {
+            val priceModified = current.buttonsState.serviceEnabled && cents != originalServiceAmount
+            if (priceModified) 0 else originalExtraAmount
+        } else current.extraAmount
+        val total = cents + updatedExtras + current.tollAmount + current.tipAmount
+        _uiState.value = current.copy(
+            serviceAmount = cents,
+            extraAmount = updatedExtras,
+            totalAmount = total,
+            serviceAmountText = value,
+            extraAmountText = updatedExtras.toCurrency(),
+            totalAmountText = total.toCurrency(),
+            buttonsState = current.buttonsState.copy(extraVisible = updatedExtras != 0)
+        )
+    }
+    fun updateExtra(value: String) = recalcFromInputs(extraText = value)
+    fun updateToll(value: String) = recalcFromInputs(tollText = value)
+    fun updateTip(value: String) = recalcFromInputs(tipText = value)
+    fun recalcFromInputs(extraText: String? = null, tollText: String? = null, tipText: String? = null) {
+        val current = _uiState.value
+        val extra = extraText?.toCents() ?: current.extraAmount
+        val toll = tollText?.toCents() ?: current.tollAmount
+        val tip = tipText?.toCents() ?: current.tipAmount
+        val total = current.serviceAmount + extra + toll + tip
+        _uiState.value = current.copy(
+            extraAmount = extra,
+            tollAmount = toll,
+            tipAmount = tip,
+            totalAmount = total,
+            extraAmountText = extraText ?: extra.toCurrency(),
+            tollAmountText = tollText ?: toll.toCurrency(),
+            tipAmountText = tipText ?: tip.toCurrency(),
+            totalAmountText = total.toCurrency()
+        )
+    }
+    fun collectAmount() {
+        val current = _uiState.value
+        val trip = trip ?: return
+        val maxAmountManual = maximumAmountManual()
+        val maxAmountTips = maximumAmountTips()
+        val maxAmountTolls = maximumAmountTolls()
+        if (maxAmountManual > 0 && ((current.serviceAmount - (trip.taximeterAmount ?: 0)) > maxAmountManual)) {
+            showWarning(R.string.toastMaxService)
+            return
+        }
+        if (maxAmountTips > 0 && ((current.tipAmount - (trip.tips ?: 0)) > maxAmountTips)) {
+            showWarning(R.string.toastMaxTips)
+            return
+        }
+        if (maxAmountTolls > 0 && ((current.tollAmount - (trip.tolls ?: 0)) > maxAmountTolls)) {
+            showWarning(R.string.toastMaxTolls)
+            return
+        }
+        viewModelScope.launch {
+            tripUseCase.updateTripAmountsAndExtras(
+                trip.id,
+                current.serviceAmount,
+                current.tollAmount,
+                current.tipAmount,
+                current.totalAmount,
+                current.extraAmount,
+                trip.extra1,
+                trip.extra2,
+                trip.extra3,
+                trip.extra4,
+                trip.extrasAuto,
+                trip.addMinimumPriceDispatch,
+                trip.addMinimumPriceAirport
+            )
+            _effects.emit(AddAmountUiEffect.NavigateBack)
+        }
+    }
+    fun showWarning(messageRes: Int) {
+        _dialogState.value = AddAmountDialogState(
+            visible = true,
+            title = "Warning",
+            descriptionRes = messageRes,
+            acceptText = "OK"
+        )
+        viewModelScope.launch {
+            _effects.emit(
+                AddAmountUiEffect.ShowDialog(
+                    _dialogState.value!!
+                )
+            )
+        }
+    }
+    fun emitBack() {
+        viewModelScope.launch { _effects.emit(AddAmountUiEffect.NavigateBack) }
+    }
+    fun allowsModifyCash(
+        amountIsZero: Boolean,
+        isManual: Boolean,
+        isSubscriber: Boolean,
+        isAmountFromDispatch: Boolean
+    ): Boolean {
+        if (isAmountFromDispatch) return false
+        if (isSubscriber && paymentModifiers.isAllowModifySubscriberAmounts) return true
+        val withoutProtocol = false
+        if (withoutProtocol || isManual) return true
+        return when (paymentModifiers.isAllowModifyCash) {
+            NOT_ALLOWED -> false
+            ONLY_IMPORT_0 -> amountIsZero
+            ALWAYS -> true
+        }
+    }
+    fun allowsTips(dispatch: Any?): Boolean = paymentModifiers.isAllowTips
+    fun allowsTolls(dispatch: Any?): Boolean = paymentModifiers.isAllowTolls
+    fun maximumAmountManual(): Int = paymentModifiers.maxManualAmount
+    fun maximumAmountTips(): Int = paymentModifiers.maxTipAmount
+    fun maximumAmountTolls(): Int = paymentModifiers.maxTollsAmount
+    fun checkIfWorksWithoutTx() {
+        viewModelScope.launch {
+            val bluetoothResult = bluetoothLocalUseCase.getLocalBluetooth()
+            Logs.d(TAG, "worksWithoutTx: ${bluetoothResult == null}")
+        }
+    }
+    fun useTTSForAmount(
+        serviceAmountLocal: Int,
+        extraAmountLocal: Int,
+        tollAmountLocal: Int,
+        tipAmountLocal: Int,
+        totalAmountLocal: Int
+    ) {
+        viewModelScope.launch {
+            var text = ""
+            text += "Service amount ${serviceAmountLocal.toCurrency()}\n"
+            if (extraAmountLocal != 0) text += "Extra amount ${extraAmountLocal.toCurrency()}\n"
+            if (tollAmountLocal != 0) text += "Toll amount ${tollAmountLocal.toCurrency()}\n"
+            if (tipAmountLocal != 0) text += "Tips amount ${tipAmountLocal.toCurrency()}\n"
+            if (totalAmountLocal != 0 && totalAmountLocal != serviceAmountLocal) text += "Total amount ${totalAmountLocal.toCurrency()}\n"
+            when (userPreferencesUseCase.getUserPreferences()?.blindLocutionId) {
+                TTSUseCaseImpl.TTSBlindOption.AUTO.value,
+                TTSUseCaseImpl.TTSBlindOption.ONLY_PAYMENT.value -> {
+                    ttsUseCase.speakText(text.trim(), TTSType.Amount)
+                }
+            }
+        }
+    }
+}
+fun String.toCents(): Int {
+    return replace(".", "")
+        .replace(",", "")
+        .trim()
+        .toIntOrNull() ?: 0
+}
+```
+---
+# 3) `UiState`, `UiEvent`, `UiEffect`, dialog state
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 402-3: import ifac.td.taxi.R
+import ifac.td.taxi.R
+data class AddAmountUiState(
+    val serviceAmount: Int = 0,
+    val extraAmount: Int = 0,
+    val tollAmount: Int = 0,
+    val tipAmount: Int = 0,
+    val totalAmount: Int = 0,
+    val serviceAmountText: String = "",
+    val extraAmountText: String = "",
+    val tollAmountText: String = "",
+    val tipAmountText: String = "",
+    val totalAmountText: String = "",
+    val serviceAmountHint: String = "",
+    val extraAmountHint: String = "",
+    val tollAmountHint: String = "",
+    val tipAmountHint: String = "",
+    val buttonsState: AddAmountButtonsState = AddAmountButtonsState()
+)
+sealed interface AddAmountUiEvent {
+    data class Init(val trip: ifac.td.taxi.domain.model.Trip) : AddAmountUiEvent
+    data class ServiceAmountChanged(val value: String) : AddAmountUiEvent
+    data class ExtraAmountChanged(val value: String) : AddAmountUiEvent
+    data class TollAmountChanged(val value: String) : AddAmountUiEvent
+    data class TipAmountChanged(val value: String) : AddAmountUiEvent
+    data object AcceptClicked : AddAmountUiEvent
+    data object CancelClicked : AddAmountUiEvent
+    data object DismissDialog : AddAmountUiEvent
+    data object DialogAccept : AddAmountUiEvent
+}
+sealed interface AddAmountUiEffect {
+    data object NavigateBack : AddAmountUiEffect
+    data class ShowDialog(val dialogState: AddAmountDialogState) : AddAmountUiEffect
+}
+data class AddAmountDialogState(
+    val visible: Boolean = false,
+    val title: String = "Warning",
+    val descriptionRes: Int = R.string.warning,
+    val acceptText: String = "OK"
+)
+```
+---
+# 4) Full `AddAmountButtonsState`
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 447-4: import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
+data class AddAmountButtonsState(
+    val acceptEnabled: Boolean = true,
+    val cancelEnabled: Boolean = true,
+    val acceptVisible: Boolean = true,
+    val cancelVisible: Boolean = true,
+    val acceptContainerColor: Color = Color(0xFF1E88E5),
+    val acceptContentColor: Color = Color.White,
+    val acceptDisabledContainerColor: Color = Color(0xFFBDBDBD),
+    val acceptDisabledContentColor: Color = Color(0xFFFFFFFF),
+    val cancelContainerColor: Color = Color(0xFFE53935),
+    val cancelContentColor: Color = Color.White,
+    val cancelDisabledContainerColor: Color = Color(0xFFBDBDBD),
+    val cancelDisabledContentColor: Color = Color(0xFFFFFFFF),
+    val serviceEnabled: Boolean = true,
+    val extraEnabled: Boolean = false,
+    val tollsEnabled: Boolean = true,
+    val tipsEnabled: Boolean = true,
+    val extraVisible: Boolean = true,
+    val tollsVisible: Boolean = true,
+    val tipsVisible: Boolean = true,
+)
+```
+---
+# 5) Compose button styling helpers matching the custom button component more closely
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 475-5: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.state.AddAmountButtonsState
+object AddAmountButtonStyles {
+    @Composable
+    fun acceptColors(state: AddAmountButtonsState): ButtonColors {
+        return ButtonDefaults.buttonColors(
+            containerColor = state.acceptContainerColor,
+            contentColor = state.acceptContentColor,
+            disabledContainerColor = state.acceptDisabledContainerColor,
+            disabledContentColor = state.acceptDisabledContentColor
+        )
+    }
+    @Composable
+    fun cancelColors(state: AddAmountButtonsState): ButtonColors {
+        return ButtonDefaults.buttonColors(
+            containerColor = state.cancelContainerColor,
+            contentColor = state.cancelContentColor,
+            disabledContainerColor = state.cancelDisabledContainerColor,
+            disabledContentColor = state.cancelDisabledContentColor
+        )
+    }
+    @Composable
+    fun outlineBorder(): BorderStroke =
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+}
+```
+```kotlin
+@Composable
+fun AddAmountButtons(
+    state: AddAmountButtonsState,
+    onAccept: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Row(
+        modifier = Modifier,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (state.cancelVisible) {
+            Button(
+                onClick = onCancel,
+                enabled = state.cancelEnabled,
+                colors = AddAmountButtonStyles.cancelColors(state),
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+            ) {
+                Text("Cancel")
+            }
+        }
+        if (state.acceptVisible) {
+            Button(
+                onClick = onAccept,
+                enabled = state.acceptEnabled,
+                colors = AddAmountButtonStyles.acceptColors(state),
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+            ) {
+                Text("Accept")
+            }
+        }
+    }
+}
+```
+---
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.state.AddAmountDialogState
+@Composable
+fun AddAmountCustomDialog(
+    dialog: AddAmountDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp)
+            ) {
+                Text(
+                    text = dialog.title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = stringResourceCompat(dialog.descriptionRes),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onAccept) {
+                        Text(dialog.acceptText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 599-7: import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+@Composable
+fun stringResourceCompat(resId: Int): String {
+    return LocalContext.current.getString(resId)
+}
+```
+---
+# 7) Example screen wiring with navigation preservation
+```kotlin
+class AddAmountComposeFragment : Fragment() {
+    private val viewModel: AddAmountComposeViewModel by viewModels()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View = ComposeView(requireContext()).apply {
+        setContent {
+            AddAmountRoute(
+                viewModel = viewModel,
+                onNavigateBack = {
+                    findNavController().navigateUp()
+                },
+                onShowDialog = { dialogState ->
+                    // optional external dialog handling if needed
+                }
+            )
+        }
+    }
+}
+```
+---
+# 8) Notes on XML parity and behavior
+To match the fragment behavior:
+---
+# 9) Important limitation
+Your original fragment relies on:
+1. a **complete fully styled Compose `AddAmountScreen` with Material3 theme tokens**, or  
+2. a **1:1 migration mapping from your XML IDs to Compose state**, or  
+3. a **fully compilable Koin-ready version** of the Compose ViewModel and screen.

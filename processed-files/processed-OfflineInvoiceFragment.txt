@@ -1,0 +1,538 @@
+---
+## 1) Compose `UiState + UiEvent + UiEffect` ViewModel
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 4-1: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.UserPreferences
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.usecase.ReceiptUseCase
+import ifac.td.taxi.framework.util.tickets.TicketsPrinter
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toInfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+data class OfflineInvoiceUiState(
+    val tripId: Long = -1L,
+    val driverDirection: String = "",
+    val driverPostalCode: String = "",
+    val driverCity: String = "",
+    val clientNameAndSurname: String = "",
+    val clientNIF: String = "",
+    val clientDirection: String = "",
+    val clientPostalCode: String = "",
+    val clientCity: String = "",
+    val showDialog: Boolean = false,
+    val isLoading: Boolean = false,
+    val isInvoiceRequestInProgress: Boolean = false,
+    val isCopyDialogVisible: Boolean = false,
+    val dialogTitle: String = "",
+    val dialogDescription: String = ""
+)
+sealed interface OfflineInvoiceUiEvent {
+    data class TripIdChanged(val tripId: Long) : OfflineInvoiceUiEvent
+    data class DriverDirectionChanged(val value: String) : OfflineInvoiceUiEvent
+    data class DriverPostalCodeChanged(val value: String) : OfflineInvoiceUiEvent
+    data class DriverCityChanged(val value: String) : OfflineInvoiceUiEvent
+    data class ClientNameChanged(val value: String) : OfflineInvoiceUiEvent
+    data class ClientNifChanged(val value: String) : OfflineInvoiceUiEvent
+    data class ClientDirectionChanged(val value: String) : OfflineInvoiceUiEvent
+    data class ClientPostalCodeChanged(val value: String) : OfflineInvoiceUiEvent
+    data class ClientCityChanged(val value: String) : OfflineInvoiceUiEvent
+    data object AcceptClicked : OfflineInvoiceUiEvent
+    data object CancelClicked : OfflineInvoiceUiEvent
+    data object DialogCopyAcceptClicked : OfflineInvoiceUiEvent
+    data object DialogCopyCancelClicked : OfflineInvoiceUiEvent
+    data object LoadPreferences : OfflineInvoiceUiEvent
+}
+sealed interface OfflineInvoiceUiEffect {
+    data class PrintInvoice(
+        val receipt: String,
+        val brokenDownTaxTicket: String
+    ) : OfflineInvoiceUiEffect
+    data class ShowToast(val messageRes: Int) : OfflineInvoiceUiEffect
+    data object NavigateBack : OfflineInvoiceUiEffect
+    data class OpenCopyDialog(
+        val title: String,
+        val description: String
+    ) : OfflineInvoiceUiEffect
+}
+class OfflineInvoiceComposeViewModel(
+    application: Application,
+    private val receiptUseCase: ReceiptUseCase,
+    private val tripUseCase: TripUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(OfflineInvoiceUiState())
+    val uiState: StateFlow<OfflineInvoiceUiState> = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<OfflineInvoiceUiEffect>()
+    val uiEffect: SharedFlow<OfflineInvoiceUiEffect> = _uiEffect.asSharedFlow()
+    fun onEvent(event: OfflineInvoiceUiEvent) {
+        when (event) {
+            is OfflineInvoiceUiEvent.TripIdChanged ->
+                _uiState.update { it.copy(tripId = event.tripId) }
+            is OfflineInvoiceUiEvent.DriverDirectionChanged ->
+                _uiState.update { it.copy(driverDirection = event.value) }
+            is OfflineInvoiceUiEvent.DriverPostalCodeChanged ->
+                _uiState.update { it.copy(driverPostalCode = event.value) }
+            is OfflineInvoiceUiEvent.DriverCityChanged ->
+                _uiState.update { it.copy(driverCity = event.value) }
+            is OfflineInvoiceUiEvent.ClientNameChanged ->
+                _uiState.update { it.copy(clientNameAndSurname = event.value) }
+            is OfflineInvoiceUiEvent.ClientNifChanged ->
+                _uiState.update { it.copy(clientNIF = event.value) }
+            is OfflineInvoiceUiEvent.ClientDirectionChanged ->
+                _uiState.update { it.copy(clientDirection = event.value) }
+            is OfflineInvoiceUiEvent.ClientPostalCodeChanged ->
+                _uiState.update { it.copy(clientPostalCode = event.value) }
+            is OfflineInvoiceUiEvent.ClientCityChanged ->
+                _uiState.update { it.copy(clientCity = event.value) }
+            OfflineInvoiceUiEvent.LoadPreferences -> loadPreferences()
+            OfflineInvoiceUiEvent.CancelClicked -> {
+                viewModelScope.launch {
+                    _uiEffect.emit(OfflineInvoiceUiEffect.NavigateBack)
+                }
+            }
+            OfflineInvoiceUiEvent.AcceptClicked -> validateAndGenerateInvoice()
+            OfflineInvoiceUiEvent.DialogCopyAcceptClicked -> {
+                viewModelScope.launch {
+                    _uiState.update { it.copy(isCopyDialogVisible = false) }
+                    _uiEffect.emit(OfflineInvoiceUiEffect.NavigateBack)
+                }
+            }
+            OfflineInvoiceUiEvent.DialogCopyCancelClicked -> {
+                viewModelScope.launch {
+                    _uiState.update { it.copy(isCopyDialogVisible = false) }
+                    _uiEffect.emit(OfflineInvoiceUiEffect.NavigateBack)
+                }
+            }
+        }
+    }
+    fun loadPreferences() {
+        viewModelScope.launch {
+            val preferences = userPreferencesUseCase.getUserPreferences()
+            if (preferences != null) {
+                _uiState.update {
+                    it.copy(
+                        driverCity = preferences.invoiceIssuerCity.takeIf { v -> v.isNotEmpty() } ?: it.driverCity,
+                        driverDirection = preferences.invoiceIssuerAddress.takeIf { v -> v.isNotEmpty() } ?: it.driverDirection,
+                        driverPostalCode = preferences.invoiceIssuerZipCode.takeIf { v -> v.isNotEmpty() } ?: it.driverPostalCode
+                    )
+                }
+            }
+        }
+    }
+    fun validateAndGenerateInvoice() {
+        val state = _uiState.value
+        if (state.clientNIF.isBlank() && areFieldsEmpty(state)) {
+            viewModelScope.launch {
+                _uiEffect.emit(OfflineInvoiceUiEffect.ShowToast(ifac.td.taxi.R.string.toast_complete_todos_los_campos))
+            }
+            return
+        }
+        if (state.clientNIF.isNotBlank() && !areFieldsEmpty(state)) {
+            viewModelScope.launch {
+                val isValidNif = isValidDni(state.clientNIF)
+                if (!isValidNif) {
+                    _uiEffect.emit(OfflineInvoiceUiEffect.ShowToast(ifac.td.taxi.R.string.check_fields))
+                    return@launch
+                }
+                doBilling(state)
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiEffect.emit(OfflineInvoiceUiEffect.ShowToast(ifac.td.taxi.R.string.check_fields))
+        }
+    }
+    fun doBilling(state: OfflineInvoiceUiState) {
+        viewModelScope.launch {
+            tripUseCase.getTripById(state.tripId)?.let { trip ->
+                val receipt = receiptUseCase.processReceipt(
+                    trip = trip,
+                    driverDirection = state.driverDirection,
+                    driverPostalCode = state.driverPostalCode,
+                    driverCity = state.driverCity,
+                    clientNameAndSurname = state.clientNameAndSurname,
+                    clientNIF = state.clientNIF,
+                    clientDirection = state.clientDirection,
+                    clientPostalCode = state.clientPostalCode,
+                    clientCity = state.clientCity,
+                )
+                val tripDispatch = dispatchUseCase.getDispatchByTripId(state.tripId)
+                val brokenDownTaxTicket =
+                    TicketsPrinter.getBrokenDownTax(trip, getApplication(), tripDispatch?.toInfoDispatchModel())
+                trip.invoiceAlreadyGenerated = true
+                tripUseCase.updateTripInvoiceFlag(trip.id, trip.invoiceAlreadyGenerated)
+                _uiEffect.emit(
+                    OfflineInvoiceUiEffect.PrintInvoice(
+                        receipt = receipt,
+                        brokenDownTaxTicket = brokenDownTaxTicket
+                    )
+                )
+                _uiEffect.emit(
+                    OfflineInvoiceUiEffect.OpenCopyDialog(
+                        title = "Invoice",
+                        description = "Do you want to print a copy?"
+                    )
+                )
+                _uiState.update { it.copy(isCopyDialogVisible = true) }
+            }
+        }
+    }
+    fun areFieldsEmpty(state: OfflineInvoiceUiState): Boolean {
+        return listOf(
+            state.driverDirection,
+            state.driverPostalCode,
+            state.driverCity,
+            state.clientNameAndSurname,
+            state.clientNIF,
+            state.clientDirection,
+            state.clientPostalCode,
+            state.clientCity
+        ).any { it.isBlank() }
+    }
+    fun isValidDni(value: String): Boolean {
+        return value.length >= 8
+    }
+}
+```
+---
+## 2) Compose button state holder: `OfflineInvoiceButtonsState`
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 214-2: import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.ui.graphics.Color
+@Stable
+data class OfflineInvoiceButtonsState(
+    val acceptEnabled: Boolean,
+    val cancelEnabled: Boolean = true,
+    val acceptVisible: Boolean = true,
+    val cancelVisible: Boolean = true,
+    val acceptBackgroundColor: Color,
+    val acceptContentColor: Color,
+    val cancelBackgroundColor: Color,
+    val cancelContentColor: Color
+) {
+    companion object {
+        @Composable
+        fun fromFormState(
+            isValidToSubmit: Boolean,
+            isBusy: Boolean = false
+        ): OfflineInvoiceButtonsState {
+            return OfflineInvoiceButtonsState(
+                acceptEnabled = isValidToSubmit && !isBusy,
+                cancelEnabled = !isBusy,
+                acceptVisible = true,
+                cancelVisible = true,
+                acceptBackgroundColor = if (isValidToSubmit && !isBusy) ButtonColors.AcceptEnabledBg else ButtonColors.AcceptDisabledBg,
+                acceptContentColor = if (isValidToSubmit && !isBusy) ButtonColors.AcceptEnabledText else ButtonColors.AcceptDisabledText,
+                cancelBackgroundColor = ButtonColors.CancelBg,
+                cancelContentColor = ButtonColors.CancelText
+            )
+        }
+    }
+}
+object ButtonColors {
+    val AcceptEnabledBg = Color(0xFF2E7D32)
+    val AcceptDisabledBg = Color(0xFFBDBDBD)
+    val AcceptEnabledText = Color.White
+    val AcceptDisabledText = Color(0xFF616161)
+    val CancelBg = Color(0xFFE0E0E0)
+    val CancelText = Color(0xFF212121)
+}
+```
+---
+## 3) Compose button helpers matching the custom button more closely
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 261-3: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+@Composable
+fun OfflineInvoiceActionButton(
+    text: String,
+    enabled: Boolean,
+    backgroundColor: Color,
+    contentColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .background(backgroundColor, RoundedCornerShape(12.dp))
+            .alpha(if (enabled) 1f else 0.65f)
+            .clickable(enabled = enabled) { onClick() }
+            .defaultMinSize(minHeight = 48.dp),
+    ) {
+        Text(
+            text = text,
+            color = contentColor,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+```
+---
+## 4) Compose dialog based on the custom dialog concept
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 307-4: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+enum class OfflineInvoiceDialogButtonType { ACCEPT, CANCEL }
+data class ComposeCustomDialogModel(
+    val title: String,
+    val description: String,
+    val isCancellable: Boolean = false,
+    val buttons: List<OfflineInvoiceDialogButtonType> = listOf(OfflineInvoiceDialogButtonType.CANCEL, OfflineInvoiceDialogButtonType.ACCEPT)
+)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ComposeCustomDialog(
+    model: ComposeCustomDialogModel,
+    onAction: (OfflineInvoiceDialogButtonType) -> Unit,
+    onDismissRequest: (() -> Unit)? = null
+) {
+    AlertDialog(
+        onDismissRequest = { if (model.isCancellable) onDismissRequest?.invoke() },
+        title = { Text(text = model.title) },
+        text = { Text(text = model.description) },
+        confirmButton = {
+            if (model.buttons.contains(OfflineInvoiceDialogButtonType.ACCEPT)) {
+                Button(onClick = { onAction(OfflineInvoiceDialogButtonType.ACCEPT) }) {
+                    Text("Accept")
+                }
+            }
+        },
+        dismissButton = {
+            if (model.buttons.contains(OfflineInvoiceDialogButtonType.CANCEL)) {
+                Button(
+                    onClick = { onAction(OfflineInvoiceDialogButtonType.CANCEL) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray)
+                ) {
+                    Text("Cancel", color = Color.Black)
+                }
+            }
+        }
+    )
+}
+```
+---
+## 5) Compose screen implementing the fragment behavior
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 370-5: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.compose.viewmodel.OfflineInvoiceComposeViewModel
+import ifac.td.taxi.ui.screen.state.OfflineInvoiceUiEffect
+import ifac.td.taxi.ui.screen.state.OfflineInvoiceUiEvent
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun OfflineInvoiceRoute(
+    navController: NavController,
+    tripId: Long,
+    viewModel: OfflineInvoiceComposeViewModel,
+    onPrintTicket: (receipt: String, brokenDownTaxTicket: String) -> Unit,
+    onShowToast: (Int) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(tripId) {
+        viewModel.onEvent(OfflineInvoiceUiEvent.TripIdChanged(tripId))
+        viewModel.onEvent(OfflineInvoiceUiEvent.LoadPreferences)
+    }
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is OfflineInvoiceUiEffect.PrintInvoice -> {
+                    onShowToast(R.string.printing_invoice)
+                    onPrintTicket(effect.receipt, effect.brokenDownTaxTicket)
+                }
+                is OfflineInvoiceUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                OfflineInvoiceUiEffect.NavigateBack -> navController.navigateUp()
+                is OfflineInvoiceUiEffect.OpenCopyDialog -> Unit
+            }
+        }
+    }
+    val buttonsState = remember(uiState) {
+        val isValidToSubmit = uiState.driverDirection.isNotBlank() &&
+                uiState.driverPostalCode.isNotBlank() &&
+                uiState.driverCity.isNotBlank() &&
+                uiState.clientNameAndSurname.isNotBlank() &&
+                uiState.clientNIF.isNotBlank() &&
+                uiState.clientDirection.isNotBlank() &&
+                uiState.clientPostalCode.isNotBlank() &&
+                uiState.clientCity.isNotBlank()
+        OfflineInvoiceButtonsState.fromFormState(
+            isValidToSubmit = isValidToSubmit,
+            isBusy = uiState.isInvoiceRequestInProgress
+        )
+    }
+    Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        OfflineInvoiceContent(
+            uiState = uiState,
+            buttonsState = buttonsState,
+            onEvent = viewModel::onEvent
+        )
+        if (uiState.isCopyDialogVisible) {
+            ComposeCustomDialog(
+                model = ComposeCustomDialogModel(
+                    title = stringResource(R.string.btn_invoice),
+                    description = stringResource(R.string.ask_invoice_copy),
+                    isCancellable = false
+                ),
+                onAction = { button ->
+                    when (button) {
+                        OfflineInvoiceDialogButtonType.ACCEPT -> viewModel.onEvent(OfflineInvoiceUiEvent.DialogCopyAcceptClicked)
+                        OfflineInvoiceDialogButtonType.CANCEL -> viewModel.onEvent(OfflineInvoiceUiEvent.DialogCopyCancelClicked)
+                    }
+                }
+            )
+        }
+    }
+}
+@Composable
+fun OfflineInvoiceContent(
+    uiState: ifac.td.taxi.ui.screen.state.OfflineInvoiceUiState,
+    buttonsState: OfflineInvoiceButtonsState,
+    onEvent: (OfflineInvoiceUiEvent) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = uiState.driverDirection,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.DriverDirectionChanged(it)) },
+            label = { Text("Driver direction") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.driverPostalCode,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.DriverPostalCodeChanged(it)) },
+            label = { Text("Driver postal code") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.driverCity,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.DriverCityChanged(it)) },
+            label = { Text("Driver city") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.clientNameAndSurname,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.ClientNameChanged(it)) },
+            label = { Text("Client name and surname") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.clientNIF,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.ClientNifChanged(it)) },
+            label = { Text("Client NIF") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.clientDirection,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.ClientDirectionChanged(it)) },
+            label = { Text("Client direction") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.clientPostalCode,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.ClientPostalCodeChanged(it)) },
+            label = { Text("Client postal code") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = uiState.clientCity,
+            onValueChange = { onEvent(OfflineInvoiceUiEvent.ClientCityChanged(it)) },
+            label = { Text("Client city") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            if (buttonsState.cancelVisible) {
+                OfflineInvoiceActionButton(
+                    text = "Cancel",
+                    enabled = buttonsState.cancelEnabled,
+                    backgroundColor = buttonsState.cancelBackgroundColor,
+                    contentColor = buttonsState.cancelContentColor,
+                    onClick = { onEvent(OfflineInvoiceUiEvent.CancelClicked) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            if (buttonsState.acceptVisible) {
+                OfflineInvoiceActionButton(
+                    text = "Accept",
+                    enabled = buttonsState.acceptEnabled,
+                    backgroundColor = buttonsState.acceptBackgroundColor,
+                    contentColor = buttonsState.acceptContentColor,
+                    onClick = { onEvent(OfflineInvoiceUiEvent.AcceptClicked) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+```
+---
+## 7) Notes on exact parity with the original fragment
+### What is preserved
+### What is intentionally improved
+---
+## 8) If you want a closer XML-style `CustomDialog`
+1. a `Compose` dialog that visually matches your XML `custom_dialog.xml` more closely,
+2. a `TextField` wrapper that mimics your custom fields and `FieldType.DNI` validation,
+3. a `MainActivityViewModel` Compose bridge for `printTicket`, `showToast`, and `navigateBack`,
+4. a `Scaffold`-based full screen with header support.

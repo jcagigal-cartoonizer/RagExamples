@@ -4,9 +4,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // // # Block 4: import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.*
+// // # Block 485-4: import androidx.compose.foundation.BorderStroke
+// import androidx.compose.foundation.BorderStroke
+// // import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -48,5 +48,72 @@ fun ComposeCustomButton(
         Text(text)
     }
 }
-// # 5) Compose `CustomDialog` based on your XML/custom dialog behavior
-// ## `LoginUserCustomDialog.kt`
+// // # Block 535-5: import androidx.compose.foundation.layout.*
+// // import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+@Composable
+fun LoginUserLoginUserCustomDialog(
+    title: String,
+    description: String,
+    pinMode: Boolean,
+    maxLength: Int,
+    onDismiss: () -> Unit,
+    onAccept: (String) -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(description)
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { newValue ->
+                        text = newValue.take(maxLength)
+                    },
+                    singleLine = true,
+                    visualTransformation = if (pinMode) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = if (pinMode) {
+                        androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = KeyboardType.NumberPassword
+                        )
+                    } else {
+                        androidx.compose.foundation.text.KeyboardOptions.Default
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onAccept(text) }) {
+                Text("Aceptar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+> If your original `custom_dialog.xml` has more fields/styling, you can extend this with icons, custom spacing, and error text in the same pattern.
+That replaces:
+Some things from the fragment map directly, but Compose needs a few assumptions:
+Example screen host:
+@Composable
+fun LoginUserDestination(
+    navController: NavController,
+    viewModel: LoginUserComposeViewModel
+) {
+    LoginUserRoute(
+        navController = navController,
+        viewModel = viewModel
+    )
+}
+Your fragment also interacts with `MainActivityViewModel` flows like:
+To fully match behavior, that shared activity state should also be represented in Compose, either by:
+1. passing the shared `MainActivityViewModel` into the composable and collecting its state/effects, or
+2. merging those flows into the new `LoginUserComposeViewModel`

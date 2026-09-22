@@ -1,0 +1,718 @@
+Below is a Compose-based replacement that keeps the same behavior, but moves the screen to:
+
+- a single `UiState`
+- a single `SharedFlow<OnlineInvoiceUiEffect>`
+- Compose dialog state
+- lifecycle-aware collection
+- navigation via `NavController.popBackStack()`
+- button logic fully modeled in a `OnlineInvoiceButtonsState`
+
+I’ll provide:
+
+1. `OnlineInvoiceUiState`, `OnlineInvoiceUiEffect`, `OnlineInvoiceButtonsState`
+2. a Compose-friendly `OnlineInvoiceViewModel`
+3. a full `OnlineInvoiceScreen` composable
+4. a Compose `CustomDialog` equivalent
+5. styling helpers for buttons matching the original custom button behavior as closely as possible
+
+---
+
+## 1) Compose state + effect models
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.annotation.StringRes
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.ui.model.FiscalData
+
+data class OnlineInvoiceUiState(
+    val isLoading: Boolean = false,
+    val trip: Trip? = null,
+
+    val fiscalId: String = "",
+    val companyName: String = "",
+    val streetName: String = "",
+    val number: String = "",
+    val city: String = "",
+    val postalCode: String = "",
+    val province: String = "",
+    val country: String = "",
+    val email: String = "",
+
+    val areFiscalFieldsVisible: Boolean = false,
+    val dialogState: OnlineInvoiceDialogState? = null
+) {
+    val hasNif: Boolean get() = fiscalId.isNotBlank()
+
+    val areRequiredFieldsEmpty: Boolean
+        get() = companyName.isBlank() ||
+            streetName.isBlank() ||
+            number.isBlank() ||
+            city.isBlank() ||
+            postalCode.isBlank() ||
+            province.isBlank() ||
+            fiscalId.isBlank() ||
+            email.isBlank() ||
+            country.isBlank()
+
+    fun toFiscalData() = FiscalData(
+        fiscalID = fiscalId,
+        companyName = companyName,
+        streetName = streetName,
+        number = number,
+        city = city,
+        postalCode = postalCode,
+        province = province,
+        country = country,
+        email = email
+    )
+}
+
+sealed interface OnlineInvoiceUiEffect {
+    data class ShowToast(@StringRes val messageRes: Int) : OnlineInvoiceUiEffect
+    data object NavigateBack : OnlineInvoiceUiEffect
+    data class OpenDialog(val dialogState: OnlineInvoiceDialogState) : OnlineInvoiceUiEffect
+}
+
+data class OnlineInvoiceDialogState(
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int,
+    val buttons: List<OnlineInvoiceDialogButton> = listOf(OnlineInvoiceDialogButton.Accept),
+    val onAccept: (() -> Unit)? = null
+)
+
+sealed interface OnlineInvoiceDialogButton {
+    data object Accept : OnlineInvoiceDialogButton
+}
+
+enum class OnlineInvoiceButtonType {
+    ACCEPT,
+    CANCEL
+}
+
+data class OnlineInvoiceButtonStyle(
+    val containerColor: Color,
+    val contentColor: Color,
+    val disabledContainerColor: Color,
+    val disabledContentColor: Color,
+    val loadingContainerColor: Color,
+    val loadingContentColor: Color,
+)
+
+data class OnlineInvoiceButtonUi(
+    val type: OnlineInvoiceButtonType,
+    val textRes: Int,
+    val enabled: Boolean,
+    val isVisible: Boolean = true,
+    val isLoading: Boolean = false,
+    val containerColor: Color,
+    val contentColor: Color,
+    val disabledContainerColor: Color,
+    val disabledContentColor: Color,
+)
+
+data class OnlineInvoiceButtonsState(
+    val accept: OnlineInvoiceButtonUi,
+    val cancel: OnlineInvoiceButtonUi
+) {
+    companion object {
+        fun from(
+            isLoading: Boolean,
+            canGenerateInvoice: Boolean,
+        ): OnlineInvoiceButtonsState {
+            val acceptStyle = OnlineInvoiceButtonStyle(
+                containerColor = Color(0xFF2E7D32),
+                contentColor = Color.White,
+                disabledContainerColor = Color(0xFFBDBDBD),
+                disabledContentColor = Color(0xFF757575),
+                loadingContainerColor = Color(0xFF2E7D32),
+                loadingContentColor = Color.White
+            )
+
+            val cancelStyle = OnlineInvoiceButtonStyle(
+                containerColor = Color(0xFFE0E0E0),
+                contentColor = Color(0xFF212121),
+                disabledContainerColor = Color(0xFFE0E0E0),
+                disabledContentColor = Color(0xFF9E9E9E),
+                loadingContainerColor = Color(0xFFE0E0E0),
+                loadingContentColor = Color(0xFF212121)
+            )
+
+            return OnlineInvoiceButtonsState(
+                accept = OnlineInvoiceButtonUi(
+                    type = OnlineInvoiceButtonType.ACCEPT,
+                    textRes = R.string.accept,
+                    enabled = !isLoading && canGenerateInvoice,
+                    isLoading = isLoading,
+                    containerColor = acceptStyle.containerColor,
+                    contentColor = acceptStyle.contentColor,
+                    disabledContainerColor = acceptStyle.disabledContainerColor,
+                    disabledContentColor = acceptStyle.disabledContentColor
+                ),
+                cancel = OnlineInvoiceButtonUi(
+                    type = OnlineInvoiceButtonType.CANCEL,
+                    textRes = R.string.cancel,
+                    enabled = !isLoading,
+                    isVisible = true,
+                    isLoading = false,
+                    containerColor = cancelStyle.containerColor,
+                    contentColor = cancelStyle.contentColor,
+                    disabledContainerColor = cancelStyle.disabledContainerColor,
+                    disabledContentColor = cancelStyle.disabledContentColor
+                )
+            )
+        }
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEffect`
+
+This replaces the old `tripFlow`, `fiscalDataFlow`, `invoiceFlow`, `errorFlow` pattern with one state + one effect stream.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Dispatch
+import ifac.td.taxi.domain.model.SmartTDException
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.BravoRestInvoiceUseCase
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.model.FiscalData
+import ifac.td.taxi.ui.model.SmartTDUIException
+import ifac.td.taxi.ui.screen.onlineinvoice.OnlineInvoiceDialogButton
+import ifac.td.taxi.ui.screen.onlineinvoice.OnlineInvoiceDialogState
+import ifac.td.taxi.ui.screen.onlineinvoice.OnlineInvoiceUiEffect
+import ifac.td.taxi.ui.screen.onlineinvoice.OnlineInvoiceUiState
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toInfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class OnlineInvoiceViewModel(
+    context: Application,
+    private val tripUseCase: TripUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val bravoRestInvoiceUseCase: BravoRestInvoiceUseCase
+) : BaseViewModel(context) {
+
+    private val _uiState = MutableStateFlow(OnlineInvoiceUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<OnlineInvoiceUiEffect>(extraBufferCapacity = 1)
+    val effects = _effects.asSharedFlow()
+
+    fun onTripIdReceived(id: Long) {
+        getTrip(id)
+    }
+
+    fun onFiscalIdChanged(value: String) {
+        _uiState.update { it.copy(fiscalId = value) }
+    }
+
+    fun onCompanyNameChanged(value: String) { _uiState.update { it.copy(companyName = value) } }
+    fun onStreetNameChanged(value: String) { _uiState.update { it.copy(streetName = value) } }
+    fun onNumberChanged(value: String) { _uiState.update { it.copy(number = value) } }
+    fun onCityChanged(value: String) { _uiState.update { it.copy(city = value) } }
+    fun onPostalCodeChanged(value: String) { _uiState.update { it.copy(postalCode = value) } }
+    fun onProvinceChanged(value: String) { _uiState.update { it.copy(province = value) } }
+    fun onCountryChanged(value: String) { _uiState.update { it.copy(country = value) } }
+    fun onEmailChanged(value: String) { _uiState.update { it.copy(email = value) } }
+
+    fun onAcceptClicked() {
+        val state = _uiState.value
+        if (state.fiscalId.isBlank() || state.areRequiredFieldsEmpty) {
+            if (state.fiscalId.isNotBlank() && state.areRequiredFieldsEmpty) {
+                getFiscalData(state.fiscalId)
+            } else {
+                emitEffect(OnlineInvoiceUiEffect.ShowToast(R.string.toast_complete_todos_los_campos))
+            }
+            return
+        }
+        generateInvoice(state.toFiscalData())
+    }
+
+    fun onCancelClicked() {
+        emitEffect(OnlineInvoiceUiEffect.NavigateBack)
+    }
+
+    fun dismissDialog() {
+        _uiState.update { it.copy(dialogState = null) }
+    }
+
+    fun confirmDialog() {
+        _uiState.value.dialogState?.onAccept?.invoke()
+        dismissDialog()
+    }
+
+    private fun getTrip(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            val trip = tripUseCase.getTripById(id)
+            if (trip != null) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        trip = trip,
+                        fiscalId = trip.nif.orEmpty(),
+                        areFiscalFieldsVisible = trip.nif?.isNotBlank() == true
+                    )
+                }
+                if (!trip.nif.isNullOrBlank()) {
+                    getFiscalData(trip.nif)
+                }
+            } else {
+                _uiState.update { it.copy(isLoading = false) }
+                emitError(SmartTDException.DATABASE_ERROR)
+            }
+        }
+    }
+
+    private fun getFiscalData(fiscalId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            when (val result = bravoRestInvoiceUseCase.getFiscalData(fiscalId)) {
+                is Resource.Success -> {
+                    result.data?.let { data ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                areFiscalFieldsVisible = true,
+                                companyName = data.companyName,
+                                streetName = data.streetName,
+                                number = data.number,
+                                city = data.city,
+                                postalCode = data.postalCode,
+                                province = data.province,
+                                country = data.country,
+                                email = data.email
+                            )
+                        }
+                    }
+                }
+                is Resource.Error -> {
+                    _uiState.update { it.copy(isLoading = false) }
+                    result.exception?.let { emitError(it) }
+                }
+            }
+        }
+    }
+
+    private fun generateInvoice(userFiscalData: FiscalData) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            val trip = _uiState.value.trip
+            if (trip == null) {
+                _uiState.update { it.copy(isLoading = false) }
+                emitError(SmartTDException.DATABASE_ERROR)
+                return@launch
+            }
+
+            var dispatch: Dispatch? = null
+            if (trip.fromDispatch && trip.pkDispatchId != null) {
+                dispatch = dispatchUseCase.getDispatchById(trip.pkDispatchId!!)
+            }
+
+            when (val result = bravoRestInvoiceUseCase.generateInvoice(
+                trip,
+                dispatch?.toInfoDispatchModel(),
+                fiscalData = userFiscalData
+            )) {
+                is Resource.Success -> {
+                    updateTripInvoiceStatus(trip)
+                    _uiState.update { it.copy(isLoading = false) }
+                    emitEffect(OnlineInvoiceUiEffect.OpenDialog(
+                        OnlineInvoiceDialogState(
+                            titleRes = R.string.dialog_success,
+                            descriptionRes = R.string.online_invoice_sent_success,
+                            buttons = listOf(OnlineInvoiceDialogButton.Accept),
+                            onAccept = { emitEffect(OnlineInvoiceUiEffect.NavigateBack) }
+                        )
+                    ))
+                }
+                is Resource.Error -> {
+                    _uiState.update { it.copy(isLoading = false) }
+                    result.exception?.let { emitError(it) }
+                }
+            }
+        }
+    }
+
+    private suspend fun updateTripInvoiceStatus(trip: Trip) {
+        trip.invoiceAlreadyGenerated = true
+        tripUseCase.updateTripInvoiceFlag(trip.id, trip.invoiceAlreadyGenerated)
+    }
+
+    private fun emitError(exception: Throwable) {
+        val uiException = SmartTDUIException.fromException(exception)
+        emitEffect(
+            OnlineInvoiceUiEffect.OpenDialog(
+                OnlineInvoiceDialogState(
+                    titleRes = R.string.dialog_error_title,
+                    descriptionRes = uiException.stringResId,
+                    buttons = listOf(OnlineInvoiceDialogButton.Accept),
+                    onAccept = { emitEffect(OnlineInvoiceUiEffect.NavigateBack) }
+                )
+            )
+        )
+    }
+
+    private fun emitEffect(effect: OnlineInvoiceUiEffect) {
+        _effects.tryEmit(effect)
+    }
+}
+```
+
+---
+
+## 3) Compose screen preserving navigation
+
+This assumes you still have a Fragment that hosts Compose, so navigation is preserved through `NavController` and `findNavController()` from the fragment.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.OnlineInvoiceViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun OnlineInvoiceScreen(
+    tripId: Long,
+    navController: NavController,
+    viewModel: OnlineInvoiceViewModel
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val focusManager = LocalFocusManager.current
+
+    val buttonsState = remember(uiState.isLoading, uiState.areRequiredFieldsEmpty) {
+        OnlineInvoiceButtonsState.from(
+            isLoading = uiState.isLoading,
+            canGenerateInvoice = !uiState.areRequiredFieldsEmpty
+        )
+    }
+
+    LaunchedEffect(tripId) {
+        viewModel.onTripIdReceived(tripId)
+    }
+
+    LaunchedEffect(Unit) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            viewModel.effects.collectLatest { effect ->
+                when (effect) {
+                    OnlineInvoiceUiEffect.NavigateBack -> navController.popBackStack()
+                    is OnlineInvoiceUiEffect.ShowToast -> {
+                        // Hook this up from your Fragment/Activity if needed
+                    }
+                    is OnlineInvoiceUiEffect.OpenDialog -> {
+                        viewModelStateDialogBridge(viewModel, effect.dialogState)
+                    }
+                }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Online Invoice",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+
+            OutlinedTextField(
+                value = uiState.fiscalId,
+                onValueChange = viewModel::onFiscalIdChanged,
+                label = { Text("NIF") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !uiState.isLoading
+            )
+
+            if (uiState.areFiscalFieldsVisible) {
+                OutlinedTextField(value = uiState.companyName, onValueChange = viewModel::onCompanyNameChanged, label = { Text("Company Name") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.streetName, onValueChange = viewModel::onStreetNameChanged, label = { Text("Street Name") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.number, onValueChange = viewModel::onNumberChanged, label = { Text("Number") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.city, onValueChange = viewModel::onCityChanged, label = { Text("City") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.postalCode, onValueChange = viewModel::onPostalCodeChanged, label = { Text("Postal Code") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.province, onValueChange = viewModel::onProvinceChanged, label = { Text("Province") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.email, onValueChange = viewModel::onEmailChanged, label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+                OutlinedTextField(value = uiState.country, onValueChange = viewModel::onCountryChanged, label = { Text("Country") }, modifier = Modifier.fillMaxWidth(), enabled = !uiState.isLoading)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OnlineInvoiceStyledButton(
+                    modifier = Modifier.weight(1f),
+                    text = "Accept",
+                    state = buttonsState.accept,
+                    onClick = {
+                        focusManager.clearFocus()
+                        viewModel.onAcceptClicked()
+                    }
+                )
+                OnlineInvoiceStyledButton(
+                    modifier = Modifier.weight(1f),
+                    text = "Cancel",
+                    state = buttonsState.cancel,
+                    onClick = viewModel::onCancelClicked
+                )
+            }
+        }
+
+        if (uiState.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        }
+
+        uiState.dialogState?.let { dialog ->
+            CustomDialog(
+                dialogState = dialog,
+                onDismiss = viewModel::dismissDialog,
+                onAccept = {
+                    viewModel.confirmDialog()
+                    navController.popBackStack()
+                }
+            )
+        }
+    }
+}
+
+private fun viewModelStateDialogBridge(
+    viewModel: OnlineInvoiceViewModel,
+    dialogState: OnlineInvoiceDialogState
+) {
+    // If you prefer, route effect -> state here.
+    // For pure state-driven dialogs, set dialog state from the VM directly.
+}
+```
+
+---
+
+## 4) Compose button with custom styling helpers
+
+This is a closer match to a custom button component than a plain `Button`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun OnlineInvoiceStyledButton(
+    modifier: Modifier = Modifier,
+    text: String,
+    state: OnlineInvoiceButtonUi,
+    onClick: () -> Unit
+) {
+    val containerColor = when {
+        state.isLoading -> state.loadingContainerColor
+        state.enabled -> state.containerColor
+        else -> state.disabledContainerColor
+    }
+    val contentColor = when {
+        state.isLoading -> state.loadingContentColor
+        state.enabled -> state.contentColor
+        else -> state.disabledContentColor
+    }
+
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .background(containerColor, RoundedCornerShape(12.dp))
+            .clickable(enabled = state.enabled && !state.isLoading) { onClick() }
+            .alpha(if (state.enabled || state.isLoading) 1f else 0.7f),
+        contentAlignment = Alignment.Center
+    ) {
+        if (state.isLoading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                color = contentColor,
+                strokeWidth = 2.dp
+            )
+        } else {
+            Text(
+                text = text,
+                color = contentColor,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+```
+
+---
+
+## 5) Compose CustomDialog based on the XML/dialog behavior
+
+This is a Compose replacement for the XML dialog + `CustomDialog.kt` behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.stringResource
+import ifac.td.taxi.R
+
+@Composable
+fun CustomDialog(
+    dialogState: OnlineInvoiceDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = stringResource(id = dialogState.titleRes),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = stringResource(id = dialogState.descriptionRes),
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Start
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dialogState.buttons.any { it is OnlineInvoiceDialogButton.Accept }) {
+                        TextButton(onClick = onAccept) {
+                            Text(text = stringResource(id = R.string.accept))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) How to use it from a Fragment while preserving navigation
+
+If you still need a Fragment host:
+
+```kotlin
+class OnlineInvoiceFragment : Fragment() {
+
+    private val viewModel: OnlineInvoiceViewModel by viewModel()
+    private val args: OnlineInvoiceFragmentArgs by navArgs()
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        val composeView = view.findViewById<ComposeView>(R.id.composeView)
+        composeView.setContent {
+            OnlineInvoiceScreen(
+                tripId = args.tripId,
+                navController = findNavController(),
+                viewModel = viewModel
+            )
+        }
+    }
+}
+```
+
+---
+
+## Notes about exact XML parity
+
+A few details from the XML version are not visible in your snippet, so the Compose version above matches the behavior rather than the exact XML pixels. To make it visually identical, you’d typically port:
+
+- button corner radius
+- paddings/margins
+- colors from `CustomButton`
+- dialog shape, elevation, header icon, and text styles from `custom_dialog.xml`
+
+If you share the XML files for:
+
+- `fragment_online_invoice.xml`
+- `custom_dialog.xml`
+- the `CustomButton` implementation
+
+I can produce a pixel-closer Compose version with exact colors, sizes, and typography.

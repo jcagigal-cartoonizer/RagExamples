@@ -1,0 +1,518 @@
+I’ll keep this grounded in **Android + Jetpack Compose only**.
+---
+# 1) Compose UI for `AboutFragment`
+## `AboutRoute.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 6-1: import androidx.compose.foundation.clickable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextDecoration
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.framework.util.ApkUtils
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun AboutRoute(
+    viewModel: AboutComposeViewModel,
+    onNavigateBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // Dialog state holder
+    var showWarningDialog by rememberSaveable { mutableStateOf(false) }
+    // Lifecycle-safe effect collection
+    LaunchedEffect(Unit) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                AboutUiEffect.NavigateBack -> onNavigateBack()
+                AboutUiEffect.ShowWarningDialog -> showWarningDialog = true
+            }
+        }
+    }
+    if (showWarningDialog) {
+        CustomDialog(
+            dialogState = CustomDialogState(
+                title = "Warning",
+                message = "No browser available to open this link.",
+                confirmText = "OK",
+                dismissText = null,
+                showDismiss = false
+            ),
+            onConfirm = {
+                showWarningDialog = false
+            },
+            onDismiss = {
+                showWarningDialog = false
+            }
+        )
+    }
+    AboutScreen(
+        uiState = uiState,
+        onPrivacyClick = { viewModel.onEvent(AboutUiEvent.ClickPrivacy) },
+        onAcceptClick = { viewModel.onEvent(AboutUiEvent.ClickAccept) },
+        onLogoClick = { viewModel.onEvent(AboutUiEvent.LogoTapped) },
+        modifier = modifier
+    )
+}
+```
+---
+## `AboutScreen.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 70-2: import androidx.compose.foundation.Image
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextDecoration
+import androidx.compose.ui.unit.dp
+@Composable
+fun AboutScreen(
+    uiState: AboutUiState,
+    onPrivacyClick: () -> Unit,
+    onAcceptClick: () -> Unit,
+    onLogoClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val buttonsState = uiState.buttonsState
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = uiState.appInfo,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = uiState.privacyPolicyText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    textDecoration = TextDecoration.Underline
+                ),
+                modifier = Modifier.clickable(enabled = true) {
+                    onPrivacyClick()
+                }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            if (uiState.showBluetoothInfo && uiState.bluetoothInfoText.isNotBlank()) {
+                Text(
+                    text = uiState.bluetoothInfoText,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            AboutButton(
+                text = buttonsState.accept.label,
+                enabled = buttonsState.accept.enabled,
+                visible = buttonsState.accept.visible,
+                colors = buttonsState.accept.colors,
+                onClick = onAcceptClick,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            // logo tap area (can be Image in real UI)
+            Text(
+                text = uiState.logoText,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .clickable { onLogoClick() }
+                    .padding(8.dp)
+            )
+        }
+    }
+}
+```
+---
+# 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+## `AboutViewModel.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 149-3: import android.app.Application
+import android.app.Application
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
+import ifac.td.taxi.framework.sdk.model.BluetoothInfo
+import ifac.td.taxi.framework.util.ApkUtils
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class AboutComposeViewModel(
+    application: Application,
+    private val bluetoothLocalUseCase: BluetoothLocalUseCase
+) : AndroidViewModel(application) {
+    private val TAG = "AboutViewModel"
+    private val context get() = getApplication<Application>()
+    private val _uiState = MutableStateFlow(
+        AboutUiState(
+            appInfo = buildAppInfo(),
+            privacyPolicyText = "Privacy Policy",
+            bluetoothInfoText = "",
+            showBluetoothInfo = false,
+            buttonsState = AboutButtonsState.default()
+        )
+    )
+    val uiState: StateFlow<AboutUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<AboutUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<AboutUiEffect> = _effects.asSharedFlow()
+    private var logoTapCounter = 0
+    init {
+        checkSavedDevice()
+    }
+    fun onEvent(event: AboutUiEvent) {
+        when (event) {
+            AboutUiEvent.ClickPrivacy -> clickPrivacy()
+            AboutUiEvent.ClickAccept -> emitEffect(AboutUiEffect.NavigateBack)
+            AboutUiEvent.LogoTapped -> onLogoTapped()
+            AboutUiEvent.DismissWarningDialog -> { /* handled in UI */ }
+        }
+    }
+    fun onLogoTapped() {
+        logoTapCounter++
+        Logs.d(TAG, "logoTapped count=$logoTapCounter")
+        if (logoTapCounter == 5) {
+            // Preserve original hidden action
+            // W2CLocation.setTrackingState(AlfaLocation.ESTADO_SEGUIMIENTO_ALARMA, "1")
+            logoTapCounter = 0
+        }
+    }
+    fun clickPrivacy() {
+        val privacyPolicyUrl = "https://www.taxitronic.com/en/privacy-policy-smart-td/"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(privacyPolicyUrl)).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        try {
+            context.startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            viewModelScope.launch {
+                _effects.emit(AboutUiEffect.ShowWarningDialog)
+            }
+            Logs.d(TAG, "clickPrivacy: No browser available")
+        }
+    }
+    fun checkSavedDevice() {
+        viewModelScope.launch {
+            val bluetooth = bluetoothLocalUseCase.getLocalBluetooth()
+            val isDeviceAvailable = bluetooth != null
+            val deviceInfoText = if (isDeviceAvailable && bluetooth != null) {
+                buildBluetoothInfoText(bluetooth)
+            } else {
+                ""
+            }
+            _uiState.update {
+                it.copy(
+                    showBluetoothInfo = isDeviceAvailable && bluetooth != null,
+                    bluetoothInfoText = deviceInfoText,
+                    buttonsState = it.buttonsState.copy(
+                        // matches XML logic: accept always visible/enabled
+                        accept = it.buttonsState.accept.copy(
+                            visible = true,
+                            enabled = true
+                        )
+                    )
+                )
+            }
+        }
+    }
+    fun buildBluetoothInfoText(bluetoothInfo: BluetoothInfo): String {
+        // Preserves the original intended display format
+        return buildString {
+            appendLine("${bluetoothInfo.name} [${bluetoothInfo.btPIN}]")
+            val firmware = runCatching { com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().taximeterVersionFirmware }.getOrDefault("")
+            val hardware = runCatching { com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().taximeterVersionHardware }.getOrDefault("")
+            if (firmware.isNotEmpty() && hardware.isNotEmpty()) {
+                appendLine("$firmware - $hardware")
+            }
+            val answerK62 = runCatching { com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().answerK62 }.getOrDefault("")
+            if (answerK62.isNotEmpty()) {
+                appendLine(answerK62)
+            }
+        }.trim()
+    }
+    fun buildAppInfo(): String {
+        val name = ApkUtils.getAppNameVersionDate(
+            name = true, version = false, date = false, context = context
+        )
+        val version = ApkUtils.getAppNameVersionDate(
+            name = false, version = true, date = false, context = context
+        )
+        val date = ApkUtils.getAppNameVersionDate(
+            name = false, version = false, date = true, context = context
+        )
+        return "App: $name | $version | $date"
+    }
+    fun emitEffect(effect: AboutUiEffect) {
+        viewModelScope.launch { _effects.emit(effect) }
+    }
+}
+```
+---
+# 3) `UiState`, `UiEvent`, `UiEffect`
+## `AboutUiModels.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 276-4: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+@Immutable
+data class AboutUiState(
+    val appInfo: String,
+    val privacyPolicyText: String,
+    val bluetoothInfoText: String,
+    val showBluetoothInfo: Boolean,
+    val buttonsState: AboutButtonsState,
+)
+sealed interface AboutUiEvent {
+    data object ClickPrivacy : AboutUiEvent
+    data object ClickAccept : AboutUiEvent
+    data object LogoTapped : AboutUiEvent
+    data object DismissWarningDialog : AboutUiEvent
+}
+sealed interface AboutUiEffect {
+    data object NavigateBack : AboutUiEffect
+    data object ShowWarningDialog : AboutUiEffect
+}
+```
+---
+# 4) `AboutButtonsState` with styling helpers
+## `AboutButtonsState.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 302-5: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Immutable
+data class AboutButtonsState(
+    val accept: AboutButtonState
+) {
+    companion object {
+        fun default(): AboutButtonsState {
+            return AboutButtonsState(
+                accept = AboutButtonState.primary(
+                    label = "Accept",
+                    visible = true,
+                    enabled = true
+                )
+            )
+        }
+    }
+}
+@Immutable
+data class AboutButtonState(
+    val label: String,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val colors: AboutButtonColors,
+    val shapeRadiusDp: Int = 12,
+    val borderWidthDp: Int = 0,
+) {
+    companion object {
+        fun primary(
+            label: String,
+            visible: Boolean = true,
+            enabled: Boolean = true
+        ): AboutButtonState {
+            return AboutButtonState(
+                label = label,
+                visible = visible,
+                enabled = enabled,
+                colors = AboutButtonColors.primary()
+            )
+        }
+    }
+}
+@Immutable
+data class AboutButtonColors(
+    val containerColor: Color,
+    val contentColor: Color,
+    val disabledContainerColor: Color,
+    val disabledContentColor: Color,
+    val borderColor: Color? = null
+) {
+    companion object {
+        fun primary(): AboutButtonColors = AboutButtonColors(
+            containerColor = Color(0xFF1E88E5),
+            contentColor = Color.White,
+            disabledContainerColor = Color(0xFF9E9E9E),
+            disabledContentColor = Color(0xFFE0E0E0),
+            borderColor = null
+        )
+        fun outline(): AboutButtonColors = AboutButtonColors(
+            containerColor = Color.Transparent,
+            contentColor = Color(0xFF1E88E5),
+            disabledContainerColor = Color.Transparent,
+            disabledContentColor = Color(0xFFB0BEC5),
+            borderColor = Color(0xFF1E88E5)
+        )
+    }
+}
+```
+---
+## Button styling helper and composable
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 378-6: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+@Composable
+fun AboutButton(
+    text: String,
+    enabled: Boolean,
+    visible: Boolean,
+    colors: AboutButtonColors,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!visible) return
+    val shape = RoundedCornerShape(12.dp)
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = shape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = colors.containerColor,
+            contentColor = colors.contentColor,
+            disabledContainerColor = colors.disabledContainerColor,
+            disabledContentColor = colors.disabledContentColor
+        ),
+        border = colors.borderColor?.let { BorderStroke(1.dp, it) },
+        modifier = modifier.height(48.dp)
+    ) {
+        Text(text = text)
+    }
+}
+```
+---
+# 5) Compose `CustomDialog` based on `custom_dialog.xml` + `CustomDialog.kt`
+## `CustomDialogState.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 419-7: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+@Immutable
+data class AboutCustomDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val dismissText: String? = null,
+    val showDismiss: Boolean = false
+)
+```
+---
+## `CustomDialog.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.about
+// # Block 434-8: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun AboutCustomDialog(
+    dialogState: CustomDialogState,
+    onConfirm: () -> Unit,
+    onDismiss: (() -> Unit)? = null
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x80000000))
+            .clickable(enabled = false) { },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 8.dp,
+            modifier = Modifier
+                .widthIn(min = 280.dp, max = 340.dp)
+                .padding(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = dialogState.title,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = dialogState.message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dialogState.showDismiss && dialogState.dismissText != null) {
+                        TextButton(onClick = { onDismiss?.invoke() }) {
+                            Text(dialogState.dismissText)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Button(onClick = onConfirm) {
+                        Text(dialogState.confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+## Preserve Jetpack Views navigation
+# 7) Important behavioral mappings from the original Fragment
+## Original → Compose mapping
+---
+# 8) If you want a closer XML-style button look
+# 9) Recommended final structure
+```text
+ui/screen/about/
+  AboutRoute.kt
+  AboutScreen.kt
+  AboutViewModel.kt
+  AboutUiModels.kt
+  AboutButtonsState.kt
+  AboutButton.kt
+  CustomDialog.kt
+  CustomDialogState.kt
+```
+---
+1. a **fully self-contained single-file Compose implementation**, or  
+2. a **Koin module** for the Compose `AboutViewModel`, or  
+3. a **Navigation-Compose version** of this screen.

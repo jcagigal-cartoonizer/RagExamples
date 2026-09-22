@@ -2,10 +2,10 @@ package com.cartoonizer.rag.old;
 
 import com.cartoonizer.rag.shared.utils.ContactCentralBlocks;
 import com.cartoonizer.rag.shared.utils.DashboardBlocks;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import com.cartoonizer.rag.shared.utils.GeneralBlocks;
 import com.cartoonizer.rag.shared.utils.InfoDispatchBlocks;
 import com.cartoonizer.rag.shared.utils.ReadFile;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIX;
 import com.cartoonizer.rag.shared.utils.IGeneralBlocks;
 import com.cartoonizer.rag.shared.utils.LoginUserBlocks;
 import java.io.PrintWriter;
@@ -89,7 +89,7 @@ public class ProcessAnswerFileOld {
                     line = "// " + line;
                     printAlways = true;
                 }
-                if (line.trim().contains(iface.getEndTag())) {
+                if (iface.isEndTag(line.trim())) {
                     line = "// " + line;
                 }
                 if ((line.contains("class " + PREFIX + "ViewModel") || line.contains(PREFIX + "ViewModel,")) && !line.contains(PREFIX + "ViewModelCompose") && !line.contains(PREFIX + "ComposeViewModel")) {

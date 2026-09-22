@@ -1,0 +1,699 @@
+Below is a Compose-based redesign that keeps the original behavior, preserves Jetpack Navigation, and replaces the Fragment button logic with a `UiState + UiEffect` approach.
+
+I’ll provide:
+
+1. **A Compose screen** for `ClosedPartialFragment`
+2. **A Compose-friendly ViewModel** with `UiState + SharedFlow<ClosedPartialUiEffect>`
+3. **A full `ClosedPartialButtonsState`** that matches the fragment/button visibility/style logic
+4. **Compose button styling helpers** closer to your custom button behavior
+5. **A Compose `CustomDialog`** implementation inspired by your XML/dialog usage
+6. **Navigation handling via effects** so you can preserve Jetpack Views navigation patterns
+
+---
+
+## 1) Compose UI state, effects, and button state
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class ClosedPartialUiState(
+    val isLoading: Boolean = false,
+    val ticketContent: String = "",
+    val buttonsState: ClosedPartialButtonsState = ClosedPartialButtonsState(),
+    val dialog: ClosedPartialDialogState? = null
+)
+
+sealed interface ClosedPartialUiEffect {
+    data object NavigateBack : ClosedPartialUiEffect
+    data class NavigateToTotalizers(val destinationId: Int) : ClosedPartialUiEffect
+    data object PrintPartial : ClosedPartialUiEffect
+    data object CloseDialog : ClosedPartialUiEffect
+}
+
+@Immutable
+data class ClosedPartialDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String = "OK",
+    val dismissText: String? = null
+)
+
+@Immutable
+data class ClosedPartialButtonsState(
+    val cancel: ClosedPartialButtonStyle = ClosedPartialButtonStyle.Enabled,
+    val print: ClosedPartialButtonStyle = ClosedPartialButtonStyle.Enabled,
+    val totalizers: ClosedPartialButtonStyle = ClosedPartialButtonStyle.Hidden
+) {
+    val showTotalizers: Boolean get() = totalizers !is ClosedPartialButtonStyle.Hidden
+}
+
+sealed interface ClosedPartialButtonStyle {
+    data object Hidden : ClosedPartialButtonStyle
+    data object Disabled : ClosedPartialButtonStyle
+    data object Enabled : ClosedPartialButtonStyle
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel
+
+This ViewModel exposes:
+- `uiState: StateFlow<ClosedPartialUiState>`
+- `uiEffects: SharedFlow<ClosedPartialUiEffect>`
+
+It keeps the business logic from your original `ClosedPartialViewModel`, but makes it Compose-friendly.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.domain.usecase.PartialUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.screen.closedpartial.compose.ClosedPartialButtonStyle
+import ifac.td.taxi.ui.screen.closedpartial.compose.ClosedPartialButtonsState
+import ifac.td.taxi.ui.screen.closedpartial.compose.ClosedPartialDialogState
+import ifac.td.taxi.ui.screen.closedpartial.compose.ClosedPartialUiEffect
+import ifac.td.taxi.ui.screen.closedpartial.compose.ClosedPartialUiState
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.addTicketLines
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class ClosedPartialComposeViewModel(
+    context: Application,
+    private val printerUseCase: PrinterUseCase,
+    private val partialUseCase: PartialUseCase,
+    private val taximeterUseCase: TaximeterConnectUseCase,
+    private val sharedViewModel: MainActivityViewModel
+) : BaseViewModel(context) {
+
+    private val TAG = "ClosedPartialComposeVM"
+
+    private val _uiState = MutableStateFlow(ClosedPartialUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffects = MutableSharedFlow<ClosedPartialUiEffect>()
+    val uiEffects = _uiEffects.asSharedFlow()
+
+    private val _partial = MutableStateFlow<PartialModel?>(null)
+
+    fun onStart() {
+        viewModelScope.launch {
+            Logs.d(TAG, "onStart")
+            checkTaximeterStatus()
+            getClosedPartial()
+        }
+    }
+
+    fun onCancelClicked(justClosed: Boolean) {
+        viewModelScope.launch {
+            Logs.d(TAG, "onCancelClicked justClosed=$justClosed")
+            if (justClosed) {
+                _uiEffects.emit(ClosedPartialUiEffect.NavigateBack)
+                _uiEffects.emit(ClosedPartialUiEffect.NavigateBack)
+            } else {
+                _uiEffects.emit(ClosedPartialUiEffect.NavigateBack)
+            }
+        }
+    }
+
+    fun onPrintClicked() {
+        viewModelScope.launch {
+            val partial = _partial.value
+            if (partial != null) {
+                _uiEffects.emit(ClosedPartialUiEffect.PrintPartial)
+                printerUseCase.printMessage(
+                    header = null,
+                    message = partial.bufLastTicketCierre.addTicketLines(),
+                    paperFeed = false
+                )
+            } else {
+                _uiState.update {
+                    it.copy(
+                        dialog = ClosedPartialDialogState(
+                            title = "Print",
+                            message = "No partial data available to print"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun onTotalizersClicked(destinationId: Int) {
+        viewModelScope.launch {
+            _uiEffects.emit(ClosedPartialUiEffect.NavigateToTotalizers(destinationId))
+        }
+    }
+
+    fun onDialogDismiss() {
+        _uiState.update { it.copy(dialog = null) }
+        viewModelScope.launch { _uiEffects.emit(ClosedPartialUiEffect.CloseDialog) }
+    }
+
+    private fun getClosedPartial() {
+        viewModelScope.launch {
+            Logs.d(TAG, "getClosedPartial")
+            val result = partialUseCase.getClosedPartial()
+            _partial.value = result
+
+            val ticketContent = result?.bufLastTicketCierre?.takeIf { it.isNotEmpty() }
+                ?: getString(R.string.no_closed_partials)
+
+            _uiState.update {
+                it.copy(
+                    ticketContent = ticketContent,
+                    buttonsState = buildButtonsState(result != null)
+                )
+            }
+        }
+    }
+
+    private suspend fun checkTaximeterStatus() {
+        val isTaximeterConnected = taximeterUseCase.isTaximeterConnected()
+        _uiState.update {
+            it.copy(buttonsState = buildButtonsState(hasPartial = _partial.value != null, isConnected = isTaximeterConnected))
+        }
+    }
+
+    private fun buildButtonsState(
+        hasPartial: Boolean = _partial.value != null,
+        isConnected: Boolean = false
+    ): ClosedPartialButtonsState {
+        val currentStatus = sharedViewModel.shiftStatusFlow.value?.currentStatus
+        val hasTotalizers = sharedViewModel.taximeterTotalizersFlow.value != null
+
+        val shouldShowTotalizers = currentStatus != com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_DISCONNECTED && isConnected
+        val totalizersStyle = if (!shouldShowTotalizers) {
+            ClosedPartialButtonStyle.Hidden
+        } else if (isConnected && hasTotalizers) {
+            ClosedPartialButtonStyle.Enabled
+        } else {
+            ClosedPartialButtonStyle.Disabled
+        }
+
+        return ClosedPartialButtonsState(
+            cancel = ClosedPartialButtonStyle.Enabled,
+            print = if (hasPartial) ClosedPartialButtonStyle.Enabled else ClosedPartialButtonStyle.Disabled,
+            totalizers = totalizersStyle
+        )
+    }
+}
+```
+
+> Note: `getString()` is only available if your `BaseViewModel` provides context access. If not, use `context.getString(...)`.
+
+---
+
+## 3) Compose screen replacing `ClosedPartialFragment`
+
+This screen:
+- collects `uiState`
+- collects `uiEffects` using lifecycle-aware collection
+- preserves navigation behavior
+- handles dialog display through state
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import androidx.navigation.fragment.NavHostFragment
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import kotlinx.coroutines.launch
+
+@Composable
+fun ClosedPartialRoute(
+    viewModel: ClosedPartialComposeViewModel,
+    justClosed: Boolean,
+    navController: NavController,
+    sharedViewModel: MainActivityViewModel
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        viewModel.onStart()
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffects.collect { effect ->
+                    when (effect) {
+                        ClosedPartialUiEffect.NavigateBack -> navController.popBackStack()
+                        is ClosedPartialUiEffect.NavigateToTotalizers ->
+                            navController.navigate(effect.destinationId)
+                        ClosedPartialUiEffect.PrintPartial -> Unit
+                        ClosedPartialUiEffect.CloseDialog -> Unit
+                    }
+                }
+            }
+        }
+    }
+
+    ClosedPartialScreen(
+        uiState = uiState,
+        onCancel = { viewModel.onCancelClicked(justClosed) },
+        onPrint = { viewModel.onPrintClicked() },
+        onTotalizers = { viewModel.onTotalizersClicked(R.id.action_closedPartialFragment_to_totalizersFragment) },
+        onDialogDismiss = { viewModel.onDialogDismiss() }
+    )
+}
+```
+
+---
+
+## 4) Compose UI content
+
+This replaces the Fragment layout/button behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun ClosedPartialScreen(
+    uiState: ClosedPartialUiState,
+    onCancel: () -> Unit,
+    onPrint: () -> Unit,
+    onTotalizers: () -> Unit,
+    onDialogDismiss: () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            TicketViewerReceipts(
+                ticketContent = uiState.ticketContent
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            ClosedPartialButtonsRow(
+                buttonsState = uiState.buttonsState,
+                onCancel = onCancel,
+                onPrint = onPrint,
+                onTotalizers = onTotalizers
+            )
+        }
+
+        uiState.dialog?.let { dialog ->
+            CustomDialog(
+                title = dialog.title,
+                message = dialog.message,
+                confirmText = dialog.confirmText,
+                dismissText = dialog.dismissText,
+                onConfirm = onDialogDismiss,
+                onDismiss = onDialogDismiss
+            )
+        }
+    }
+}
+```
+
+---
+
+## 5) Button row and styling helpers
+
+This is the Compose equivalent of `btnCancel`, `btnPrint`, and `btnTotalizers`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun ClosedPartialButtonsRow(
+    buttonsState: ClosedPartialButtonsState,
+    onCancel: () -> Unit,
+    onPrint: () -> Unit,
+    onTotalizers: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        StyledActionButton(
+            text = "Cancel",
+            style = buttonsState.cancel,
+            onClick = onCancel
+        )
+
+        StyledActionButton(
+            text = "Print",
+            style = buttonsState.print,
+            onClick = onPrint
+        )
+
+        if (buttonsState.showTotalizers) {
+            StyledActionButton(
+                text = "Totalizers",
+                style = buttonsState.totalizers,
+                onClick = onTotalizers
+            )
+        }
+    }
+}
+
+@Composable
+fun StyledActionButton(
+    text: String,
+    style: ClosedPartialButtonStyle,
+    onClick: () -> Unit
+) {
+    when (style) {
+        ClosedPartialButtonStyle.Hidden -> Unit
+        ClosedPartialButtonStyle.Disabled -> {
+            Button(
+                onClick = onClick,
+                enabled = false,
+                colors = closedPartialButtonColors(disabled = true),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(text) }
+        }
+        ClosedPartialButtonStyle.Enabled -> {
+            Button(
+                onClick = onClick,
+                enabled = true,
+                colors = closedPartialButtonColors(disabled = false),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(text) }
+        }
+    }
+}
+
+@Composable
+fun closedPartialButtonColors(disabled: Boolean): ButtonColors {
+    return if (disabled) {
+        ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        )
+    } else {
+        ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
+    }
+}
+```
+
+---
+
+## 6) Compose `TicketViewerReceipts`
+
+A simple Compose replacement for `ticketViewerReceipts.setTicketContent(...)`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun TicketViewerReceipts(
+    ticketContent: String
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 180.dp)
+            .border(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Text(
+            text = ticketContent,
+            modifier = Modifier.padding(12.dp),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+```
+
+---
+
+## 7) Compose `CustomDialog` based on the XML/dialog behavior
+
+This is a Compose version of your custom dialog. Since I don’t have the exact XML, I’m matching the usual `CustomDialog.kt` behavior pattern: title, message, confirm, optional dismiss.
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    dismissText: String? = null,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dismissText != null) {
+                        TextButton(onClick = onDismiss) {
+                            Text(dismissText)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
+                    Button(onClick = onConfirm) {
+                        Text(confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 8) Jetpack Navigation preservation
+
+If you are currently navigating from a Fragment, keep the existing destination IDs and navigation graph. Your Compose screen can still be hosted inside a Fragment, or used inside a `ComposeView` within the fragment.
+
+Example fragment host:
+
+```kotlin
+class ClosedPartialComposeFragment : Fragment() {
+
+    private val viewModel: ClosedPartialComposeViewModel by viewModel()
+    private val sharedViewModel: MainActivityViewModel by activityViewModel()
+    private val safeArgs: ClosedPartialFragmentArgs by navArgs()
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                ClosedPartialRoute(
+                    viewModel = viewModel,
+                    justClosed = safeArgs.justClosed,
+                    navController = findNavController(),
+                    sharedViewModel = sharedViewModel
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 9) More exact custom-button-like styling helpers
+
+If you want a closer match to your current `CustomButton`, define helper styles explicitly.
+
+```kotlin
+package ifac.td.taxi.ui.screen.closedpartial.compose
+
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+object ClosedPartialButtonDefaults {
+
+    private val Shape = RoundedCornerShape(8.dp)
+
+    @Composable
+    fun buttonColors(enabled: Boolean): ButtonColors {
+        return if (enabled) {
+            ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF1E88E5),
+                contentColor = Color.White
+            )
+        } else {
+            ButtonDefaults.buttonColors(
+                containerColor = Color(0xFFB0BEC5),
+                contentColor = Color(0xFF455A64),
+                disabledContainerColor = Color(0xFFB0BEC5),
+                disabledContentColor = Color(0xFF455A64).copy(alpha = 0.6f)
+            )
+        }
+    }
+
+    @Composable
+    fun colorsFor(style: ClosedPartialButtonStyle): ButtonColors {
+        return when (style) {
+            ClosedPartialButtonStyle.Enabled -> buttonColors(true)
+            ClosedPartialButtonStyle.Disabled -> buttonColors(false)
+            ClosedPartialButtonStyle.Hidden -> buttonColors(false)
+        }
+    }
+}
+```
+
+And use it:
+
+```kotlin
+@Composable
+fun StyledActionButton(
+    text: String,
+    style: ClosedPartialButtonStyle,
+    onClick: () -> Unit
+) {
+    if (style == ClosedPartialButtonStyle.Hidden) return
+
+    val enabled = style == ClosedPartialButtonStyle.Enabled
+
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ClosedPartialButtonDefaults.colorsFor(style),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(text)
+    }
+}
+```
+
+---
+
+## 10) Important mapping from the original fragment
+
+Original behavior preserved:
+
+- `setupComponents()` → `onStart()`
+- `checkTaximeterStatus()` → executed on start
+- `getClosedPartial()` → executed on start
+- `btnCancel` → `onCancelClicked(justClosed)`
+- `btnPrint` → `onPrintClicked()`
+- `btnTotalizers` → emits navigation effect
+- `updateTotalizersButtonState()` → handled by `ClosedPartialButtonsState`
+- `ticketViewerReceipts.setTicketContent(...)` → `ticketContent` in UI state
+- scroll to bottom → in Compose, the scroll container naturally follows state; if needed you can use `LaunchedEffect(ticketContent)` and `ScrollState.animateScrollTo(...)`
+
+---
+
+## 11) Notes on exact XML behavior
+
+You asked for “exact button coloring/visibility matching the XML behavior.”
+
+Because the XML and the `CustomButton.kt` implementation were not included, I matched the **behavioral logic** exactly and provided a styling layer that is easy to tune. If you share:
+
+- `fragment_closed_partial.xml`
+- `CustomButton.kt`
+- `custom_dialog.xml`
+- `CustomDialog.kt`
+
+I can rewrite the Compose styling to mirror:
+- exact colors
+- exact margins
+- corner radius
+- font sizes
+- disabled alpha
+- icon alignment
+- any custom background drawables
+
+---
+
+If you want, I can also provide a **single complete file set** with:
+- `ClosedPartialScreen.kt`
+- `ClosedPartialComposeViewModel.kt`
+- `ClosedPartialUiState.kt`
+- `CustomDialog.kt`
+- `ClosedPartialButtonsState.kt`
+
+ready to paste into your project.

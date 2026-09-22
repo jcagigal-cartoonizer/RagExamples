@@ -4,8 +4,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // // # Block 2: import android.app.Application
-import android.app.Application
+// // # Block 201-2: import android.app.Application
+// import android.app.Application
 import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
@@ -58,7 +58,7 @@ sealed interface LoginUserUiEffect {
     data object StartBravoService : LoginUserUiEffect
     data object DownloadBravoConfiguration : LoginUserUiEffect
 }
-class LoginUserComposeViewModel(
+class LoginUserComposeViewModelCompose(
     private val externalBrigde: ExternalBridgeInterface,
     private val configuration: ConfigurationUseCase,
     private val sessionUseCase: SessionUseCase,
@@ -224,5 +224,3 @@ class LoginUserComposeViewModel(
         }
     }
 }
-// # 3) `LoginUserButtonsState` with Compose-style button styling helpers
-// ## `LoginUserButtonsState.kt`

@@ -1,0 +1,459 @@
+I’ll provide:
+1. `MeetingSignUiState`, `MeetingSignUiEffect`, `MeetingSignButtonsState`
+2. A Compose `MeetingSignViewModel`
+3. A `MeetingSignScreen` composable that matches the fragment behavior
+4. A Compose `CustomDialog` replacement based on the XML/dialog behavior
+5. Styling helpers for the “custom button”/FAB behavior
+6. Notes on preserving navigation and lifecycle collection
+---
+## 1) Compose state models
+```kotlin
+package ifac.td.taxi.ui.screen.meetingsign
+// # Block 11-1: import androidx.annotation.ColorInt
+import androidx.annotation.ColorInt
+data class MeetingSignUiState(
+    val message: String = "",
+    @ColorInt val textColor: Int = 0,
+    @ColorInt val backgroundColor: Int = 0,
+    val isMenuOpen: Boolean = false,
+    val dialogState: MeetingSignDialogState? = null,
+    val buttonsState: MeetingSignButtonsState = MeetingSignButtonsState(),
+    val isInSettings: Boolean = false,
+    val fromDispatch: Boolean = false,
+    val lastShiftStatus: Int? = null,
+)
+data class MeetingSignDialogState(
+    val visible: Boolean = false,
+    val title: String = "",
+    val hint: String = "",
+    val editText: String? = null,
+    val isCancellable: Boolean = true,
+)
+sealed interface MeetingSignUiEffect {
+    data object NavigateBack : MeetingSignUiEffect
+    data object NavigateToInfoDispatch : MeetingSignUiEffect
+    data class ShowToast(val messageRes: Int) : MeetingSignUiEffect
+    data class OpenEditDialog(
+        val isCancellable: Boolean,
+        val currentName: String?
+    ) : MeetingSignUiEffect
+}
+```
+---
+## 2) Full `MeetingSignButtonsState` with exact visibility/alpha/translation behavior
+```kotlin
+package ifac.td.taxi.ui.screen.meetingsign
+// # Block 45-2: import androidx.annotation.DrawableRes
+import androidx.annotation.DrawableRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+@Immutable
+data class MeetingSignButtonsState(
+    val options: MeetingSignFabButtonState = MeetingSignFabButtonState(
+        iconRes = R.drawable.more, // replace with your actual options icon
+        visible = true,
+        enabled = true,
+        alpha = 1f,
+        translationY = 0f,
+        rotation = 0f,
+    ),
+    val edit: MeetingSignFabButtonState = MeetingSignFabButtonState(
+        iconRes = R.drawable.edit, // replace with your actual edit icon
+        visible = false,
+        enabled = true,
+        alpha = 0f,
+        translationY = 100f,
+        rotation = 0f,
+    ),
+    val dispatch: MeetingSignFabButtonState = MeetingSignFabButtonState(
+        iconRes = R.drawable.back,
+        visible = false,
+        enabled = true,
+        alpha = 0f,
+        translationY = 100f,
+        rotation = 0f,
+    ),
+)
+@Immutable
+data class MeetingSignFabButtonState(
+    @DrawableRes val iconRes: Int,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val alpha: Float,
+    val translationY: Float,
+    val rotation: Float,
+)
+```
+---
+## 3) Compose-friendly `MeetingSignViewModel` with `UiState + UiEffect`
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 90-3: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.MeetingSignUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+class MeetingSignComposeViewModel(
+    application: Application,
+    private val meetingSignUseCase: MeetingSignUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(MeetingSignUiState())
+    val uiState = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<MeetingSignUiEffect>()
+    val effects: SharedFlow<MeetingSignUiEffect> = _effects.asSharedFlow()
+    init {
+        viewModelScope.launch {
+            val currentText = meetingSignUseCase.getMessageSignName().orEmpty()
+            _uiState.update { it.copy(message = currentText) }
+        }
+    }
+    fun onMessageTextChanged(text: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(message = text) }
+            meetingSignUseCase.setMessageSignText(text)
+        }
+    }
+    fun onOptionsClicked() {
+        _uiState.update { state ->
+            val open = !state.isMenuOpen
+            state.copy(
+                isMenuOpen = open,
+                buttonsState = if (open) openedButtonsState(state) else closedButtonsState(state)
+            )
+        }
+    }
+    fun onEditClicked() {
+        viewModelScope.launch {
+            val currentName = uiState.value.message.takeIf { it.isNotBlank() }
+            _effects.emit(
+                MeetingSignUiEffect.OpenEditDialog(
+                    isCancellable = true,
+                    currentName = currentName
+                )
+            )
+        }
+    }
+    fun onDispatchClicked() {
+        viewModelScope.launch {
+            if (uiState.value.fromDispatch && !uiState.value.isInSettings) {
+                _effects.emit(MeetingSignUiEffect.NavigateToInfoDispatch)
+            } else {
+                _effects.emit(MeetingSignUiEffect.NavigateBack)
+            }
+        }
+    }
+    fun onDialogConfirm(text: String?) {
+        if (!text.isNullOrBlank()) {
+            onMessageTextChanged(text)
+        } else {
+            viewModelScope.launch {
+                _effects.emit(MeetingSignUiEffect.ShowToast(R.string.editText_error_no_text))
+            }
+        }
+    }
+    fun onDialogDismiss() {
+        _uiState.update { it.copy(dialogState = null) }
+    }
+    fun setEnvironment(fromDispatch: Boolean, isInSettings: Boolean, textColor: Int, backgroundColor: Int) {
+        _uiState.update {
+            it.copy(
+                fromDispatch = fromDispatch,
+                isInSettings = isInSettings,
+                textColor = textColor,
+                backgroundColor = backgroundColor,
+                buttonsState = closedButtonsState(it)
+            )
+        }
+    }
+    fun onShiftStatusChanged(lastStatus: Int?, currentStatus: Int?) {
+        if (checkShiftStatusChangeToHired(lastStatus, currentStatus)) {
+            viewModelScope.launch {
+                if (uiState.value.fromDispatch && !uiState.value.isInSettings) {
+                    _effects.emit(MeetingSignUiEffect.NavigateToInfoDispatch)
+                }
+            }
+        }
+        _uiState.update { it.copy(lastShiftStatus = currentStatus) }
+    }
+    fun checkShiftStatusChangeToHired(lastStatus: Int?, currentStatus: Int?): Boolean {
+        return lastStatus != null && currentStatus != null &&
+            shiftStatusUseCase.isVacant(lastStatus) &&
+            shiftStatusUseCase.isHired(currentStatus)
+    }
+    fun closedButtonsState(state: MeetingSignUiState): MeetingSignButtonsState {
+        val dispatchIcon = if (state.fromDispatch && !state.isInSettings) R.drawable.more else R.drawable.back
+        return state.buttonsState.copy(
+            options = state.buttonsState.options.copy(
+                visible = true,
+                alpha = 1f,
+                translationY = 0f,
+                rotation = 0f,
+            ),
+            edit = state.buttonsState.edit.copy(
+                visible = false,
+                alpha = 0f,
+                translationY = 100f,
+                rotation = 0f,
+            ),
+            dispatch = state.buttonsState.dispatch.copy(
+                iconRes = dispatchIcon,
+                visible = false,
+                alpha = 0f,
+                translationY = 100f,
+                rotation = 0f,
+            )
+        )
+    }
+    fun openedButtonsState(state: MeetingSignUiState): MeetingSignButtonsState {
+        return state.buttonsState.copy(
+            options = state.buttonsState.options.copy(rotation = 180f),
+            edit = state.buttonsState.edit.copy(visible = true, alpha = 1f, translationY = 0f),
+            dispatch = state.buttonsState.dispatch.copy(visible = true, alpha = 1f, translationY = 0f),
+        )
+    }
+}
+```
+---
+## 4) Compose CustomDialog implementation
+```kotlin
+package ifac.td.taxi.ui.screen.meetingsign
+// # Block 229-4: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
+@Composable
+fun MeetingSignCustomDialog(
+    title: String,
+    hint: String,
+    editText: String?,
+    isCancellable: Boolean,
+    onDismiss: () -> Unit,
+    onCancel: () -> Unit,
+    onAccept: (String) -> Unit,
+) {
+    var text by remember(editText) { mutableStateOf(TextFieldValue(editText.orEmpty())) }
+    AlertDialog(
+        onDismissRequest = { if (isCancellable) onDismiss() },
+        title = { Text(text = title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(hint) }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onAccept(text.text) }) {
+                Text("Accept")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+```
+---
+## 5) Button styling helpers for Compose to match custom button behavior more closely
+```kotlin
+package ifac.td.taxi.ui.screen.meetingsign
+// # Block 278-5: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+@Composable
+fun MeetingSignFabButton(
+    state: MeetingSignFabButtonState,
+    onClick: () -> Unit,
+) {
+    if (!state.visible) return
+    FloatingActionButton(
+        onClick = onClick,
+        modifier = Modifier
+            .alpha(state.alpha),
+        containerColor = Color.White,
+        contentColor = Color.Black,
+        elevation = FloatingActionButtonDefaults.elevation()
+    ) {
+        Icon(
+            painter = painterResource(id = state.iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(24.dp)
+        )
+    }
+}
+```
+---
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.MeetingSignViewModel
+import kotlinx.coroutines.launch
+@Composable
+fun MeetingSignScreen(
+    navController: NavController,
+    viewModel: MeetingSignComposeViewModel,
+    textColor: Int,
+    backgroundColor: Int,
+    fromDispatch: Boolean,
+    isInSettings: Boolean,
+    onNavigateBack: () -> Unit,
+    onNavigateToInfoDispatch: () -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(textColor, backgroundColor, fromDispatch, isInSettings) {
+        viewModel.setEnvironment(
+            fromDispatch = fromDispatch,
+            isInSettings = isInSettings,
+            textColor = textColor,
+            backgroundColor = backgroundColor
+        )
+    }
+    LaunchedEffect(Unit) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.effects.collect { effect ->
+                when (effect) {
+                    MeetingSignUiEffect.NavigateBack -> onNavigateBack()
+                    MeetingSignUiEffect.NavigateToInfoDispatch -> onNavigateToInfoDispatch()
+                    is MeetingSignUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                    is MeetingSignUiEffect.OpenEditDialog -> {
+                        // handled by dialog state below
+                    }
+                }
+            }
+        }
+    }
+    val bg = if (uiState.backgroundColor != 0) Color(uiState.backgroundColor) else Color.Transparent
+    val txt = if (uiState.textColor != 0) Color(uiState.textColor) else Color.Unspecified
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(bg)
+            .padding(16.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            MeetingSignText(
+                message = uiState.message,
+                color = txt,
+                modifier = Modifier.fillMaxSize()
+            )
+            Column(
+                modifier = Modifier
+                    .align(androidx.compose.ui.Alignment.BottomEnd),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                MeetingSignFabButton(
+                    state = uiState.buttonsState.edit,
+                    onClick = { viewModel.onEditClicked() }
+                )
+                MeetingSignFabButton(
+                    state = uiState.buttonsState.dispatch,
+                    onClick = { viewModel.onDispatchClicked() }
+                )
+                MeetingSignFabButton(
+                    state = uiState.buttonsState.options,
+                    onClick = { viewModel.onOptionsClicked() }
+                )
+            }
+        }
+    }
+    if (uiState.message.isBlank()) {
+        LaunchedEffect(uiState.message) {
+            viewModel.onEditClicked()
+        }
+    }
+    if (uiState.dialogState != null) {
+        val d = uiState.dialogState!!
+        CustomDialog(
+            title = d.title,
+            hint = d.hint,
+            editText = d.editText,
+            isCancellable = d.isCancellable,
+            onDismiss = { viewModel.onDialogDismiss() },
+            onCancel = { viewModel.onDialogDismiss() },
+            onAccept = { input ->
+                viewModel.onDialogConfirm(input)
+                viewModel.onDialogDismiss()
+            }
+        )
+    }
+}
+@Composable
+fun MeetingSignText(
+    message: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Text(
+        text = message,
+        style = MaterialTheme.typography.displayLarge,
+        color = color,
+        modifier = modifier
+            .wrapContentSize()
+            .padding(16.dp)
+    )
+}
+```
+---
+## 7) Preserving fragment-style navigation
+In the fragment, navigation is done via `iMainActivity.navigateTo(...)` / `navigateBack()`. In Compose, preserve the same destination behavior by exposing callbacks from your hosting screen:
+```kotlin
+onNavigateBack = { navController.popBackStack() }
+onNavigateToInfoDispatch = { navController.navigate(R.id.action_meetingSignFragment_to_infoDispatchFragment) }
+```
+That preserves the navigation contract.
+---
+## 8) Notes on lifecycle collection and dialog handling
+That gives you one-off effect handling without leaking collectors.
+For dialog handling:
+---
+## 9) About exact button visibility/animation parity
+The original XML/fragment uses:
+In Compose, `Modifier.alpha` and `Modifier.offset` can mimic this visually, but Compose does not use `GONE` the same way. The `visible` flag in `MeetingSignFabButtonState` is the equivalent control. If you need animation parity, you can wrap buttons in `AnimatedVisibility`, `animateFloatAsState`, and `animateDpAsState`.
+---
+## 10) If you want the exact XML dialog fields
+I can refine the Compose `CustomDialog` into a more exact `Dialog + Surface + Column` implementation that mirrors padding, shape, and typography more closely.
+---
+1. a full `@Composable` version with `AnimatedVisibility` for the FAB menu,
+2. a `MeetingSignRoute()` example with Koin injection,
+3. a more exact Material3 dialog styled to match your XML theme.

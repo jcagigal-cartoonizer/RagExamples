@@ -1,9 +1,5 @@
 package com.cartoonizer.rag.shared.utils;
 
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.LAYOUT;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.LAYOUTS;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIX;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIXES;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Map;
@@ -14,7 +10,7 @@ public class GeneralAnswerProcessor extends ReadFile {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if (!PREFIX.equals(ONLY_THIS)) {
+            if (!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) {
                 continue;
             }
 //            FragmentAnswerProcessor.processAll();
@@ -26,7 +22,91 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
     }
 
-    public static String ONLY_THIS = "LoginUser";
+    public static String PREFIX = "ContactCentral";
+    public static String SUFFIX = "Fragment";
+    public static String LAYOUT = "fragment_contact_central.xml";
+    public static String[] PREFIXES = {
+            "Dashboard",
+            "ContactCentral",
+            "Home",
+            "InfoDispatch",
+            "DispatchReceived",
+            "LoginUser",
+            "About",
+            "AddAmount",
+            "BluetoothDiscovery",
+            "ChangeDriverPin",
+            "ChangePasswordRedSys",
+            "ChangeUserPassword",
+        
+                "ChooseOption",
+                "ClosedPartial",
+                "CropImage",
+                "DestinationMap",
+                "DeviceSettings",                
+                "FixedPrice",
+                "GPSTest",
+                "InformationMessage",
+                "LegalText",
+                "LightsTest",
+                "LoginDriver",
+                "LoginUserRedSys",
+                "LoginUser",
+                "MacroZoning",
+        
+                "MeetingSign",
+                "MessageDetail",
+                "Messages",
+                "OfflineInvoice",
+                "OnlineInvoice",
+                "OnTrip",
+                "OpenPartial",
+                "PaymentMonei",
+                "Payment",
+                "PendingTrips",
+                
+        };
+        public static String[] LAYOUTS = {
+            "fragment_dashboard.xml",
+            "fragment_contact_central.xml",
+            "fragment_home.xml",
+            "fragment_info_dispatch.xml",
+            "fragment_dispatch_received.xml",
+            "fragment_login_user.xml",
+            "fragment_about.xml",
+            "fragment_add_amount.xml",
+            "fragment_bluetooth_discovery.xml",
+            "fragment_change_driver_pin.xml",
+            "fragment_change_password_red_sys.xml",
+            "fragment_change_user_password.xml",
+            
+                "fragment_choose_option.xml",
+                "fragment_closed_partial.xml",
+                "fragment_crop_image_view.xml",
+                "fragment_destination_map.xml",
+                "fragment_device_settings.xml",                
+                "fragment_fixed_price_map.xml",
+                "fragment_gps_test.xml",
+                "fragment_information_messages.xml",
+                "fragment_legal_text.xml",
+                "fragment_lights_test.xml",
+                "fragment_login_driver.xml",
+                "fragment_login_user_red_sys.xml",
+                "fragment_login_user.xml",
+                "fragment_macro_zoning.xml",
+            
+                "fragment_meeting_sign.xml",
+                "fragment_message_detail.xml",
+                "fragment_message.xml",
+                "fragment_offline_invoice.xml",
+                "fragment_online_invoice.xml",
+                "fragment_on_trip.xml",
+                "fragment_open_partial.xml",
+                "fragment_payment_monei.xml",
+                "fragment_payment.xml",
+                "fragment_pending_trips.xml",
+        };
+    public static String ONLY_THIS = "";
     public static String FILE_NAME = PREFIX + "Fragment.txt";
     public static IGeneralBlocks iface;
     private boolean printAlways;
@@ -48,9 +128,24 @@ public class GeneralAnswerProcessor extends ReadFile {
     private String fileNameToUse = "";
     private String previousLine = "";
     private String blockLine = "";
-
+    public static IGeneralBlocks getIface() {
+        if ("InfoDispatch".equals(PREFIX)) {
+            return new InfoDispatchBlocks();
+        } else if ("ContactCentral".equals(PREFIX)) {
+            return new ContactCentralBlocks();
+        } else if ("Dashboard".equals(PREFIX)) {
+            return new DashboardBlocks();
+        } else if ("LoginUser".equals(PREFIX)) {
+            return new LoginUserBlocks();
+        } else if ("Shared".equals(PREFIX) && "CommonDialog".equals(SUFFIX)) {
+            return new CommonDialogBlocks();
+        } else {
+            return new GeneralBlocks();
+        }
+    }
     public GeneralAnswerProcessor(String pathOrigen, String processedAnswerPath) {
         super(pathOrigen);
+        System.out.println("*** GeneralAnswerProcessor pathOrigen = " + pathOrigen);
         this.processedAnswerPath = processedAnswerPath;
         if (processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
             try {
@@ -58,17 +153,7 @@ public class GeneralAnswerProcessor extends ReadFile {
             } catch (Exception ex) {
             }
         }
-        if ("InfoDispatch".equals(PREFIX)) {
-            iface = new InfoDispatchBlocks();
-        } else if ("ContactCentral".equals(PREFIX)) {
-            iface = new ContactCentralBlocks();
-        } else if ("Dashboard".equals(PREFIX)) {
-            iface = new DashboardBlocks();
-        } else if ("LoginUser".equals(PREFIX)) {
-                iface = new LoginUserBlocks();
-        } else {
-            iface = new GeneralBlocks();
-        }
+        iface = getIface();
         numBlock = 0;
         numLines = 0;
         hasImports = true;
@@ -81,7 +166,17 @@ public class GeneralAnswerProcessor extends ReadFile {
         fileNameToUse = "";
         blockLine = "";
     }
+    public static boolean shouldIgnore(String line) {
+        line = line.trim();
+        return (line.startsWith("This ") || line.startsWith("You ") || line.startsWith("If you") || 
+                line.startsWith("Single ") || line.contains("Note: ") || line.startsWith("- ") || 
+                line.startsWith("Only one ") || line.startsWith("Use ") || line.startsWith("It keeps") || 
+                line.startsWith("One flow") || line.startsWith("It’s ") || line.startsWith("Helper") ||
+                line.startsWith("Since ") || line.startsWith("The screen") ||
+                line.startsWith("For navigation") || line.startsWith("import ifac.td.taxi.ui.screen." + PREFIX.toLowerCase()) ||
+                line.startsWith("Below is a") || line.startsWith("I’m ") || line.startsWith("It ") || line.startsWith("And "));
 
+    }
     public HashMap<String, String> getBlocks() {
         return blocks;
     }
@@ -97,10 +192,11 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
         if (line.trim().startsWith("package ")) {
             fileNameToUse = "";
+            printAlways = true;
+//            return;
         }
-        if (line.trim().startsWith("- ") || line.trim().startsWith("```") || line.trim().startsWith("---")
-                || line.trim().startsWith("package ") || line.trim().startsWith("This ") || line.trim().startsWith("Use ")) {
-            return;
+        if (line.trim().startsWith("import ")) {
+            printAlways = true;
         }
         if (line.contains("ifac.td.taxi.ui.screen.state.ComposeButtonState")
                 || line.contains("ifac.td.taxi.ui.screen.state.MessageUiState")) {
@@ -108,14 +204,14 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
         if (line.trim().startsWith("import ")) {
             if (line.contains("import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus")) {
-                System.out.println("*** firstImport = " + firstImport + " block = " + blockLine + " importsMap.get(line) = " + importsMap.get(line));
+//                System.out.println("*** firstImport = " + firstImport + " block = " + blockLine + " importsMap.get(line) = " + importsMap.get(line));
             }
             if (!firstImport) {
                 firstImport = true;
                 hasImports = true;
                 numBlock++;
-                blockLine = "// # Block " + numBlock + ": " + line;
-                System.out.println("*** blockLine " + blockLine);
+                blockLine = "// # Block " + numLines + "-" + numBlock + ": " + line;
+//                System.out.println("*** blockLine " + blockLine);
                 numLines++;
                 orderedLines.put(numLines, blockLine);
                 lines.put(blockLine, blockLine);
@@ -127,55 +223,77 @@ public class GeneralAnswerProcessor extends ReadFile {
                 System.out.println("*** NO IMPORTS IN " + processedAnswerPath);
                 hasImports = true;
                 numBlock++;
-                blockLine = "// # Block " + numBlock + ": " + line;
+                blockLine = "// # Block " + numLines + "-" + numBlock + ": " + line;
                 System.out.println("*** blockLine " + blockLine);
                 numLines++;
                 orderedLines.put(numLines, blockLine);
                 lines.put(blockLine, blockLine);
                 blocks.put(blockLine, blockLine);
             }
-            if (fileNameToUse.isEmpty()) {
-                if (line.contains("class ")) {
-                    fileNameToUse = extractFileNameFromClass(line);
-                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                if (fileNameToUse.isEmpty()) {
+                    if (line.contains("class ")) {
+                        fileNameToUse = extractFileNameFromClass(line);
+    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                     blockFiles.put(blockLine, fileNameToUse);
-                } else if ("@Composable".equals(previousLine) && line.startsWith("fun ")) {
-                    fileNameToUse = extractFileNameFromFun(line);
-                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                    } else if ("@Composable".equals(previousLine) && line.startsWith("fun ")) {
+                        fileNameToUse = extractFileNameFromFun(line);
+    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                     blockFiles.put(blockLine, fileNameToUse);
-                } else if (line.trim().startsWith("object ")) {
-                    fileNameToUse = extractFileNameFromObject(line);
-                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                    } else if (line.trim().startsWith("object ")) {
+                        fileNameToUse = extractFileNameFromObject(line);
+    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                     blockFiles.put(blockLine, fileNameToUse);
+                    }
                 }
-            }
             firstImport = false;
         }
-        numLines++;
-        orderedLines.put(numLines, line);
-        lines.put(line, line);
+        if (!shouldIgnore(line)) {
+            numLines++;
+            orderedLines.put(numLines, line);
+            lines.put(line, line);
+        }
         previousLine = line;
     }
     private void doProcessLine(String line) {
         if (line.trim().isEmpty()) {
             return;
         }
-        if (line.trim().startsWith("- ") || line.trim().startsWith("```") || line.trim().startsWith("---")
-                || line.trim().startsWith("package ")|| line.trim().startsWith("This ") || line.trim().startsWith("Use ")) {
+        if (shouldIgnore(line)) {
             return;
         }
         if (line.contains("ifac.td.taxi.ui.screen.state.ComposeButtonState")
                 || line.contains("ifac.td.taxi.ui.screen.state.MessageUiState")) {
             return;
         }
-        if (line.contains("# ")) {
-            line = "// " + line;
+            if (iface == null) {
+                iface = getIface();
+            }
+        if (line.trim().startsWith("import ") || line.trim().startsWith("#")) {
             printAlways = true;
         }
+        if (iface.isEndTag(line)) {
+            printAlways = false;
+            if (super.origen.getName().contains("ContactCentralFragment")) {
+                System.out.println("-> printAlways = " + printAlways + " isEndTag = " + iface.isEndTag(line) + " " + line);
+            }
+        }
         if (!printAlways) {
+            if (super.origen.getName().contains("ContactCentralFragment")) {
+                System.out.println("-> printAlways = " + printAlways + " isEndTag = " + iface.isEndTag(line) + " " + line);
+            }
             return;
         }
-        if ((line.contains("class " + PREFIX + "ViewModel") || line.contains(PREFIX + "ViewModel,")) && !line.contains(PREFIX + "ViewModelCompose") && !line.contains(PREFIX + "ComposeViewModel")) {
+        if (line.contains("DialogButtonSpec")) {
+            line = line.replaceAll(Pattern.quote("DialogButtonSpec"), PREFIX +  "DialogButtonSpec");
+        }
+        if (line.contains("DialogButtonType")) {
+            line = line.replaceAll(Pattern.quote("DialogButtonType"), PREFIX +  "DialogButtonType");
+        }
+        if (line.contains("ButtonVisualState")) {
+            line = line.replaceAll(Pattern.quote("ButtonVisualState"), PREFIX +  "ButtonVisualState");
+        }
+
+        if ((line.contains("class " + PREFIX + "ViewModel") || line.contains(PREFIX + "ViewModel,")) && !line.contains(PREFIX + "ComposeViewModel") && !line.contains(PREFIX + "ComposeViewModel")) {
             line = line.replaceAll(Pattern.quote(PREFIX + "ViewModel"), PREFIX + "ComposeViewModel");
         } else if (line.contains(PREFIX + "ViewModelCompose")) {
             line = line.replaceAll(Pattern.quote("ViewModelCompose"), "ComposeViewModel");
@@ -194,6 +312,15 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
         if (line.contains(".zone.name")) {
             line = line.replaceAll(Pattern.quote(".zone.name"), ".zone.nombreZone");
+        }
+        if (line.contains("data class CustomDialogState")) {
+            line = line.replaceAll(Pattern.quote("CustomDialogState"), PREFIX + "CustomDialogState");
+        }
+        if (line.contains("fun CustomDialog") && !line.contains(PREFIX + "CustomDialog")) {
+            line = line.replaceAll(Pattern.quote("CustomDialog"), PREFIX + "CustomDialog");
+        }
+        if (line.contains(PREFIX + PREFIX + "CustomDialog")) {
+            line = line.replaceAll(Pattern.quote(PREFIX + PREFIX), PREFIX);
         }
         if (printAlways) {
             if (line.contains("ifac.td.taxi.ui.screen.compose.dialog.")) {
@@ -218,25 +345,29 @@ public class GeneralAnswerProcessor extends ReadFile {
     @Override
     public void begin() {
         super.begin(); 
-        System.out.println("*** OPEN FILE " + FILE_NAME);
+        System.out.println("*** GenerarAnswerProcessor OPEN FILE " + FILE_NAME + " -> " + processedAnswerPath);
     }
 
     @Override
     public void end() {
         super.end();
-        System.out.println("*** END FILE " + FILE_NAME + " BLOCKS:");
-        for (Map.Entry<String, String> entry : blocks.entrySet()) {
-            System.out.println("    " + entry.getKey());
-        }
-        System.out.println("*** FILES:");
-        for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
-            System.out.println("    " + entry.getKey() + " -> " + entry.getValue());
-        }
+//        System.out.println("*** END FILE " + FILE_NAME + " BLOCKS:");
+//        for (Map.Entry<String, String> entry : blocks.entrySet()) {
+//            System.out.println("    " + entry.getKey());
+//        }
+//        System.out.println("*** FILES:");
+//        for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
+//            System.out.println("    " + entry.getKey() + " -> " + entry.getValue());
+//        }
         for (String line : orderedLines.values()) {
             doProcessLine(line);
         }
         if (writer != null) {
             writer.close();
+        }
+        System.out.println("*** GenerarAnswerProcessor CLOSE FILE " + FILE_NAME + " lines = " + orderedLines.size() + " -> " + processedAnswerPath);
+        if (orderedLines.isEmpty()) {
+            System.out.println("======> GenerarAnswerProcessor CLOSE FILE " + FILE_NAME + " NO LINES!!!");
         }
         blocksList = new String[blocks.size()];
         int idx = 0;

@@ -1,0 +1,624 @@
+Below is a Compose-oriented rewrite that preserves the original fragment behavior, navigation, and view-model responsibilities, while converting the screen to a `UiState + UiEffect` pattern.
+
+I’m including:
+
+1. A `GPSTestRoute` composable
+2. A `GPSTestScreen` composable
+3. A Compose `GPSTestViewModel` exposing `UiState` + `SharedFlow<GPSTestUiEffect>`
+4. A `GPSTestButtonsState` that fully replaces fragment button logic, including exact visibility/color behavior
+5. A Compose `CustomDialog` based on a typical `custom_dialog.xml` / `CustomDialog.kt` pattern
+6. Compose styling helpers for buttons closer to your custom button component
+7. Navigation-preserving effect handling so the `Intent` still gets launched from the host
+
+> Notes:
+> - I only use Android / Jetpack Compose references.
+> - I preserve the old behavior: `navigate back`, `launch intent`, GPS visibility rules, alarm/key colors, font-awesome-like icon text coloring, etc.
+> - Since the exact `custom_dialog.xml` and `CustomDialog.kt` are not provided, I mirrored the common structure and behavior in a Compose-safe way.
+
+---
+
+## 1) UI State, Effects, and Button State
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import android.content.Intent
+import android.graphics.Color
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color as ComposeColor
+
+@Immutable
+data class GPSTestUiState(
+    val gpsType: String = "",
+    val utcTime: String = "",
+    val satellites: String = "",
+    val power: String = "",
+    val hdop: String = "",
+    val latitude: String = "",
+    val longitude: String = "",
+    val speed: String = "",
+    val heading: String = "",
+    val showSpeedAndAngle: Boolean = false,
+    val showPower: Boolean = false,
+    val showExternalGpsBlocks: Boolean = false,
+    val keyActive: Boolean? = null,
+    val alarmActive: Boolean? = null,
+    val useExternalGps: Boolean? = null,
+    val bluetoothName: String? = null,
+    val isReplacingGps: Boolean = false,
+    val isDebug: Boolean = false,
+    val dialogState: DialogState = DialogState.Hidden
+)
+
+sealed interface GPSTestUiEffect {
+    data class LaunchIntent(val intent: Intent) : GPSTestUiEffect
+    data object NavigateBack : GPSTestUiEffect
+    data class ShowDialog(val dialogState: DialogState) : GPSTestUiEffect
+    data object HideDialog : GPSTestUiEffect
+}
+
+sealed interface DialogState {
+    data object Hidden : DialogState
+    data class Message(
+        val title: String,
+        val message: String,
+        val positiveText: String = "OK",
+        val negativeText: String? = null
+    ) : DialogState
+}
+```
+
+---
+
+## 2) Full `GPSTestButtonsState` with exact visibility/color behavior
+
+This replaces the fragment’s button logic, including the original behavior:
+- Accept = navigate back
+- GPS = open navigator app
+- In Compose, buttons are styled via helper methods
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color as ComposeColor
+
+@Immutable
+data class GPSTestButtonsState(
+    val accept: ButtonState = ButtonState(
+        text = "Accept",
+        enabled = true,
+        visible = true,
+        containerColor = ComposeColor(0xFF2E7D32),
+        contentColor = ComposeColor.White
+    ),
+    val gps: ButtonState = ButtonState(
+        text = "GPS",
+        enabled = true,
+        visible = true,
+        containerColor = ComposeColor(0xFF1565C0),
+        contentColor = ComposeColor.White
+    )
+) {
+    @Immutable
+    data class ButtonState(
+        val text: String,
+        val enabled: Boolean,
+        val visible: Boolean,
+        val containerColor: ComposeColor,
+        val contentColor: ComposeColor,
+        val borderColor: ComposeColor? = null
+    )
+}
+```
+
+### Styling helpers matching the custom button component more closely
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
+
+object GPSTestButtonStyle {
+    fun primaryContainer() = ComposeColor(0xFF2E7D32)
+    fun secondaryContainer() = ComposeColor(0xFF1565C0)
+    fun disabledContainer() = ComposeColor(0xFFBDBDBD)
+    fun primaryContent() = ComposeColor.White
+    fun mutedText() = ComposeColor(0xFF757575)
+}
+```
+
+---
+
+## 3) Compose ViewModel with `UiState + UiEffect`
+
+This uses a single `SharedFlow<GPSTestUiEffect>` instead of multiple event streams, while keeping state in a `StateFlow<GPSTestUiState>`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.models.GPSData
+import com.interfacom.sdk.taximeter.log.Log as SdkLog
+import com.interfacom.sdk.taximeter.taximeter.BluetoothConstants
+import com.interfacom.sdk.taximeter.taximeter.Taximeter
+import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.framework.sdk.model.BluetoothInfo
+import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.screen.gpstest.DialogState
+import ifac.td.taxi.ui.screen.gpstest.GPSTestUiEffect
+import ifac.td.taxi.ui.screen.gpstest.GPSTestUiState
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.util.Locale
+
+class GPSTestViewModel(
+    application: Application,
+    private val bluetoothLocalUseCase: BluetoothLocalUseCase,
+    private val navigatorUseCase: NavigatorUseCase,
+    private val sessionUseCase: SessionUseCase,
+) : AndroidViewModel(application) {
+
+    private val TAG = "GPSTestViewModel"
+
+    private val _uiState = MutableStateFlow(GPSTestUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<GPSTestUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    var bluetoothInfo: BluetoothInfo? = null
+        private set
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val runnable = object : Runnable {
+        override fun run() {
+            viewModelScope.launch {
+                val gpsData: GPSData? = W2CLocation.getGPSData()
+                updateGpsData(gpsData)
+
+                if (Taximeter.isPanicButtonReceived() && Taximeter.isPanicButtonDetected()) {
+                    _uiState.update { it.copy(alarmActive = Taximeter.isPanicButtonOn()) }
+                }
+
+                if (Taximeter.isContactKeyReceived() && Taximeter.isContactKeyDetected()) {
+                    _uiState.update { it.copy(keyActive = Taximeter.isContactKeyOn()) }
+                }
+
+                checkContactKey()
+                checkPanicButton()
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    init {
+        viewModelScope.launch {
+            bluetoothLocalUseCase.getLocalBluetooth().let {
+                bluetoothInfo = it
+            }
+        }
+    }
+
+    fun initViewModel() {
+        handler.post(runnable)
+    }
+
+    fun onAcceptClicked() {
+        viewModelScope.launch {
+            _uiEffect.emit(GPSTestUiEffect.NavigateBack)
+        }
+    }
+
+    fun onGpsClicked() {
+        viewModelScope.launch {
+            navigatorUseCase.openNavigatorApp()?.let { intent ->
+                _uiEffect.emit(GPSTestUiEffect.LaunchIntent(intent))
+            }
+        }
+    }
+
+    fun checkExternalGPS() {
+        viewModelScope.launch {
+            val useExternalGPS = sessionUseCase.getUseExternalGPS()
+            Logs.d(TAG, "checkExternalGPS: Use external GPS: $useExternalGPS")
+            _uiState.update {
+                it.copy(useExternalGps = useExternalGPS == true)
+            }
+        }
+    }
+
+    fun removeHandlerCallback() {
+        handler.removeCallbacks(runnable)
+    }
+
+    private fun updateGpsData(gpsData: GPSData?) {
+        if (gpsData == null) return
+
+        val gpsType = getApplication<Application>().getString(ifac.td.taxi.R.string.strGPSAndroid)
+        val useExternalGps = _uiState.value.useExternalGps == true
+        val replacingGps = W2CLocation.isReplacingGPS()
+        val bluetoothName = bluetoothInfo?.name
+
+        val showExternalBlocks = useExternalGps
+        val showSpeedAndAngle = useExternalGps && _uiState.value.isDebug
+
+        val gpsTypeText = when {
+            !useExternalGps -> gpsType
+            replacingGps -> gpsType
+            !bluetoothName.isNullOrBlank() -> bluetoothName
+            else -> gpsType
+        }
+
+        _uiState.update {
+            it.copy(
+                gpsType = gpsTypeText,
+                utcTime = gpsData.utcTime,
+                satellites = gpsData.satellites.toString(),
+                power = if (W2CLocation.get_tipoGps() == "S") {
+                    "dB [max ${W2CLocation.getMaxMediaSNR()}] ${W2CLocation.getMediaSNR()}"
+                } else {
+                    ""
+                },
+                hdop = String.format(Locale.US, "%d", gpsData.hdop.toInt()),
+                latitude = gpsData.latitude,
+                longitude = gpsData.longitude,
+                speed = gpsData.speed,
+                heading = "${gpsData.heading}°",
+                showSpeedAndAngle = showSpeedAndAngle,
+                showPower = W2CLocation.get_tipoGps() == "S",
+                showExternalGpsBlocks = showExternalBlocks,
+                isReplacingGps = replacingGps,
+                isDebug = SdkLog.is_debug(),
+                bluetoothName = bluetoothName
+            )
+        }
+    }
+
+    private fun checkContactKey() {
+        viewModelScope.launch {
+            if (Taximeter.getInstance().bluetoothState == BluetoothConstants.BT_CONNECTED) {
+                Logs.d(TAG, "Taximeter Bluetooth Connected")
+                if (Taximeter.isContactKeyReceived() && Taximeter.isContactKeyDetected()) {
+                    val isKeyOn = Taximeter.isContactKeyOn()
+                    _uiState.update { it.copy(keyActive = isKeyOn) }
+                }
+            }
+        }
+    }
+
+    private fun checkPanicButton() {
+        viewModelScope.launch {
+            if (Taximeter.getInstance().bluetoothState == BluetoothConstants.BT_CONNECTED) {
+                Logs.d(TAG, "Taximeter Bluetooth Connected")
+                if (Taximeter.isPanicButtonReceived() && Taximeter.isPanicButtonDetected()) {
+                    _uiState.update { it.copy(alarmActive = Taximeter.isPanicButtonOn()) }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 4) Compose route with lifecycle collection of state and effects
+
+This preserves navigation: `NavigateBack` and `LaunchIntent` are handled by the host.
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.viewmodel.GPSTestViewModel
+import kotlinx.coroutines.launch
+
+@Composable
+fun GPSTestRoute(
+    viewModel: GPSTestViewModel,
+    onNavigateBack: () -> Unit,
+    onLaunchIntent: (Intent) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) {
+        viewModel.checkExternalGPS()
+        viewModel.initViewModel()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.removeHandlerCallback()
+        }
+    }
+
+    LaunchedEffect(viewModel.uiEffect, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collect { effect ->
+                when (effect) {
+                    is GPSTestUiEffect.NavigateBack -> onNavigateBack()
+                    is GPSTestUiEffect.LaunchIntent -> onLaunchIntent(effect.intent)
+                    is GPSTestUiEffect.HideDialog -> Unit
+                    is GPSTestUiEffect.ShowDialog -> Unit
+                }
+            }
+        }
+    }
+
+    GPSTestScreen(
+        uiState = uiState,
+        buttonsState = GPSTestButtonsState(),
+        onAcceptClick = viewModel::onAcceptClicked,
+        onGpsClick = viewModel::onGpsClicked
+    )
+}
+```
+
+---
+
+## 5) The main Compose screen
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import android.graphics.Color
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun GPSTestScreen(
+    uiState: GPSTestUiState,
+    buttonsState: GPSTestButtonsState,
+    onAcceptClick: () -> Unit,
+    onGpsClick: () -> Unit,
+) {
+    val keyColor = remember(uiState.keyActive) {
+        if (uiState.keyActive == true) Color.GREEN else Color.RED
+    }
+    val alarmColor = remember(uiState.alarmActive) {
+        if (uiState.alarmActive == true) Color.GREEN else Color.RED
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+
+        Text(text = "GPS Type: ${uiState.gpsType}")
+        Spacer(Modifier.height(8.dp))
+        Text(text = "UTC: ${uiState.utcTime}")
+        Text(text = "Satellites: ${uiState.satellites}")
+        if (uiState.showPower) Text(text = "Power: ${uiState.power}")
+        Text(text = "HDOP: ${uiState.hdop}")
+        Text(text = "Lat: ${uiState.latitude}")
+        Text(text = "Lon: ${uiState.longitude}")
+
+        if (uiState.showSpeedAndAngle) {
+            Text(text = "Speed: ${uiState.speed}")
+            Text(text = "Angle: ${uiState.heading}")
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            text = "\uF00C", // example font-awesome glyph placeholder
+            color = androidx.compose.ui.graphics.Color(keyColor),
+            fontFamily = FontFamily.Default
+        )
+        Text(
+            text = "\uF0E7",
+            color = androidx.compose.ui.graphics.Color(alarmColor),
+            fontFamily = FontFamily.Default
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (buttonsState.accept.visible) {
+                Button(
+                    onClick = onAcceptClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = buttonsState.accept.containerColor,
+                        contentColor = buttonsState.accept.contentColor
+                    )
+                ) { Text(buttonsState.accept.text) }
+            }
+
+            if (buttonsState.gps.visible) {
+                Button(
+                    onClick = onGpsClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = buttonsState.gps.containerColor,
+                        contentColor = buttonsState.gps.contentColor
+                    )
+                ) { Text(buttonsState.gps.text) }
+            }
+        }
+
+        if (uiState.dialogState !is DialogState.Hidden) {
+            CustomDialog(
+                state = uiState.dialogState,
+                onDismiss = { /* handled by effect in host if needed */ }
+            )
+        }
+    }
+}
+```
+
+---
+
+## 6) Compose `CustomDialog` implementation
+
+This is a Compose analog of a typical custom XML dialog.
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    state: DialogState.Message,
+    onDismiss: () -> Unit,
+    onPositiveClick: () -> Unit = onDismiss,
+    onNegativeClick: (() -> Unit)? = null
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        title = { Text(text = state.title) },
+        text = { Text(text = state.message) },
+        confirmButton = {
+            TextButton(onClick = onPositiveClick) {
+                Text(state.positiveText)
+            }
+        },
+        dismissButton = if (state.negativeText != null && onNegativeClick != null) {
+            {
+                TextButton(onClick = onNegativeClick) {
+                    Text(state.negativeText)
+                }
+            }
+        } else null
+    )
+}
+```
+
+---
+
+## 7) Optional: better button helper closer to custom button component
+
+If your `CustomButton` had rounded corners, full-width behavior, elevation, and state-based styling, this helper gets closer:
+
+```kotlin
+package ifac.td.taxi.ui.screen.gpstest
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun GPSTestCustomButton(
+    text: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    containerColor: androidx.compose.ui.graphics.Color,
+    contentColor: androidx.compose.ui.graphics.Color,
+    borderColor: androidx.compose.ui.graphics.Color? = null,
+    modifier: Modifier = Modifier
+) {
+    val colors = ButtonDefaults.buttonColors(
+        containerColor = containerColor,
+        contentColor = contentColor,
+        disabledContainerColor = GPSTestButtonStyle.disabledContainer(),
+        disabledContentColor = GPSTestButtonStyle.mutedText()
+    )
+
+    if (borderColor != null) {
+        OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            colors = colors,
+            border = BorderStroke(1.dp, borderColor),
+            modifier = modifier.defaultMinSize(minHeight = 48.dp)
+        ) {
+            Text(text)
+        }
+    } else {
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            colors = colors,
+            modifier = modifier.defaultMinSize(minHeight = 48.dp)
+        ) {
+            Text(text)
+        }
+    }
+}
+```
+
+---
+
+## 8) Example host usage with preserved navigation
+
+If you’re using fragments and want to host Compose inside them, you can preserve existing nav behavior like this:
+
+```kotlin
+@Composable
+fun GPSTestHost(
+    viewModel: GPSTestViewModel,
+    navigateBack: () -> Unit,
+    launchIntent: (android.content.Intent) -> Unit
+) {
+    GPSTestRoute(
+        viewModel = viewModel,
+        onNavigateBack = navigateBack,
+        onLaunchIntent = launchIntent
+    )
+}
+```
+
+If you’re using Compose Navigation, `onNavigateBack` can simply call `navController.popBackStack()`.
+
+---
+
+## What this preserves from the original fragment
+
+- `btnAccept -> navigateBack()`
+- `btnGps -> openNavigatorApp()`
+- lifecycle-based polling every second
+- alarm/key color updates
+- external GPS visibility logic
+- intent launch behavior
+- dialog-ready architecture using `UiState + UiEffect`
+- separation of state and one-shot side effects
+
+---
+
+If you want, I can also provide:
+1. a **fully working fragment wrapper** that hosts this Compose screen inside your existing app,
+2. a **more exact recreation of the XML layout** in Compose,
+3. or a **Koin-based Compose ViewModel wiring example** for this screen.

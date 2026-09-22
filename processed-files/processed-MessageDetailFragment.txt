@@ -1,0 +1,613 @@
+I’ll provide:
+1. A Compose screen/composable for `MessageDetailFragment`
+2. A Compose-friendly `MessageDetailViewModel`
+3. A `MessageDetailUiState`, `MessageDetailUiEffect`, and `MessageDetailButtonsState`
+4. A Compose `CustomDialog` implementation modeled after the old dialog usage
+5. Compose button styling helpers approximating the original custom button behavior
+6. A Compose fragment wrapper to preserve Jetpack Navigation / Fragment navigation
+---
+## 1) Compose UI model
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 11-1: import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+data class MessageDetailUiState(
+    val message: MessageEntity? = null,
+    val hasPredefinedMessages: Boolean = false,
+    val isAnswerVisible: Boolean = true,
+    val isPrintVisible: Boolean = true,
+    val isPredefinedVisible: Boolean = false,
+    val isNewMessageVisible: Boolean = false,
+    val answerEnabled: Boolean = true,
+    val acceptTimerState: ButtonTimerState? = null,
+    val dialogState: MessageDetailDialogState? = null,
+)
+data class ButtonTimerState(
+    val maxSeconds: Long,
+    val remainingSeconds: Long,
+    val isActive: Boolean,
+    val startTime: Long,
+)
+data class MessageDetailButtonsState(
+    val answer: MessageDetailButtonStyle = MessageDetailButtonStyle.raisedEnabled(),
+    val print: MessageDetailButtonStyle = MessageDetailButtonStyle.raisedEnabled(),
+    val delete: MessageDetailButtonStyle = MessageDetailButtonStyle.raisedEnabled(),
+    val accept: MessageDetailButtonStyle = MessageDetailButtonStyle.raisedEnabled(),
+    val predefined: MessageDetailButtonStyle = MessageDetailButtonStyle.raisedDisabled(),
+    val newMessage: MessageDetailButtonStyle = MessageDetailButtonStyle.raisedEnabled(),
+    val answerVisible: Boolean = true,
+    val printVisible: Boolean = true,
+    val deleteVisible: Boolean = true,
+    val acceptVisible: Boolean = true,
+    val predefinedVisible: Boolean = false,
+    val newMessageVisible: Boolean = false,
+)
+data class MessageDetailButtonStyle(
+    val enabled: Boolean,
+    val containerColor: androidx.compose.ui.graphics.Color,
+    val contentColor: androidx.compose.ui.graphics.Color,
+    val borderColor: androidx.compose.ui.graphics.Color? = null,
+)
+object MessageDetailButtonColors {
+    val enabledContainer = androidx.compose.ui.graphics.Color(0xFF1E88E5)
+    val disabledContainer = androidx.compose.ui.graphics.Color(0xFFBDBDBD)
+    val enabledContent = androidx.compose.ui.graphics.Color.White
+    val disabledContent = androidx.compose.ui.graphics.Color.White
+}
+data class MessageDetailDialogState(
+    val title: String,
+    val message: String? = null,
+    val description: String? = null,
+    val hint: String? = null,
+    val messageOptions: List<String>? = null,
+    val buttons: List<MessageDetailDialogButtonType>,
+)
+enum class MessageDetailDialogButtonType {
+    CANCEL, ACCEPT, SEND
+}
+```
+---
+## 2) UiEffect model
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+sealed interface MessageDetailUiEffect {
+    data object NavigateBack : MessageDetailUiEffect
+    data object OpenPredefinedMessages : MessageDetailUiEffect
+    data class ShowDeleteConfirmDialog(val dialog: MessageDetailDialogState) : MessageDetailUiEffect
+    data class ShowWriteCustomMessageDialog(val dialog: MessageDetailDialogState) : MessageDetailUiEffect
+    data class SendMessage(val response: String, val dispatchNumber: String?) : MessageDetailUiEffect
+    data class PrintMessage(val messageId: Int) : MessageDetailUiEffect
+    data class DeleteMessage(val messageId: Int) : MessageDetailUiEffect
+    data object StopAutoClose : MessageDetailUiEffect
+}
+```
+---
+## 3) Compose-friendly ViewModel
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 87-2: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.models.freetextmessage.FreeTextMessageRequest
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.CountdownManagerUseCase
+import ifac.td.taxi.domain.usecase.MessageUseCase
+import ifac.td.taxi.domain.usecase.PredefinedMessagesUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.AlfaMessageHandler
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.room.entities.countdown.CountdownId
+import ifac.td.taxi.repository.room.entities.countdown.CountdownIdCallback
+import ifac.td.taxi.repository.room.entities.countdown.CountdownState
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import ifac.td.taxi.repository.room.entities.message.MessageType
+import ifac.td.taxi.ui.screen.compose.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class MessageDetailComposeViewModel(
+    private val alfaMessageHandler: AlfaMessageHandler,
+    private val messageUseCase: MessageUseCase,
+    private val predefinedMessagesUseCase: PredefinedMessagesUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val countdownManagerUseCase: CountdownManagerUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+    private val TAG = "MessageDetailComposeVM"
+    private val _uiState = MutableStateFlow(MessageDetailUiState())
+    val uiState = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<MessageDetailUiEffect>(extraBufferCapacity = 64)
+    val uiEffect = _uiEffect.asSharedFlow()
+    private var countdownStartTime: Long = 0L
+    init {
+        viewModelScope.launch {
+            val hasPredefined = predefinedMessagesUseCase.getPredefinedMessages().isNotEmpty()
+            _uiState.update { it.copy(hasPredefinedMessages = hasPredefined) }
+        }
+    }
+    fun initVM(msgId: Int, skipAutoClose: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val message = messageUseCase.getMessage(msgId)
+            messageUseCase.setMessageRead(msgId)
+            _uiState.update { it.copy(message = message) }
+            if (!skipAutoClose) {
+                val messageClosureTimes = mapOf(0 to null, 1 to 5, 2 to 10, 3 to 15, 4 to 20, 5 to 25, 6 to 30, 7 to 60)
+                val selectedSeconds =
+                    messageClosureTimes[userPreferencesUseCase.getUserPreferences()?.secondsToCloseMsgPosition]
+                selectedSeconds?.let {
+                    val existingCountdown = countdownManagerUseCase.getCountdownById(CountdownId.CLOSE_MESSAGE)
+                    if (existingCountdown == null) {
+                        createAndStartCountdown(selectedSeconds)
+                    } else if (existingCountdown.state in listOf(CountdownState.FINISHED, CountdownState.STOPPED)) {
+                        countdownManagerUseCase.deleteCountdownById(CountdownId.CLOSE_MESSAGE)
+                        createAndStartCountdown(selectedSeconds)
+                    }
+                }
+            }
+        }
+    }
+    private suspend fun createAndStartCountdown(seconds: Int) {
+        countdownStartTime = System.currentTimeMillis()
+        val countdown = ifac.td.taxi.viewmodel.model.CountdownModel(
+            idCountdown = CountdownId.CLOSE_MESSAGE,
+            timeInSeconds = seconds.toLong(),
+            idCallback = CountdownIdCallback.CLOSE_MESSAGE
+        )
+        _uiState.update {
+            it.copy(
+                acceptTimerState = ButtonTimerState(
+                    maxSeconds = seconds.toLong(),
+                    remainingSeconds = seconds.toLong(),
+                    isActive = true,
+                    startTime = countdownStartTime
+                )
+            )
+        }
+        countdownManagerUseCase.createOrUpdateCountdown(countdown)
+        countdownManagerUseCase.startCountdown(countdown)
+        countdownManagerUseCase.setCountdownFinishCallback(idCountdown = countdown.idCountdown) {
+            CoroutineScope(Dispatchers.IO).launch {
+                countdownManagerUseCase.deleteCountdownById(CountdownId.CLOSE_MESSAGE)
+                _uiEffect.emit(MessageDetailUiEffect.NavigateBack)
+            }
+        }
+        countdownManagerUseCase.setCountdownOnTickCallback(idCountdown = countdown.idCountdown) { tick ->
+            viewModelScope.launch(Dispatchers.IO) {
+                _uiState.update {
+                    it.copy(
+                        acceptTimerState = ButtonTimerState(
+                            maxSeconds = seconds.toLong(),
+                            remainingSeconds = tick.toLong(),
+                            isActive = true,
+                            startTime = countdownStartTime
+                        )
+                    )
+                }
+            }
+        }
+    }
+    fun stopAutoCloseMessage() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (countdownManagerUseCase.getCountdownById(CountdownId.CLOSE_MESSAGE) != null) {
+                _uiState.update { it.copy(acceptTimerState = null) }
+                countdownManagerUseCase.stopCountdownById(CountdownId.CLOSE_MESSAGE)
+                countdownManagerUseCase.deleteCountdownById(CountdownId.CLOSE_MESSAGE)
+            }
+        }
+    }
+    fun onAnswerClicked() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAnswerVisible = false,
+                    isPrintVisible = false,
+                    isPredefinedVisible = true,
+                    isNewMessageVisible = true
+                )
+            }
+        }
+    }
+    fun onPrintClicked(messageId: Int) {
+        viewModelScope.launch {
+            _uiEffect.emit(MessageDetailUiEffect.PrintMessage(messageId))
+        }
+    }
+    fun onDeleteClicked(messageId: Int) {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                MessageDetailUiEffect.ShowDeleteConfirmDialog(
+                    MessageDetailDialogState(
+                        title = context.getString(R.string.dialog_delete_message_title),
+                        description = context.getString(R.string.dialog_delete_message_desc),
+                        buttons = listOf(MessageDetailDialogButtonType.CANCEL, MessageDetailDialogButtonType.ACCEPT)
+                    )
+                )
+            )
+        }
+    }
+    fun confirmDelete(messageId: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            messageUseCase.getMessage(messageId)?.let { messageUseCase.deleteMessage(it) }
+        }
+    }
+    fun onAcceptClicked() {
+        viewModelScope.launch {
+            _uiEffect.emit(MessageDetailUiEffect.NavigateBack)
+        }
+    }
+    fun onPredefinedClicked() {
+        viewModelScope.launch {
+            _uiEffect.emit(MessageDetailUiEffect.OpenPredefinedMessages)
+        }
+    }
+    fun onNewMessageClicked() {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                MessageDetailUiEffect.ShowWriteCustomMessageDialog(
+                    MessageDetailDialogState(
+                        title = context.getString(R.string.write_message),
+                        hint = context.getString(R.string.message),
+                        buttons = listOf(MessageDetailDialogButtonType.CANCEL, MessageDetailDialogButtonType.SEND)
+                    )
+                )
+            )
+        }
+    }
+    fun sendMessage(response: String, dispatchNumber: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val message = _uiState.value.message ?: return@launch
+            val freeMessageRequest = FreeTextMessageRequest().apply {
+                freeTextMessage = response
+                dispatchNumber = dispatchNumber ?: ""
+                operadora = message.provider
+            }
+            alfaMessageHandler.sendMessage(freeMessageRequest)
+        }
+    }
+    fun onMessageLoaded(message: MessageEntity?) {
+        if (message != null && !message.isUrgent) {
+            _uiState.update { it.copy(answerEnabled = false) }
+        }
+    }
+    fun buildTicketContent(message: MessageEntity?, context: android.content.Context): String {
+        if (message == null) return ""
+        val messageTypeText = when (message.messageType) {
+            MessageType.MESSAGE -> context.getString(R.string.message_receive).uppercase()
+            MessageType.DISPATCH -> context.getString(R.string.dispatch_receive)
+            MessageType.PREDISPATCH -> context.getString(R.string.predispatch_receive)
+            else -> null
+        }
+        return buildString {
+            messageTypeText?.let { appendLine(it) }
+            appendLine(message.defaultFormatted)
+            appendLine(message.text)
+        }
+    }
+}
+```
+---
+## 4) Compose screen
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 294-3: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import ifac.td.taxi.viewmodel.MessageDetailComposeViewModel
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun MessageDetailRoute(
+    navController: NavController,
+    viewModel: MessageDetailComposeViewModel,
+    sharedViewModel: MainActivityViewModel,
+    messageId: Int,
+    skipAutoClose: Boolean,
+    onNavigateToPredefinedMessages: (messageId: Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(messageId, skipAutoClose) {
+        viewModel.initVM(messageId, skipAutoClose)
+    }
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is MessageDetailUiEffect.NavigateBack -> navController.popBackStack()
+                is MessageDetailUiEffect.OpenPredefinedMessages -> {
+                    uiState.message?.let { onNavigateToPredefinedMessages(it.id) }
+                }
+                is MessageDetailUiEffect.ShowDeleteConfirmDialog -> {}
+                is MessageDetailUiEffect.ShowWriteCustomMessageDialog -> {}
+                is MessageDetailUiEffect.PrintMessage -> {}
+                is MessageDetailUiEffect.DeleteMessage -> {}
+                is MessageDetailUiEffect.StopAutoClose -> viewModel.stopAutoCloseMessage()
+                is MessageDetailUiEffect.SendMessage -> viewModel.sendMessage(effect.response, effect.dispatchNumber)
+            }
+        }
+    }
+    MessageDetailScreen(
+        uiState = uiState,
+        ticketContent = viewModel.buildTicketContent(uiState.message, context),
+        onAnswer = { viewModel.stopAutoCloseMessage(); viewModel.onAnswerClicked() },
+        onPrint = { viewModel.stopAutoCloseMessage(); viewModel.onPrintClicked(messageId) },
+        onDelete = { viewModel.stopAutoCloseMessage(); viewModel.onDeleteClicked(messageId) },
+        onAccept = { viewModel.stopAutoCloseMessage(); viewModel.onAcceptClicked() },
+        onPredefined = { viewModel.stopAutoCloseMessage(); viewModel.onPredefinedClicked() },
+        onNewMessage = { viewModel.stopAutoCloseMessage(); viewModel.onNewMessageClicked() },
+        onDialogResult = { dialogResult ->
+            when (dialogResult) {
+                is MessageDetailDialogResult.DeleteAccepted -> {
+                    viewModel.confirmDelete(messageId)
+                    navController.popBackStack()
+                }
+                is MessageDetailDialogResult.SendCustomMessage -> {
+                    viewModel.sendMessage(dialogResult.text, sharedViewModel.dispatchFlow.value?.dispatchNumber)
+                }
+                else -> Unit
+            }
+        }
+    )
+}
+```
+---
+## 5) Screen content + buttons state
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 365-4: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+@Composable
+fun MessageDetailScreen(
+    uiState: MessageDetailUiState,
+    ticketContent: String,
+    onAnswer: () -> Unit,
+    onPrint: () -> Unit,
+    onDelete: () -> Unit,
+    onAccept: () -> Unit,
+    onPredefined: () -> Unit,
+    onNewMessage: () -> Unit,
+    onDialogResult: (MessageDetailDialogResult) -> Unit,
+) {
+    val buttons = remember(uiState) { uiState.toButtonsState() }
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Text(
+                text = ticketContent,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Start
+            )
+            Spacer(Modifier.height(24.dp))
+            MessageDetailButtons(
+                state = buttons,
+                onAnswer = onAnswer,
+                onPrint = onPrint,
+                onDelete = onDelete,
+                onAccept = onAccept,
+                onPredefined = onPredefined,
+                onNewMessage = onNewMessage
+            )
+        }
+        uiState.dialogState?.let { dialogState ->
+            CustomDialog(
+                state = dialogState,
+                onDismiss = { onDialogResult(MessageDetailDialogResult.Dismiss) },
+                onResult = onDialogResult
+            )
+        }
+    }
+}
+@Composable
+fun MessageDetailButtons(
+    state: MessageDetailButtonsState,
+    onAnswer: () -> Unit,
+    onPrint: () -> Unit,
+    onDelete: () -> Unit,
+    onAccept: () -> Unit,
+    onPredefined: () -> Unit,
+    onNewMessage: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.answerVisible) StyledMessageButton("Answer", state.answer, onAnswer)
+        if (state.printVisible) StyledMessageButton("Print", state.print, onPrint)
+        if (state.deleteVisible) StyledMessageButton("Delete", state.delete, onDelete)
+        if (state.acceptVisible) StyledMessageButton("Accept", state.accept, onAccept)
+        if (state.predefinedVisible) StyledMessageButton("Predefined", state.predefined, onPredefined)
+        if (state.newMessageVisible) StyledMessageButton("New message", state.newMessage, onNewMessage)
+    }
+}
+@Composable
+fun StyledMessageButton(
+    text: String,
+    style: MessageDetailButtonStyle,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        enabled = style.enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = style.containerColor,
+            contentColor = style.contentColor,
+            disabledContainerColor = style.containerColor.copy(alpha = 0.5f),
+            disabledContentColor = style.contentColor.copy(alpha = 0.7f),
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(text)
+    }
+}
+fun MessageDetailUiState.toButtonsState(): MessageDetailButtonsState {
+    val answerStyle = if (answerEnabled) {
+        MessageDetailButtonStyle.raisedEnabled()
+    } else {
+        MessageDetailButtonStyle.raisedDisabled()
+    }
+    return MessageDetailButtonsState(
+        answer = answerStyle,
+        print = MessageDetailButtonStyle.raisedEnabled(),
+        delete = MessageDetailButtonStyle.raisedEnabled(),
+        accept = MessageDetailButtonStyle.raisedEnabled(),
+        predefined = if (hasPredefinedMessages) MessageDetailButtonStyle.raisedEnabled() else MessageDetailButtonStyle.raisedDisabled(),
+        newMessage = MessageDetailButtonStyle.raisedEnabled(),
+        answerVisible = isAnswerVisible,
+        printVisible = isPrintVisible,
+        deleteVisible = true,
+        acceptVisible = true,
+        predefinedVisible = isPredefinedVisible,
+        newMessageVisible = isNewMessageVisible
+    )
+}
+fun MessageDetailButtonStyle.Companion.raisedEnabled() = MessageDetailButtonStyle(
+    enabled = true,
+    containerColor = MessageDetailButtonColors.enabledContainer,
+    contentColor = MessageDetailButtonColors.enabledContent
+)
+fun MessageDetailButtonStyle.Companion.raisedDisabled() = MessageDetailButtonStyle(
+    enabled = false,
+    containerColor = MessageDetailButtonColors.disabledContainer,
+    contentColor = MessageDetailButtonColors.disabledContent
+)
+```
+---
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
+@Composable
+fun MessageDetailCustomDialog(
+    state: MessageDetailDialogState,
+    onDismiss: () -> Unit,
+    onResult: (MessageDetailDialogResult) -> Unit
+) {
+    var input by remember(state) { mutableStateOf(TextFieldValue("")) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(state.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                state.description?.let { Text(it) }
+                state.message?.let { Text(it) }
+                state.messageOptions?.let { options ->
+                    Column {
+                        options.forEach { option ->
+                            TextButton(
+                                onClick = {
+                                    input = TextFieldValue(option)
+                                }
+                            ) {
+                                Text(option)
+                            }
+                        }
+                    }
+                }
+                if (state.hint != null) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        label = { Text(state.hint) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                state.buttons.contains(MessageDetailDialogButtonType.ACCEPT) -> {
+                    TextButton(onClick = {
+                        onResult(MessageDetailDialogResult.Accept(input.text))
+                    }) { Text("Accept") }
+                }
+                state.buttons.contains(MessageDetailDialogButtonType.SEND) -> {
+                    TextButton(onClick = {
+                        onResult(MessageDetailDialogResult.SendCustomMessage(input.text))
+                    }) { Text("Send") }
+                }
+            }
+        },
+        dismissButton = {
+            if (state.buttons.contains(MessageDetailDialogButtonType.CANCEL)) {
+                TextButton(onClick = { onDismiss() }) { Text("Cancel") }
+            }
+        }
+    )
+}
+sealed interface MessageDetailDialogResult {
+    data object Dismiss : MessageDetailDialogResult
+    data class Accept(val text: String) : MessageDetailDialogResult
+    data class SendCustomMessage(val text: String) : MessageDetailDialogResult
+    data object DeleteAccepted : MessageDetailDialogResult
+}
+```
+---
+## 7) Preserving Jetpack Navigation with a Fragment wrapper
+```kotlin
+package ifac.td.taxi.ui.screen
+// # Block 564-6: import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.screen.compose.MessageDetailRoute
+import org.koin.androidx.viewmodel.ext.android.activityViewModel
+import org.koin.androidx.viewmodel.ext.android.viewModel
+class MessageDetailComposeFragment : Fragment(R.layout.fragment_message_detail_compose) {
+    private val vModel: ifac.td.taxi.viewmodel.MessageDetailComposeViewModel by viewModel()
+    private val sharedViewModel: ifac.td.taxi.viewmodel.MainActivityViewModel by activityViewModel()
+    override fun onViewCreated(view: android.view.View, savedInstanceState: android.os.Bundle?) {
+        val args = MessageDetailFragmentArgs.fromBundle(requireArguments())
+        view.findViewById<ComposeView>(R.id.composeView).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent {
+                MessageDetailRoute(
+                    navController = findNavController(),
+                    viewModel = vModel,
+                    sharedViewModel = sharedViewModel,
+                    messageId = args.messageId,
+                    skipAutoClose = args.skipAutoClose,
+                    onNavigateToPredefinedMessages = { messageId ->
+                        findNavController().navigate(
+                            MessageDetailComposeFragmentDirections.actionMessageDetailFragmentToPredefinedMessageFragment(
+                                messageId,
+                                true
+                            )
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+```
+`fragment_message_detail_compose.xml` can be as simple as:
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.compose.ui.platform.ComposeView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/composeView"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+```
+---
+## 8) Notes on exact behavioral mapping
+### Fragment behavior preserved
+### Button state behavior preserved
+---
+## 9) What you would likely want to refine in a real migration
+The code above is intentionally close to the fragment logic. In a production Compose migration, you would likely also want:
+---

@@ -1,0 +1,524 @@
+I’ll keep this Android + Jetpack Compose only.
+---
+## 1) Compose UI models
+```kotlin
+package ifac.td.taxi.ui.screen.destinationmap
+// # Block 5-1: import android.content.Intent
+import android.content.Intent
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
+import ifac.td.taxi.ui.model.RoutePointModel
+@Immutable
+data class DestinationMapUiState(
+    val routePoints: List<RoutePointModel> = emptyList(),
+    val buttonsState: DestinationMapButtonsState = DestinationMapButtonsState(),
+    val dialogState: DestinationMapDialogState = DestinationMapDialogState.Hidden,
+    val isLoading: Boolean = false
+)
+sealed interface DestinationMapDialogState {
+    data object Hidden : DestinationMapDialogState
+    data class ConfirmOpenNavigator(
+        val coordinates: String,
+        val address: String? = null
+    ) : DestinationMapDialogState
+}
+sealed interface DestinationMapUiEffect {
+    data class OpenNavigatorIntent(val intent: Intent?) : DestinationMapUiEffect
+    data class ShowToast(val messageRes: Int) : DestinationMapUiEffect
+    data object HideKeyboard : DestinationMapUiEffect
+}
+@Immutable
+data class DestinationMapButtonsState(
+    val acceptVisible: Boolean = true,
+    val acceptEnabled: Boolean = true,
+    val cancelVisible: Boolean = true,
+    val cancelEnabled: Boolean = true,
+    val secondaryVisible: Boolean = false,
+    val secondaryEnabled: Boolean = false,
+    val acceptText: String = "",
+    val cancelText: String = "",
+    val secondaryText: String = "",
+    val acceptStyle: DestinationMapButtonStyle = DestinationMapButtonStyle.Primary,
+    val cancelStyle: DestinationMapButtonStyle = DestinationMapButtonStyle.Secondary,
+    val secondaryStyle: DestinationMapButtonStyle = DestinationMapButtonStyle.Tertiary
+) {
+    companion object {
+        fun defaultForDestinationMap(): DestinationMapButtonsState = DestinationMapButtonsState(
+            acceptVisible = true,
+            acceptEnabled = true,
+            cancelVisible = true,
+            cancelEnabled = true,
+            secondaryVisible = false,
+            secondaryEnabled = false,
+            acceptText = "Open in navigator",
+            cancelText = "Back",
+            secondaryText = "",
+            acceptStyle = DestinationMapButtonStyle.Primary,
+            cancelStyle = DestinationMapButtonStyle.Secondary,
+            secondaryStyle = DestinationMapButtonStyle.Tertiary
+        )
+    }
+}
+enum class DestinationMapButtonStyle {
+    Primary,
+    Secondary,
+    Tertiary
+}
+```
+---
+## 2) ViewModel with `UiState + UiEffect`
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 71-2: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.model.RoutePointModel
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.getDispatchNumber
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+class DestinationMapComposeViewModel(
+    private val dispatchUseCase: DispatchUseCase,
+    private val navigatorUseCase: NavigatorUseCase,
+    application: Application
+) : AndroidViewModel(application) {
+    private val TAG = "DestinationMapViewModel"
+    private val _uiState = MutableStateFlow(
+        DestinationMapUiState(
+            buttonsState = DestinationMapButtonsState.defaultForDestinationMap()
+        )
+    )
+    val uiState = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<DestinationMapUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+    fun onDispatchesChanged(arDispatches: List<Any>?) {
+        val routePoints = mutableListOf<RoutePointModel>()
+        val dispatchColorMap = mutableMapOf<String, Int>()
+        var colorIndex = 0
+        val arrColors = intArrayOf(
+            getApplication<Application>().getColor(R.color.routes_one),
+            getApplication<Application>().getColor(R.color.grey_divider),
+            getApplication<Application>().getColor(R.color.switch_thumb_on),
+            getApplication<Application>().getColor(R.color.routes_four)
+        )
+        arDispatches?.forEach { item ->
+            val infoDispatchModel = item
+            val dispatchNumber = (infoDispatchModel as? HasDispatchFields)?.getDispatchNumber() ?: "Default"
+            val color = dispatchColorMap.getOrPut(dispatchNumber) {
+                val assigned = arrColors[colorIndex % arrColors.size]
+                colorIndex++
+                assigned
+            }
+            val pickUpAddress = infoDispatchModel.pickUpAdress ?: ""
+            val pickUpCoordinates = infoDispatchModel.pickUpCoordinates ?: ""
+            if (pickUpAddress.isNotEmpty()) {
+                routePoints.add(
+                    RoutePointModel(
+                        type = RoutePointModel.RoutePointType.PICK_UP,
+                        address = pickUpAddress,
+                        coordinatesTag = pickUpCoordinates,
+                        order = infoDispatchModel.orderPickUp,
+                        dispatchNumber = infoDispatchModel.getDispatchNumber(),
+                        titleColor = color
+                    )
+                )
+            }
+            val destinyAddressList = infoDispatchModel.destinyAdress ?: emptyList()
+            val destinyCoordinatesList = infoDispatchModel.dropOffCoordinates ?: emptyList()
+            if (destinyAddressList.size == destinyCoordinatesList.size) {
+                destinyAddressList.forEachIndexed { index, address ->
+                    routePoints.add(
+                        RoutePointModel(
+                            type = RoutePointModel.RoutePointType.DROP_OFF,
+                            address = address,
+                            coordinatesTag = destinyCoordinatesList[index],
+                            order = infoDispatchModel.orderDropOff,
+                            dispatchNumber = infoDispatchModel.getDispatchNumber(),
+                            titleColor = color
+                        )
+                    )
+                }
+            }
+        }
+        _uiState.update {
+            it.copy(routePoints = routePoints)
+        }
+    }
+    fun onRoutePointClicked(routePoint: RoutePointModel) {
+        _uiState.update {
+            it.copy(
+                dialogState = DestinationMapDialogState.ConfirmOpenNavigator(
+                    coordinates = routePoint.coordinatesTag,
+                    address = routePoint.address
+                )
+            )
+        }
+    }
+    fun dismissDialog() {
+        _uiState.update { it.copy(dialogState = DestinationMapDialogState.Hidden) }
+    }
+    fun confirmOpenNavigator(coordinates: String, street: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "confirmOpenNavigator: Coordinates = $coordinates, Street = $street")
+            val navigatorIntent = when {
+                coordinates.isNotEmpty() && !street.isNullOrEmpty() ->
+                    navigatorUseCase.openNavigatorWithCoordinatesAndStreetName(coordinates, street)
+                coordinates.isNotEmpty() ->
+                    navigatorUseCase.openNavigatorWithCoordinates(coordinates)
+                !street.isNullOrEmpty() ->
+                    navigatorUseCase.openNavigatorApp(street)
+                else ->
+                    navigatorUseCase.openNavigatorApp()
+            }
+            _uiEffect.emit(DestinationMapUiEffect.OpenNavigatorIntent(navigatorIntent))
+            dismissDialog()
+        }
+    }
+    fun setButtonsState(state: DestinationMapButtonsState) {
+        _uiState.update { it.copy(buttonsState = state) }
+    }
+    fun onAcceptClicked() {
+        // Replace fragment button logic here.
+        // Example: open navigator if a selected point exists, or show message.
+    }
+    fun onCancelClicked() {
+        viewModelScope.launch {
+            _uiEffect.emit(DestinationMapUiEffect.HideKeyboard)
+        }
+    }
+}
+interface HasDispatchFields {
+    fun getDispatchNumber(): String?
+    val pickUpAdress: String?
+    val pickUpCoordinates: String?
+    val destinyAdress: List<String>?
+    val dropOffCoordinates: List<String>?
+    val orderPickUp: Int?
+    val orderDropOff: Int?
+}
+```
+---
+## 3) Compose screen
+```kotlin
+package ifac.td.taxi.ui.screen.destinationmap
+// # Block 212-3: import android.content.Intent
+import android.content.Intent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.ui.model.RoutePointModel
+import ifac.td.taxi.viewmodel.DestinationMapViewModel
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun DestinationMapRouteScreen(
+    viewModel: DestinationMapComposeViewModel,
+    onLaunchIntent: (Intent?) -> Unit,
+    onShowHeader: (Boolean) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+    }
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is DestinationMapUiEffect.OpenNavigatorIntent -> onLaunchIntent(effect.intent)
+                is DestinationMapUiEffect.ShowToast -> Unit
+                DestinationMapUiEffect.HideKeyboard -> Unit
+            }
+        }
+    }
+    DestinationMapRouteContent(
+        uiState = uiState,
+        onRoutePointClick = viewModel::onRoutePointClicked,
+        onAcceptClick = viewModel::onAcceptClicked,
+        onCancelClick = viewModel::onCancelClicked,
+        onDismissDialog = viewModel::dismissDialog,
+        onConfirmDialog = { coordinates, address ->
+            viewModel.confirmOpenNavigator(coordinates, address)
+        },
+        modifier = modifier
+    )
+}
+@Composable
+fun DestinationMapRouteContent(
+    uiState: DestinationMapUiState,
+    onRoutePointClick: (RoutePointModel) -> Unit,
+    onAcceptClick: () -> Unit,
+    onCancelClick: () -> Unit,
+    onDismissDialog: () -> Unit,
+    onConfirmDialog: (String, String?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(uiState.routePoints) { point ->
+                    RoutePointItem(
+                        routePoint = point,
+                        onClick = { onRoutePointClick(point) }
+                    )
+                }
+            }
+            DestinationMapButtons(
+                state = uiState.buttonsState,
+                onAcceptClick = onAcceptClick,
+                onCancelClick = onCancelClick
+            )
+        }
+        when (val dialog = uiState.dialogState) {
+            DestinationMapDialogState.Hidden -> Unit
+            is DestinationMapDialogState.ConfirmOpenNavigator -> {
+                CustomDialog(
+                    title = "Open navigator",
+                    message = dialog.address?.let {
+                        "Do you want to open navigator for:\n$it"
+                    } ?: "Do you want to open navigator?",
+                    positiveText = "Open",
+                    negativeText = "Cancel",
+                    onPositiveClick = {
+                        onConfirmDialog(dialog.coordinates, dialog.address)
+                    },
+                    onNegativeClick = onDismissDialog,
+                    onDismiss = onDismissDialog
+                )
+            }
+        }
+    }
+}
+@Composable
+fun RoutePointItem(
+    routePoint: RoutePointModel,
+    onClick: () -> Unit
+) {
+    Card(onClick = onClick) {
+        Column(Modifier.padding(16.dp)) {
+            Text(text = routePoint.address)
+            Text(text = routePoint.coordinatesTag)
+        }
+    }
+}
+```
+---
+## 4) Destination buttons state + styling helpers
+```kotlin
+package ifac.td.taxi.ui.screen.destinationmap
+// # Block 326-4: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun DestinationMapButtons(
+    state: DestinationMapButtonsState,
+    onAcceptClick: () -> Unit,
+    onCancelClick: () -> Unit,
+    onSecondaryClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (state.cancelVisible) {
+            DestinationMapButton(
+                text = state.cancelText,
+                style = state.cancelStyle,
+                enabled = state.cancelEnabled,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+        }
+        if (state.secondaryVisible) {
+            DestinationMapButton(
+                text = state.secondaryText,
+                style = state.secondaryStyle,
+                enabled = state.secondaryEnabled,
+                modifier = Modifier.weight(1f),
+                onClick = { onSecondaryClick?.invoke() }
+            )
+        }
+        if (state.acceptVisible) {
+            DestinationMapButton(
+                text = state.acceptText,
+                style = state.acceptStyle,
+                enabled = state.acceptEnabled,
+                modifier = Modifier.weight(1f),
+                onClick = onAcceptClick
+            )
+        }
+    }
+}
+@Composable
+fun DestinationMapButton(
+    text: String,
+    style: DestinationMapButtonStyle,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val colors = when (style) {
+        DestinationMapButtonStyle.Primary -> ButtonDefaults.buttonColors(
+            containerColor = Color(0xFF1E88E5),
+            contentColor = Color.White,
+            disabledContainerColor = Color(0xFF90A4AE),
+            disabledContentColor = Color.White
+        )
+        DestinationMapButtonStyle.Secondary -> ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent,
+            contentColor = Color(0xFF1E88E5),
+            disabledContainerColor = Color.Transparent,
+            disabledContentColor = Color(0xFF90A4AE)
+        )
+        DestinationMapButtonStyle.Tertiary -> ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFECEFF1),
+            contentColor = Color(0xFF263238),
+            disabledContainerColor = Color(0xFFECEFF1),
+            disabledContentColor = Color(0xFF90A4AE)
+        )
+    }
+    val border = when (style) {
+        DestinationMapButtonStyle.Secondary -> BorderStroke(1.dp, Color(0xFF1E88E5))
+        else -> null
+    }
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(48.dp),
+        colors = colors,
+        border = border,
+        contentPadding = PaddingValues(horizontal = 16.dp)
+    ) {
+        Text(text = text)
+    }
+}
+```
+---
+## 5) CustomDialog based on XML/dialog style
+```kotlin
+package ifac.td.taxi.ui.screen.destinationmap
+// # Block 425-5: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun DestinationMapCustomDialog(
+    title: String,
+    message: String,
+    positiveText: String,
+    negativeText: String,
+    onPositiveClick: () -> Unit,
+    onNegativeClick: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x88000000))
+            .clickable(onClick = onDismiss)
+    ) {
+        Card(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(24.dp)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+                ) {
+                    TextButton(onClick = onNegativeClick) {
+                        Text(negativeText)
+                    }
+                    Button(onClick = onPositiveClick) {
+                        Text(positiveText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+## 7) Example of a Compose host fragment
+```kotlin
+class DestinationMapComposeFragment : Fragment() {
+    private val viewModel: DestinationMapViewModel by viewModel()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                MaterialTheme {
+                    DestinationMapRouteScreen(
+                        viewModel = viewModel,
+                        onLaunchIntent = { intent ->
+                            intent?.let { startActivity(it) }
+                        },
+                        onShowHeader = { show ->
+                            (activity as? MainActivityHost)?.showHeader(show)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+```
+---
+## 8) Notes on “exact XML behavior”
+Because the actual XML files and original `CustomDialog.kt` are not included, I modeled the behavior in a Compose-equivalent way. To make it exact, you would map:
+---
+## 9) Recommended improvement
+Your original `DestinationMapViewModel` only emitted navigator intents. In Compose, the more scalable pattern is:
+That is exactly what the code above does.
+1. a fully type-safe version using your actual dispatch model class,  
+2. a `DestinationMapScreenPreview`, or  
+3. a direct translation of the original `NewDirectionsAdapter` row into Compose.

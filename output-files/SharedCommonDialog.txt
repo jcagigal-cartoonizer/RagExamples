@@ -1,0 +1,721 @@
+Below is a Compose-based replacement for your `DialogFragment`, with:
+
+1. A `CustomDialogComposable`
+2. A Compose-friendly `CustomDialogViewModel`
+3. `UiState + UiEvent`
+4. Lifecycle-aware state/event collection
+5. State holders/data classes replacing the old button logic
+
+I’ll keep it Android + Jetpack Compose only, and mirror the behavior of your XML/Fragment as closely as possible.
+
+---
+
+## 1) Compose dialog implementation
+
+```kotlin
+package ifac.td.taxi.ui.custom.dialog
+
+import android.net.Uri
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.domain.model.PrimeType
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+@Composable
+fun CustomDialogRoute(
+    viewModel: CustomDialogViewModel,
+    onDismissRequest: () -> Unit,
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // lifecycle-aware event collection
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is CustomDialogUiEvent.Dismiss -> onDismissRequest()
+                is CustomDialogUiEvent.ShowToast -> {
+                    // optional: handle at screen level, or via SnackbarHost
+                }
+                is CustomDialogUiEvent.OpenHref -> event.action.invoke()
+            }
+        }
+    }
+
+    if (state.visible) {
+        CustomDialogComposable(
+            state = state,
+            onEvent = viewModel::onEvent,
+            onDismissRequest = {
+                viewModel.onEvent(CustomDialogUiEvent.UserDismissed)
+            }
+        )
+    }
+}
+
+@Composable
+fun CustomDialogComposable(
+    state: CustomDialogUiState,
+    onEvent: (CustomDialogUiEvent) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    val context = LocalContext.current
+    val isLandscape = LocalConfiguration.current.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    Dialog(
+        onDismissRequest = {
+            if (state.canDismiss) onDismissRequest()
+        },
+        properties = DialogProperties(
+            dismissOnBackPress = state.canDismiss,
+            dismissOnClickOutside = state.canDismiss
+        )
+    ) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            tonalElevation = 6.dp,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(min = 300.dp, max = if (isLandscape) 700.dp else Dp.Infinity)
+        ) {
+            Column(
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .fillMaxWidth()
+            ) {
+                Header(
+                    title = state.title,
+                    iconRes = state.iconRes,
+                    showDivider = state.showTitleDivider
+                )
+
+                if (state.description != null || state.hrefText != null || state.checkBox != null ||
+                    state.listOptions.isNotEmpty() || state.messageOptions.isNotEmpty() ||
+                    state.editText != null || state.importEditText != null
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                DialogBody(
+                    state = state,
+                    onEvent = onEvent
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                DialogButtons(
+                    buttons = state.buttons,
+                    enabledStates = state.buttonEnabledStates,
+                    onButtonClick = { buttonType -> onEvent(CustomDialogUiEvent.ButtonClicked(buttonType)) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Header(
+    title: String?,
+    @DrawableRes iconRes: Int?,
+    showDivider: Boolean,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.Top,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (iconRes != null) {
+                Icon(
+                    painter = androidx.compose.ui.res.painterResource(iconRes),
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(30.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+
+            if (title != null) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2
+                )
+            }
+
+        }
+        if (showDivider) {
+            Spacer(Modifier.height(8.dp))
+            Divider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
+        }
+    }
+}
+
+@Composable
+private fun DialogBody(
+    state: CustomDialogUiState,
+    onEvent: (CustomDialogUiEvent) -> Unit
+) {
+    val descriptionStyle = MaterialTheme.typography.bodyMedium.copy(
+        textAlign = if (state.centerText) TextAlign.Center else TextAlign.Start,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (state.description != null) {
+            val maxHeight = if (state.useScrollLimit) 200.dp else Dp.Unspecified
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 0.dp, max = if (state.useScrollLimit) maxHeight else Dp.Infinity)
+            ) {
+                if (state.useScrollLimit) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = maxHeight)
+                    ) {
+                        item {
+                            Text(
+                                text = state.description,
+                                style = descriptionStyle,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        text = state.description,
+                        style = descriptionStyle,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+
+        if (!state.messageOptions.isNullOrEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp)
+            ) {
+                items(state.messageOptions) { option ->
+                    Text(
+                        text = option,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onEvent(CustomDialogUiEvent.MessageOptionSelected(option))
+                            }
+                            .padding(12.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Divider()
+                }
+            }
+        }
+
+        if (state.listOptions.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            ExposedDropdownMenuField(
+                options = state.listOptions,
+                selected = state.selectedOption,
+                onSelected = { onEvent(CustomDialogUiEvent.ListOptionSelected(it)) }
+            )
+        }
+
+        if (state.hrefText != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = state.hrefText,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .clickable { onEvent(CustomDialogUiEvent.HrefClicked) }
+                    .padding(4.dp)
+            )
+        }
+
+        if (state.checkBox != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = state.checkBox.checked,
+                    onCheckedChange = { onEvent(CustomDialogUiEvent.CheckBoxChanged(it)) }
+                )
+                Text(
+                    text = state.checkBox.label,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+
+        if (state.editText != null) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.editText.value,
+                onValueChange = { onEvent(CustomDialogUiEvent.EditTextChanged(it)) },
+                placeholder = state.editText.hint?.let { { Text(it) } },
+                singleLine = false,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        if (state.importEditText != null) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.importEditText.value,
+                onValueChange = { onEvent(CustomDialogUiEvent.ImportEditTextChanged(it) ) },
+                placeholder = state.importEditText.hint?.let { { Text(it) } },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun DialogButtons(
+    buttons: List<DialogButtonState>,
+    enabledStates: Map<ButtonType, Boolean>,
+    onButtonClick: (ButtonType) -> Unit
+) {
+    if (buttons.isEmpty()) return
+
+    val rows = buttons.chunked(3)
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        rows.forEach { rowButtons ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                rowButtons.forEach { button ->
+                    val enabled = enabledStates[button.type] ?: true
+                    Button(
+                        onClick = { onButtonClick(button.type) },
+                        enabled = enabled,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(button.label)
+                    }
+                }
+                repeat(3 - rowButtons.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+    }
+}
+
+@Composable
+private fun ExposedDropdownMenuField(
+    options: Map<Int, String>,
+    selected: PrimeType?,
+    onSelected: (PrimeType) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = selected?.name ?: "Select"
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = true }
+        )
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEach { (id, name) ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = {
+                        expanded = false
+                        onSelected(PrimeType(id, name))
+                    }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEvent`
+
+```kotlin
+package ifac.td.taxi.ui.custom.dialog
+
+import androidx.annotation.DrawableRes
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.PrimeType
+import ifac.td.taxi.domain.model.TTSType
+import ifac.td.taxi.domain.usecase.TTSUseCase
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class CustomDialogViewModel(
+    private val ttsUseCase: TTSUseCase
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(CustomDialogUiState())
+    val uiState: StateFlow<CustomDialogUiState> = _uiState.asStateFlow()
+
+    private val _events = MutableSharedFlow<CustomDialogUiEvent>(extraBufferCapacity = 1)
+    val events: SharedFlow<CustomDialogUiEvent> = _events.asSharedFlow()
+
+    fun setModel(model: CustomDialogModel) {
+        _uiState.value = model.toUiState()
+        speakTTS(buildTTSText(_uiState.value))
+    }
+
+    fun onEvent(event: CustomDialogUiEvent) {
+        when (event) {
+            is CustomDialogUiEvent.EditTextChanged -> {
+                _uiState.update { it.copy(editText = it.editText?.copy(value = event.value)) }
+            }
+
+            is CustomDialogUiEvent.ImportEditTextChanged -> {
+                _uiState.update { it.copy(importEditText = it.importEditText?.copy(value = event.value)) }
+            }
+
+            is CustomDialogUiEvent.CheckBoxChanged -> {
+                _uiState.update { it.copy(checkBox = it.checkBox?.copy(checked = event.checked)) }
+                updateAcceptEnabledIfNeeded()
+            }
+
+            is CustomDialogUiEvent.MessageOptionSelected -> {
+                _uiState.update { it.copy(editText = it.editText?.copy(value = event.value)) }
+            }
+
+            is CustomDialogUiEvent.ListOptionSelected -> {
+                _uiState.update { it.copy(selectedOption = event.value) }
+            }
+
+            is CustomDialogUiEvent.HrefClicked -> {
+                _uiState.value.hrefAction?.invoke()
+            }
+
+            is CustomDialogUiEvent.ButtonClicked -> {
+                handleButtonClick(event.type)
+            }
+
+            CustomDialogUiEvent.UserDismissed -> {
+                stopTTS()
+                emitDismiss()
+            }
+        }
+    }
+
+    private fun handleButtonClick(type: ButtonType) {
+        val state = _uiState.value
+
+        if (state.requiresCheckboxForAccept &&
+            type == ButtonType.ACCEPT &&
+            state.checkBox?.checked != true
+        ) {
+            _events.tryEmit(CustomDialogUiEvent.ShowToast("check_box_not_checked"))
+            return
+        }
+
+        stopTTS()
+        _uiState.update { it.copy(pressedButton = type) }
+        emitDismiss()
+    }
+
+    private fun emitDismiss() {
+        viewModelScope.launch {
+            _events.emit(CustomDialogUiEvent.Dismiss(buildResponse()))
+        }
+    }
+
+    private fun buildResponse(): CustomDialogResponse {
+        val state = _uiState.value
+        return CustomDialogResponse(
+            editTextString = state.editText?.value?.takeIf { it.isNotBlank() },
+            checkBoxStatus = state.checkBox?.checked,
+            buttonPressed = state.pressedButton,
+            importEditTextValue = state.importEditText?.value?.toIntOrNull(),
+            selectedOption = state.selectedOption
+        )
+    }
+
+    private fun speakTTS(text: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            ttsUseCase.speakText(text, TTSType.Dialog)
+        }
+    }
+
+    private fun stopTTS() {
+        viewModelScope.launch(Dispatchers.IO) {
+            ttsUseCase.cancelCurrentSpeech()
+        }
+    }
+
+    private fun buildTTSText(state: CustomDialogUiState): String {
+        val base = state.description ?: state.title.orEmpty()
+        val buttonText = state.buttons.joinToString(separator = ", ") { it.label }
+        return if (buttonText.isNotBlank()) "$base. $buttonText" else base
+    }
+
+    private fun updateAcceptEnabledIfNeeded() {
+        val state = _uiState.value
+        if (!state.requiresCheckboxForAccept) return
+        val checked = state.checkBox?.checked == true
+        _uiState.update { current ->
+            current.copy(
+                buttonEnabledStates = current.buttonEnabledStates + (ButtonType.ACCEPT to checked)
+            )
+        }
+    }
+}
+```
+
+---
+
+## 3) State holders / data classes replacing fragment logic
+
+```kotlin
+package ifac.td.taxi.ui.custom.dialog
+
+import android.net.Uri
+import androidx.annotation.DrawableRes
+import ifac.td.taxi.domain.model.PrimeType
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class CustomDialogUiState(
+    val visible: Boolean = false,
+    val title: String? = null,
+    @DrawableRes val iconRes: Int? = null,
+    val description: String? = null,
+    val hrefText: String? = null,
+    val hrefAction: (() -> Unit)? = null,
+    val centerText: Boolean = false,
+    val canDismiss: Boolean = true,
+    val showTitleDivider: Boolean = true,
+
+    val checkBox: CheckBoxState? = null,
+    val editText: TextInputState? = null,
+    val importEditText: TextInputState? = null,
+
+    val messageOptions: List<String> = emptyList(),
+    val listOptions: Map<Int, String> = emptyMap(),
+    val selectedOption: PrimeType? = null,
+
+    val buttons: List<DialogButtonState> = emptyList(),
+    val buttonEnabledStates: Map<ButtonType, Boolean> = emptyMap(),
+    val pressedButton: ButtonType? = null,
+
+    val requiresCheckboxForAccept: Boolean = false,
+    val useScrollLimit: Boolean = false
+)
+
+data class CheckBoxState(
+    val label: String,
+    val checked: Boolean = false
+)
+
+data class TextInputState(
+    val value: String = "",
+    val hint: String? = null,
+    val maxLength: Int? = null,
+    val pinMode: Boolean = false
+)
+
+data class DialogButtonState(
+    val type: ButtonType,
+    val label: String,
+    val enabled: Boolean = true
+)
+
+data class CustomDialogResponse(
+    val editTextString: String? = null,
+    val checkBoxStatus: Boolean? = null,
+    val buttonPressed: ButtonType? = null,
+    val importEditTextValue: Int? = null,
+    val ticketUri: Uri? = null,
+    val selectedOption: PrimeType? = null
+)
+```
+
+---
+
+## 4) UI events
+
+```kotlin
+package ifac.td.taxi.ui.custom.dialog
+
+import ifac.td.taxi.domain.model.PrimeType
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+sealed interface CustomDialogUiEvent {
+    data class EditTextChanged(val value: String) : CustomDialogUiEvent
+    data class ImportEditTextChanged(val value: String) : CustomDialogUiEvent
+    data class CheckBoxChanged(val checked: Boolean) : CustomDialogUiEvent
+    data class MessageOptionSelected(val value: String) : CustomDialogUiEvent
+    data class ListOptionSelected(val value: PrimeType) : CustomDialogUiEvent
+    data class ButtonClicked(val type: ButtonType) : CustomDialogUiEvent
+    data object HrefClicked : CustomDialogUiEvent
+    data object UserDismissed : CustomDialogUiEvent
+
+    data class Dismiss(val response: CustomDialogResponse) : CustomDialogUiEvent
+    data class ShowToast(val message: String) : CustomDialogUiEvent
+}
+```
+
+---
+
+## 5) Mapping your old model into Compose state
+
+```kotlin
+package ifac.td.taxi.ui.custom.dialog
+
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class CustomDialogModel(
+    val title: String? = null,
+    val description: String? = null,
+    val messageOptions: List<String>? = null,
+    val icon: Int? = null,
+    val hrefText: String? = null,
+    val href: (() -> Unit)? = null,
+    val checkBoxText: String? = null,
+    val checkDisableButton: Boolean? = null,
+    val editText: String? = null,
+    val hint: String? = null,
+    val buttons: ArrayList<ButtonType>? = null,
+    val isCancellable: Boolean? = null,
+    val centerText: Boolean? = null,
+    val importEditText: Boolean? = null,
+    val editTextTypePin: Boolean? = null,
+    val editTextMaxLength: Int? = null,
+    val listOptions: Map<Int, String>? = null,
+)
+
+private fun CustomDialogModel.toUiState(): CustomDialogUiState {
+    val buttonStates = (buttons ?: emptyList()).map { type ->
+        DialogButtonState(
+            type = type,
+            label = type.name,
+            enabled = true
+        )
+    }
+
+    val requiresCheckbox = checkDisableButton == true
+
+    return CustomDialogUiState(
+        visible = true,
+        title = title,
+        iconRes = icon,
+        description = description,
+        hrefText = hrefText,
+        hrefAction = href,
+        centerText = centerText == true,
+        canDismiss = isCancellable != false,
+        showTitleDivider = !(editText == null && hint == null && checkBoxText == null && description == null && hrefText == null),
+        checkBox = checkBoxText?.let { CheckBoxState(label = it) },
+        editText = when {
+            editText != null || hint != null -> TextInputState(
+                value = editText.orEmpty(),
+                hint = hint,
+                maxLength = editTextMaxLength,
+                pinMode = editTextTypePin == true
+            )
+            else -> null
+        },
+        importEditText = if (importEditText == true) TextInputState() else null,
+        messageOptions = messageOptions.orEmpty(),
+        listOptions = listOptions.orEmpty(),
+        buttons = buttonStates,
+        buttonEnabledStates = buttonStates.associate { it.type to true },
+        requiresCheckboxForAccept = requiresCheckbox,
+        useScrollLimit = (description?.length ?: 0) > 200
+    )
+}
+```
+
+---
+
+## 6) How to use it
+
+```kotlin
+@Composable
+fun SomeScreen(
+    dialogViewModel: CustomDialogViewModel
+) {
+    val dialogState by dialogViewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        dialogViewModel.setModel(
+            CustomDialogModel(
+                title = "Test title",
+                description = "Some long description...",
+                hrefText = "Clickable text",
+                checkBoxText = "I accept",
+                buttons = arrayListOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                isCancellable = true
+            )
+        )
+    }
+
+    CustomDialogRoute(
+        viewModel = dialogViewModel,
+        onDismissRequest = {
+            // dialog closed
+        }
+    )
+}
+```
+
+---
+
+## Notes / differences vs XML fragment
+
+- `Spinner` is implemented as a Compose dropdown.
+- `RecyclerView` message options is implemented as `LazyColumn`.
+- `GridLayout` buttons are replaced by a `Column` of `Row`s with 3 buttons max per row.
+- TTS behavior is preserved in the ViewModel.
+- The accept-button/checkbox disabling logic is now fully represented in state.
+- `onDismissFunction` is handled via `Dismiss(response)` event.
+
+If you want, I can also provide:
+1. a **fully typed `ButtonType` label mapper** so button text matches your app resources,
+2. a **Material 2 version** instead of Material 3,
+3. or a **single-file drop-in implementation** to simplify integration.

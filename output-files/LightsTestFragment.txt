@@ -1,0 +1,595 @@
+Below is a Compose-first rewrite that keeps the same behavior as your `LightsTestFragment`, but replaces the fragment button logic with:
+
+- a `LightsTestScreen` composable
+- a `LightsTestViewModel` exposing `UiState + UiEvent + SharedFlow<LightsTestUiEffect>`
+- lifecycle-aware collection for state/effects/dialog handling
+- a `LightsTestButtonsState` with styling/visibility logic matching the fragment behavior
+- a Compose `CustomDialog` based on a typical `custom_dialog.xml` + `CustomDialog.kt` pattern
+- navigation kept compatible with Jetpack Navigation
+
+I’ll keep this Android/Jetpack Compose only, without third-party UI references.
+
+---
+
+# 1) Compose UI Model
+
+## `LightsTestUiState.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+data class LightsTestUiState(
+    val isCourtesyLightOn: Boolean = false,
+    val isUvLightAvailable: Boolean = true,
+    val isUvLightOn: Boolean = false,
+    val beeperVolume: Int = 50,
+    val isBeeperLoading: Boolean = false,
+    val dialog: LightsTestDialogState? = null,
+) {
+    val buttonsState: LightsTestButtonsState
+        get() = LightsTestButtonsState.from(
+            isCourtesyLightOn = isCourtesyLightOn,
+            isUvLightAvailable = isUvLightAvailable,
+            isUvLightOn = isUvLightOn
+        )
+}
+
+sealed interface LightsTestDialogState {
+    data object ConfirmUvLight : LightsTestDialogState
+}
+```
+
+---
+
+## `LightsTestUiEvent.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+sealed interface LightsTestUiEvent {
+    data object ScreenStarted : LightsTestUiEvent
+    data object UvLightClicked : LightsTestUiEvent
+    data object CourtesyLightClicked : LightsTestUiEvent
+    data class BeeperVolumeChanged(val volume: Int) : LightsTestUiEvent
+    data object DialogDismissed : LightsTestUiEvent
+    data object DialogConfirmed : LightsTestUiEvent
+    data object BackClicked : LightsTestUiEvent
+}
+```
+
+---
+
+## `LightsTestUiEffect.kt`
+
+Use **one** `SharedFlow<LightsTestUiEffect>` as requested.
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+sealed interface LightsTestUiEffect {
+    data object NavigateBack : LightsTestUiEffect
+    data class ShowToast(val message: String) : LightsTestUiEffect
+}
+```
+
+---
+
+# 2) Full button state + styling helpers
+
+This replaces the fragment logic that manually toggles drawables/enabled states.
+
+## `LightsTestButtonsState.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+import androidx.annotation.DrawableRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+
+@Immutable
+data class LightsTestButtonsState(
+    val uvButton: ButtonState,
+    val courtesyButton: ButtonState,
+    val beeperState: BeeperState,
+) {
+    companion object {
+        fun from(
+            isCourtesyLightOn: Boolean,
+            isUvLightAvailable: Boolean,
+            isUvLightOn: Boolean,
+        ): LightsTestButtonsState {
+            val uvEnabled = isUvLightAvailable && !isCourtesyLightOn
+            val courtesyEnabled = !isUvLightOn
+
+            return LightsTestButtonsState(
+                uvButton = ButtonState(
+                    enabled = uvEnabled,
+                    visible = true,
+                    backgroundRes = if (isUvLightOn) R.drawable.luz_ultravioleta_blue else R.drawable.luz_ultravioleta,
+                    iconRes = if (isUvLightOn) R.drawable.luz_ultravioleta_blue else R.drawable.luz_ultravioleta,
+                    contentDescription = "UV light"
+                ),
+                courtesyButton = ButtonState(
+                    enabled = courtesyEnabled,
+                    visible = true,
+                    backgroundRes = if (isCourtesyLightOn) R.drawable.lumact_yellow else R.drawable.lumact,
+                    iconRes = if (isCourtesyLightOn) R.drawable.lumact_yellow else R.drawable.lumact,
+                    contentDescription = "Courtesy light"
+                ),
+                beeperState = BeeperState(
+                    enabled = true,
+                    max = 100,
+                    progress = 50
+                )
+            )
+        }
+    }
+}
+
+@Immutable
+data class ButtonState(
+    val enabled: Boolean,
+    val visible: Boolean,
+    @DrawableRes val backgroundRes: Int,
+    @DrawableRes val iconRes: Int,
+    val contentDescription: String
+)
+
+@Immutable
+data class BeeperState(
+    val enabled: Boolean,
+    val max: Int,
+    val progress: Int
+)
+```
+
+### Styling helpers closer to the custom button component
+
+If your XML custom button had sizing/padding/shape behavior, use helpers like these:
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
+
+object LightsTestButtonStyle {
+    val CornerShape = RoundedCornerShape(12.dp)
+    val ButtonSize = 72.dp
+    val ButtonIconPadding = 12.dp
+    val DisabledAlpha = 0.45f
+}
+```
+
+---
+
+# 3) Compose ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+This is the Compose-friendly version of your original viewmodel.
+
+## `LightsTestComposeViewModel.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.UserPreferences
+import ifac.td.taxi.domain.usecase.LightSkyGlassUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class LightsTestViewModel(
+    application: Application,
+    private val lightSkyGlassUseCase: LightSkyGlassUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(LightsTestUiState())
+    val uiState: StateFlow<LightsTestUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LightsTestUiEffect>()
+    val uiEffect: SharedFlow<LightsTestUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: LightsTestUiEvent) {
+        when (event) {
+            LightsTestUiEvent.ScreenStarted -> loadBeeperVolume()
+
+            LightsTestUiEvent.UvLightClicked -> handleUvClicked()
+            LightsTestUiEvent.CourtesyLightClicked -> handleCourtesyClicked()
+            is LightsTestUiEvent.BeeperVolumeChanged -> setBeeperVolume(event.volume)
+            LightsTestUiEvent.DialogDismissed -> _uiState.update { it.copy(dialog = null) }
+            LightsTestUiEvent.DialogConfirmed -> {
+                _uiState.update { it.copy(dialog = null) }
+                turnUVLight()
+            }
+            LightsTestUiEvent.BackClicked -> emitEffect(LightsTestUiEffect.NavigateBack)
+        }
+    }
+
+    private fun handleUvClicked() {
+        val state = _uiState.value
+
+        if (!state.buttonsState.uvButton.enabled) return
+
+        // Optional dialog support example:
+        _uiState.update { it.copy(dialog = LightsTestDialogState.ConfirmUvLight) }
+    }
+
+    private fun handleCourtesyClicked() {
+        val state = _uiState.value
+        if (!state.buttonsState.courtesyButton.enabled) return
+        turnCourtesyLight()
+    }
+
+    private fun turnUVLight() {
+        viewModelScope.launch {
+            lightSkyGlassUseCase.turnUVLight()
+            _uiState.update {
+                it.copy(
+                    isUvLightOn = true,
+                    isUvLightAvailable = false
+                )
+            }
+            delay(8000L)
+            _uiState.update {
+                it.copy(
+                    isUvLightOn = false,
+                    isUvLightAvailable = true
+                )
+            }
+        }
+    }
+
+    private fun turnCourtesyLight() {
+        viewModelScope.launch {
+            lightSkyGlassUseCase.turnCourtesyLight()
+            _uiState.update { state ->
+                state.copy(
+                    isCourtesyLightOn = !state.isCourtesyLightOn
+                )
+            }
+        }
+    }
+
+    private fun setBeeperVolume(volume: Int) {
+        viewModelScope.launch {
+            lightSkyGlassUseCase.setBeeperVolume(volume)
+            userPreferencesUseCase.insertBeeperVolumeValue(volume)
+            _uiState.update { it.copy(beeperVolume = volume) }
+        }
+    }
+
+    private fun loadBeeperVolume() {
+        viewModelScope.launch {
+            val preferences = userPreferencesUseCase.getUserPreferences()
+            if (preferences != null) {
+                _uiState.update { it.copy(beeperVolume = preferences.beeperVolume) }
+            } else {
+                userPreferencesUseCase.insertUserPreferences(UserPreferences())
+                _uiState.update { it.copy(beeperVolume = 50) }
+            }
+        }
+    }
+
+    private fun emitEffect(effect: LightsTestUiEffect) {
+        viewModelScope.launch { _uiEffect.emit(effect) }
+    }
+}
+```
+
+---
+
+# 4) Compose screen preserving navigation
+
+## `LightsTestScreen.kt`
+
+This uses:
+- lifecycle-aware collection for `uiState`
+- lifecycle-aware collection for `uiEffect`
+- dialog state handled from state
+- back navigation via effect, so it stays compatible with fragment/Jetpack Navigation
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+import android.app.Activity
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.LaunchedEffect
+import androidx.navigation.NavController
+
+@Composable
+fun LightsTestScreen(
+    viewModel: LightsTestViewModel,
+    navController: NavController,
+    showHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        showHeader(true)
+        viewModel.onEvent(LightsTestUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(viewModel.uiEffect, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collectLatest { effect ->
+                when (effect) {
+                    LightsTestUiEffect.NavigateBack -> navController.popBackStack()
+                    is LightsTestUiEffect.ShowToast -> {
+                        android.widget.Toast.makeText(context, effect.message, android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
+    BackHandler {
+        viewModel.onEvent(LightsTestUiEvent.BackClicked)
+    }
+
+    LightsTestContent(
+        uiState = uiState,
+        onEvent = viewModel::onEvent
+    )
+
+    uiState.dialog?.let { dialog ->
+        when (dialog) {
+            LightsTestDialogState.ConfirmUvLight -> {
+                CustomDialog(
+                    title = "UV Light",
+                    message = "Turn on UV light?",
+                    confirmText = "Yes",
+                    dismissText = "No",
+                    onConfirm = { viewModel.onEvent(LightsTestUiEvent.DialogConfirmed) },
+                    onDismiss = { viewModel.onEvent(LightsTestUiEvent.DialogDismissed) }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## `LightsTestContent.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+
+@Composable
+private fun LightsTestContent(
+    uiState: LightsTestUiState,
+    onEvent: (LightsTestUiEvent) -> Unit
+) {
+    val buttons = uiState.buttonsState
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            LightsImageButton(
+                state = buttons.uvButton,
+                onClick = { onEvent(LightsTestUiEvent.UvLightClicked) }
+            )
+            LightsImageButton(
+                state = buttons.courtesyButton,
+                onClick = { onEvent(LightsTestUiEvent.CourtesyLightClicked) }
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        Text(text = "Beeper volume: ${uiState.beeperVolume}")
+        Slider(
+            value = uiState.beeperVolume.toFloat(),
+            onValueChange = { onEvent(LightsTestUiEvent.BeeperVolumeChanged(it.toInt())) },
+            valueRange = 0f..100f,
+            enabled = true
+        )
+    }
+}
+
+@Composable
+private fun LightsImageButton(
+    state: ButtonState,
+    onClick: () -> Unit
+) {
+    androidx.compose.foundation.Image(
+        painter = painterResource(id = state.iconRes),
+        contentDescription = state.contentDescription,
+        modifier = Modifier
+            .size(LightsTestButtonStyle.ButtonSize)
+            .alpha(if (state.enabled) 1f else LightsTestButtonStyle.DisabledAlpha)
+            .clickable(enabled = state.enabled && state.visible) { onClick() }
+            .padding(LightsTestButtonStyle.ButtonIconPadding)
+    )
+}
+```
+
+---
+
+# 5) Compose `CustomDialog` based on `custom_dialog.xml` / `CustomDialog.kt`
+
+Because you didn’t include the actual XML/Kt file, I’m matching the usual structure: title, message, confirm and dismiss actions, rounded panel, dimmed background.
+
+## `CustomDialog.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.lights
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+
+@Composable
+fun CustomDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    dismissText: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .background(Color.White)
+                    .padding(20.dp)
+                    .widthIn(min = 280.dp)
+            ) {
+                Text(text = title)
+                Spacer(Modifier.height(12.dp))
+                Text(text = message)
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(onClick = onDismiss) {
+                        Text(dismissText)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Button(onClick = onConfirm) {
+                        Text(confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 6) Jetpack Navigation compatibility
+
+If you want to preserve fragment-based navigation while moving to Compose, the cleanest approach is:
+
+- keep your existing `NavController`
+- host the composable in a `ComposeView` or in a `Fragment`
+- call `navController.popBackStack()` on `NavigateBack`
+
+Example fragment host:
+
+```kotlin
+class LightsTestComposeFragment : Fragment() {
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ) = ComposeView(requireContext()).apply {
+        setContent {
+            val navController = findNavController()
+            val viewModel: LightsTestViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+
+            LightsTestScreen(
+                viewModel = viewModel,
+                navController = navController,
+                showHeader = { show -> (activity as? YourMainActivity)?.showHeader(show) }
+            )
+        }
+    }
+}
+```
+
+---
+
+# 7) Exact behavior mapping from the fragment
+
+This Compose version reproduces the fragment logic as follows:
+
+- **UV button**
+  - enabled only when courtesy light is off and UV is available
+  - when clicked, can show dialog first
+  - when confirmed, turns UV on and disables both buttons like the fragment
+  - after 8 seconds, UV becomes available again
+
+- **Courtesy button**
+  - toggles courtesy state
+  - when on: UV button disabled and courtesy icon becomes yellow
+  - when off: UV button enabled and courtesy icon returns to default
+
+- **Beeper slider**
+  - max = 100
+  - loads stored value on start
+  - updates use case + preferences on change
+
+---
+
+# 8) Notes on exact styling parity
+
+To match XML more closely, you should plug in the actual drawable resources and any exact spacing/sizing from:
+
+- `fragment_lights_test.xml`
+- `custom_dialog.xml`
+- your old `CustomButton`
+
+In Compose, the important styling knobs are:
+
+- `Modifier.size(...)`
+- `Modifier.alpha(...)`
+- `RoundedCornerShape(...)`
+- `ButtonDefaults`
+- `Image(painterResource(...))`
+- `Slider(...)`
+
+If you want, I can do a second pass and generate:
+1. a **full XML-to-Compose layout parity version**, or  
+2. a **Navigation Component + Hilt/Koin-friendly integration**, or  
+3. a **more exact custom button composable** mirroring your old `CustomButton` API.

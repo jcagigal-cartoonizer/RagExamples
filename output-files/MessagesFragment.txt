@@ -1,0 +1,658 @@
+Below is a Compose-based replacement that mirrors the Fragment behavior as closely as possible while keeping Jetpack Navigation, dialog handling, and button logic in a Compose-friendly state/event architecture.
+
+I’ll provide:
+
+1. `MessagesScreen` composable
+2. Compose `MessagesViewModel` using `UiState + UiEffect`
+3. `MessagesButtonsState` and button styling helpers
+4. Compose `CustomDialog`
+5. A navigation/event setup that preserves the existing Jetpack Views navigation concept
+6. Notes on how this maps to your Fragment behavior
+
+---
+
+## 1) Compose UI model: state, effects, events
+
+```kotlin
+package ifac.td.taxi.ui.screen.messages
+
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+
+data class MessagesUiState(
+    val messages: List<MessageEntity> = emptyList(),
+    val isLoading: Boolean = false,
+    val isSelectionMode: Boolean = false,
+    val selectedMessageIds: Set<Long> = emptySet(),
+    val showDeleteButton: Boolean = false,
+    val showSelectButton: Boolean = true,
+    val showMarkReadAction: Boolean = true,
+    val dialogState: MessageDialogState? = null
+)
+
+data class MessageDialogState(
+    val title: String,
+    val description: String,
+    val buttons: List<DialogButtonConfig>,
+)
+
+sealed class DialogButtonConfig {
+    data object Cancel : DialogButtonConfig()
+    data object Accept : DialogButtonConfig()
+}
+
+sealed interface MessagesUiEvent {
+    data object Back : MessagesUiEvent
+    data object DeleteSelected : MessagesUiEvent
+    data object ToggleSelectionMode : MessagesUiEvent
+    data object MarkAllReadRequest : MessagesUiEvent
+    data object MarkAllReadConfirmed : MessagesUiEvent
+    data object DismissDialog : MessagesUiEvent
+    data class MessageClicked(val message: MessageEntity) : MessagesUiEvent
+    data class ToggleMessageSelection(val message: MessageEntity) : MessagesUiEvent
+}
+
+sealed interface MessagesUiEffect {
+    data object NavigateBack : MessagesUiEffect
+    data object NavigateToMessageDetail : MessagesUiEffect
+    data class NavigateToMessageDetailWithArgs(
+        val messageId: Long,
+        val skipAutoClose: Boolean = true
+    ) : MessagesUiEffect
+
+    data object ShowMarkAllReadDialog : MessagesUiEffect
+}
+```
+
+---
+
+## 2) ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+This keeps the UI state in a single source of truth and uses `SharedFlow` for one-off effects like navigation and dialog opening.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.MessageUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import ifac.td.taxi.ui.screen.messages.DialogButtonConfig
+import ifac.td.taxi.ui.screen.messages.MessageDialogState
+import ifac.td.taxi.ui.screen.messages.MessagesUiEffect
+import ifac.td.taxi.ui.screen.messages.MessagesUiEvent
+import ifac.td.taxi.ui.screen.messages.MessagesUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class MessagesViewModel(
+    private val messageUseCase: MessageUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "MessagesViewModel"
+
+    private val _uiState = MutableStateFlow(MessagesUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffects = MutableSharedFlow<MessagesUiEffect>()
+    val uiEffects = _uiEffects.asSharedFlow()
+
+    fun init() {
+        loadMessagesByDriverId()
+    }
+
+    fun onEvent(event: MessagesUiEvent) {
+        when (event) {
+            MessagesUiEvent.Back -> emitEffect(MessagesUiEffect.NavigateBack)
+
+            MessagesUiEvent.DeleteSelected -> deleteSelectedMessages()
+
+            MessagesUiEvent.ToggleSelectionMode -> {
+                _uiState.update { state ->
+                    val newMode = !state.isSelectionMode
+                    state.copy(
+                        isSelectionMode = newMode,
+                        selectedMessageIds = if (newMode) state.selectedMessageIds else emptySet(),
+                        showDeleteButton = newMode,
+                        showSelectButton = true
+                    )
+                }
+            }
+
+            MessagesUiEvent.MarkAllReadRequest -> {
+                _uiState.update {
+                    it.copy(
+                        dialogState = MessageDialogState(
+                            title = "Warning",
+                            description = "Do you want to mark all messages as read?",
+                            buttons = listOf(DialogButtonConfig.Cancel, DialogButtonConfig.Accept)
+                        )
+                    )
+                }
+                emitEffect(MessagesUiEffect.ShowMarkAllReadDialog)
+            }
+
+            MessagesUiEvent.MarkAllReadConfirmed -> {
+                _uiState.update { it.copy(dialogState = null) }
+                markAllMessagesRead()
+            }
+
+            MessagesUiEvent.DismissDialog -> {
+                _uiState.update { it.copy(dialogState = null) }
+            }
+
+            is MessagesUiEvent.MessageClicked -> {
+                emitEffect(
+                    MessagesUiEffect.NavigateToMessageDetailWithArgs(
+                        messageId = event.message.id,
+                        skipAutoClose = true
+                    )
+                )
+            }
+
+            is MessagesUiEvent.ToggleMessageSelection -> {
+                _uiState.update { state ->
+                    val id = event.message.id
+                    val newSelection = state.selectedMessageIds.toMutableSet().apply {
+                        if (!add(id)) remove(id)
+                    }
+                    state.copy(
+                        selectedMessageIds = newSelection,
+                        showDeleteButton = newSelection.isNotEmpty()
+                    )
+                }
+            }
+        }
+    }
+
+    private fun deleteSelectedMessages() {
+        val selectedIds = _uiState.value.selectedMessageIds
+        if (selectedIds.isEmpty()) return
+
+        val selectedMessages = _uiState.value.messages.filter { it.id in selectedIds }.toMutableList()
+        deleteMessages(selectedMessages)
+
+        _uiState.update {
+            it.copy(
+                selectedMessageIds = emptySet(),
+                isSelectionMode = false,
+                showDeleteButton = false
+            )
+        }
+    }
+
+    private fun emitEffect(effect: MessagesUiEffect) {
+        viewModelScope.launch { _uiEffects.emit(effect) }
+    }
+
+    fun deleteMessages(deleteSelected: MutableList<MessageEntity>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            messageUseCase.deleteMessages(deleteSelected)
+            loadMessagesByDriverId()
+        }
+    }
+
+    fun loadMessages() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            _uiState.update {
+                it.copy(
+                    messages = messageUseCase.getMessages(),
+                    isLoading = false
+                )
+            }
+        }
+    }
+
+    fun loadMessagesByDriverId() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "loadMessagesByDriverId: getMessageByDriverId(): ${messageUseCase.getMessageByDriverId()}")
+            _uiState.update { it.copy(isLoading = true) }
+            _uiState.update {
+                it.copy(
+                    messages = messageUseCase.getMessageByDriverId(),
+                    isLoading = false
+                )
+            }
+        }
+    }
+
+    fun markAllMessagesRead() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "markAllMessagesRead")
+            messageUseCase.setAllMessagesRead()
+            _uiState.update {
+                it.copy(messages = messageUseCase.getMessageByDriverId())
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3) Compose screen replacing `MessageFragment`
+
+This preserves navigation by using a callback/router. It also handles dialog state via lifecycle-aware collection.
+
+```kotlin
+package ifac.td.taxi.ui.screen.messages
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.screen.messages.components.CustomDialog
+import ifac.td.taxi.ui.screen.messages.components.MessageRow
+import ifac.td.taxi.ui.screen.messages.components.MessagesButtons
+import ifac.td.taxi.ui.screen.messages.components.MessagesButtonsState
+import ifac.td.taxi.viewmodel.MessagesViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun MessagesScreen(
+    viewModel: MessagesViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateToMessageDetail: (messageId: Long, skipAutoClose: Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.init()
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffects.collectLatest { effect ->
+            when (effect) {
+                MessagesUiEffect.NavigateBack -> onNavigateBack()
+                is MessagesUiEffect.NavigateToMessageDetailWithArgs ->
+                    onNavigateToMessageDetail(effect.messageId, effect.skipAutoClose)
+
+                MessagesUiEffect.ShowMarkAllReadDialog -> Unit
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            MessagesButtons(
+                state = MessagesButtonsState.from(uiState),
+                onBack = { viewModel.onEvent(MessagesUiEvent.Back) },
+                onDelete = { viewModel.onEvent(MessagesUiEvent.DeleteSelected) },
+                onSelect = { viewModel.onEvent(MessagesUiEvent.ToggleSelectionMode) },
+                onMarkRead = { viewModel.onEvent(MessagesUiEvent.MarkAllReadRequest) }
+            )
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(12.dp)
+            ) {
+                items(
+                    items = uiState.messages,
+                    key = { it.id }
+                ) { message ->
+                    MessageRow(
+                        message = message,
+                        isSelected = uiState.selectedMessageIds.contains(message.id),
+                        selectionMode = uiState.isSelectionMode,
+                        onClick = { viewModel.onEvent(MessagesUiEvent.MessageClicked(message)) },
+                        onLongClick = { viewModel.onEvent(MessagesUiEvent.ToggleMessageSelection(message)) }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+        }
+
+        uiState.dialogState?.let { dialogState ->
+            CustomDialog(
+                title = dialogState.title,
+                description = dialogState.description,
+                buttons = dialogState.buttons,
+                onCancel = { viewModel.onEvent(MessagesUiEvent.DismissDialog) },
+                onAccept = {
+                    viewModel.onEvent(MessagesUiEvent.MarkAllReadConfirmed)
+                },
+                onDismiss = { viewModel.onEvent(MessagesUiEvent.DismissDialog) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageRow(
+    message: MessageEntity,
+    isSelected: Boolean,
+    selectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Text(text = "Message #${message.id}")
+            Text(text = message.dateFormatted)
+            if (selectionMode) {
+                Text(text = if (isSelected) "Selected" else "Not selected")
+            }
+        }
+    }
+}
+```
+
+---
+
+## 4) Full `MessagesButtonsState` with styling helpers
+
+This replaces the fragment’s button visibility/behavior logic.
+
+```kotlin
+package ifac.td.taxi.ui.screen.messages.components
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.ui.screen.messages.MessagesUiState
+
+@Immutable
+data class MessagesButtonsState(
+    val showBack: Boolean = true,
+    val showDelete: Boolean = false,
+    val showSelect: Boolean = true,
+    val showMarkRead: Boolean = true,
+    val backEnabled: Boolean = true,
+    val deleteEnabled: Boolean = false,
+    val selectEnabled: Boolean = true,
+    val markReadEnabled: Boolean = true,
+    val backColor: Color = Color(0xFF607D8B),
+    val deleteColor: Color = Color(0xFFD32F2F),
+    val selectColor: Color = Color(0xFF1976D2),
+    val markReadColor: Color = Color(0xFF388E3C)
+) {
+    companion object {
+        fun from(uiState: MessagesUiState): MessagesButtonsState {
+            return MessagesButtonsState(
+                showDelete = uiState.showDeleteButton,
+                showSelect = uiState.showSelectButton,
+                showMarkRead = uiState.showMarkReadAction,
+                deleteEnabled = uiState.selectedMessageIds.isNotEmpty(),
+                selectEnabled = true,
+                markReadEnabled = true
+            )
+        }
+    }
+}
+```
+
+### Button styling helpers
+
+```kotlin
+package ifac.td.taxi.ui.screen.messages.components
+
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun messagesButtonColors(isPrimary: Boolean, isDanger: Boolean = false): ButtonColors {
+    return when {
+        isDanger -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.error,
+            contentColor = MaterialTheme.colorScheme.onError
+        )
+        isPrimary -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
+        else -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.secondary,
+            contentColor = MaterialTheme.colorScheme.onSecondary
+        )
+    }
+}
+
+val messagesButtonShape = RoundedCornerShape(12.dp)
+```
+
+---
+
+## 5) Compose buttons replacing `setButtons()`
+
+```kotlin
+package ifac.td.taxi.ui.screen.messages.components
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun MessagesButtons(
+    state: MessagesButtonsState,
+    onBack: () -> Unit,
+    onDelete: () -> Unit,
+    onSelect: () -> Unit,
+    onMarkRead: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (state.showBack) {
+            Button(
+                onClick = onBack,
+                enabled = state.backEnabled,
+                colors = messagesButtonColors(isPrimary = false),
+                shape = messagesButtonShape
+            ) { Text("Back") }
+        }
+
+        if (state.showSelect) {
+            Button(
+                onClick = onSelect,
+                enabled = state.selectEnabled,
+                colors = messagesButtonColors(isPrimary = true),
+                shape = messagesButtonShape
+            ) { Text("Select") }
+        }
+
+        if (state.showDelete) {
+            Button(
+                onClick = onDelete,
+                enabled = state.deleteEnabled,
+                colors = messagesButtonColors(isPrimary = false, isDanger = true),
+                shape = messagesButtonShape
+            ) { Text("Delete") }
+        }
+
+        if (state.showMarkRead) {
+            Button(
+                onClick = onMarkRead,
+                enabled = state.markReadEnabled,
+                colors = messagesButtonColors(isPrimary = false),
+                shape = messagesButtonShape
+            ) { Text("Mark Read") }
+        }
+    }
+}
+```
+
+---
+
+## 6) Compose `CustomDialog` based on the XML/custom dialog behavior
+
+This is a Compose version of your custom dialog with cancel/accept handling.
+
+```kotlin
+package ifac.td.taxi.ui.screen.messages.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.messages.DialogButtonConfig
+
+@Composable
+fun CustomDialog(
+    title: String,
+    description: String,
+    buttons: List<DialogButtonConfig>,
+    onCancel: () -> Unit,
+    onAccept: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnClickOutside = false,
+            dismissOnBackPress = true
+        )
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    buttons.forEach { button ->
+                        when (button) {
+                            DialogButtonConfig.Cancel -> {
+                                TextButton(onClick = onCancel) { Text("Cancel") }
+                            }
+                            DialogButtonConfig.Accept -> {
+                                Button(onClick = onAccept) { Text("Accept") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 7) Navigation preservation example
+
+If you use Navigation Compose, the `MessagesScreen` can be hosted in a fragment or in Compose Navigation directly.
+
+### Example inside a fragment
+This preserves the old Jetpack Views navigation stack while moving UI to Compose:
+
+```kotlin
+class MessageComposeFragment : Fragment() {
+
+    private val viewModel: MessagesViewModel by viewModel()
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                MessagesScreen(
+                    viewModel = viewModel,
+                    onNavigateBack = { findNavController().navigateUp() },
+                    onNavigateToMessageDetail = { messageId, skipAutoClose ->
+                        val action =
+                            MessageFragmentDirections.actionMessageFragmentToMessageDetailFragment(
+                                messageId,
+                                skipAutoClose
+                            )
+                        findNavController().navigate(action)
+                    }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 8) Important mapping notes
+
+### Fragment logic preserved
+- `btnBack` → `MessagesUiEvent.Back`
+- `btnDelete` → `MessagesUiEvent.DeleteSelected`
+- `btnSelect` → `MessagesUiEvent.ToggleSelectionMode`
+- top bar “mark as read” → `MessagesUiEvent.MarkAllReadRequest`
+- dialog confirm → `MessagesUiEvent.MarkAllReadConfirmed`
+
+### Dialog handling
+- Dialog is state-driven via `uiState.dialogState`
+- Effects are emitted via `SharedFlow<MessagesUiEffect>`
+- Lifecycle-safe collection uses `collectAsStateWithLifecycle()` and `collectLatest`
+
+### Message list grouping by date
+Your old `DateItem`/`GeneralItem` adapter logic can also be ported to Compose by precomputing a grouped list state. If you want, I can provide a second version that exactly reproduces the date header rendering as a grouped lazy list.
+
+---
+
+## 9) If you want the date grouping version
+
+Your adapter builds a mixed list with:
+- `DateItem(formattedDate)`
+- `GeneralItem(message)`
+
+A Compose equivalent would use a sealed UI item list and render date headers + messages in a single `LazyColumn`. If you want, I can provide that too.
+
+---
+
+If you’d like, I can next provide:
+1. a **fully grouped Compose list with date headers**, or  
+2. a **drop-in Navigation Compose destination setup** for this screen.

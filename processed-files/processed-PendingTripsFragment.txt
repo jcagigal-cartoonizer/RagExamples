@@ -1,0 +1,572 @@
+I’ll keep it Android + Jetpack Compose only.
+---
+# 1) Compose screen: `PendingTripsScreen`
+```kotlin
+package ifac.td.taxi.ui.screen
+// # Block 5-1: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.viewmodel.PendingTripsUiEffect
+import ifac.td.taxi.viewmodel.PendingTripsUiEvent
+import ifac.td.taxi.viewmodel.PendingTripsUiState
+import ifac.td.taxi.viewmodel.PendingTripsViewModel
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun PendingTripsScreen(
+    viewModel: PendingTripsComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onShowHeader: (Boolean) -> Unit = {},
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // Dialog state
+    var dialogState by remember { mutableStateOf<PendingTripsDialogState?>(null) }
+    // Effects collector
+    LaunchedEffect(Unit) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                PendingTripsUiEffect.NavigateBack -> onNavigateBack()
+                is PendingTripsUiEffect.ShowToast -> {
+                    // Let parent host show toast if needed
+                    // Or handle here with Snackbar
+                }
+                is PendingTripsUiEffect.OpenConfirmDialog -> {
+                    dialogState = PendingTripsDialogState(
+                        title = effect.title,
+                        description = effect.description,
+                        pendingTrip = effect.pendingTrip
+                    )
+                }
+            }
+        }
+    }
+    // Screen enter behavior: similar to onResume/setupComponents
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        viewModel.onScreenStarted()
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.onScreenStopped()
+        }
+    }
+    PendingTripsContent(
+        uiState = uiState,
+        buttonsState = uiState.buttonsState,
+        onTripClick = { tripId ->
+            viewModel.onTripClicked(tripId)
+        },
+        onButtonClick = { buttonAction ->
+            viewModel.onButtonAction(buttonAction)
+        }
+    )
+    dialogState?.let { state ->
+        PendingTripsCustomDialog(
+            title = state.title,
+            description = state.description,
+            buttonsState = uiState.buttonsState.dialogButtonsState,
+            onDismissRequest = { dialogState = null },
+            onButtonClick = { button ->
+                dialogState?.pendingTrip?.let { trip ->
+                    when (button) {
+                        PendingTripsDialogButton.CANCEL -> {
+                            dialogState = null
+                        }
+                        PendingTripsDialogButton.ACCEPT -> {
+                            viewModel.onConfirmRequestTrip(trip)
+                            dialogState = null
+                        }
+                    }
+                }
+            }
+        )
+    }
+}
+@Composable
+fun PendingTripsContent(
+    uiState: PendingTripsUiState,
+    buttonsState: PendingTripsButtonsState,
+    onTripClick: (String) -> Unit,
+    onButtonClick: (PendingTripsScreenButtonAction) -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            // Put your custom top bar here if needed
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            PendingTripsButtonsRow(
+                state = buttonsState,
+                onButtonClick = onButtonClick
+            )
+            if (uiState.pendingTrips.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                ) {
+                    Text(text = "No trips")
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(uiState.pendingTrips, key = { it.tripID ?: it.hashCode().toString() }) { trip ->
+                        PendingTripRow(
+                            tripId = trip.tripID.orEmpty(),
+                            pickupAddress = trip.pickupAddress.orEmpty(),
+                            onClick = { onTripClick(trip.tripID.orEmpty()) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+@Composable
+fun PendingTripRow(
+    tripId: String,
+    pickupAddress: String,
+    onClick: () -> Unit
+) {
+    ElevatedCard(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(text = "Trip ID: $tripId", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(text = pickupAddress.ifBlank { "No address" })
+        }
+    }
+}
+```
+---
+# 2) Compose ViewModel with `UiState + UiEvent + UiEffect`
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 158-2: import android.app.Application
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+data class PendingTripsUiState(
+    val isLoading: Boolean = false,
+    val pendingTrips: List<PendingTrip> = emptyList(),
+    val showDialogOnAccept: Boolean = true,
+    val buttonsState: PendingTripsButtonsState = PendingTripsButtonsState.default()
+)
+sealed interface PendingTripsUiEvent {
+    data object ScreenStarted : PendingTripsUiEvent
+    data object ScreenStopped : PendingTripsUiEvent
+    data object RefreshRequested : PendingTripsUiEvent
+    data class TripClicked(val tripId: String) : PendingTripsUiEvent
+    data class ConfirmTrip(val trip: PendingTrip) : PendingTripsUiEvent
+    data object DismissDialog : PendingTripsUiEvent
+}
+sealed interface PendingTripsUiEffect {
+    data object NavigateBack : PendingTripsUiEffect
+    data object CloseIfEmpty : PendingTripsUiEffect
+    data class ShowToast(val messageRes: Int) : PendingTripsUiEffect
+    data class OpenConfirmDialog(
+        val title: String,
+        val description: String,
+        val pendingTrip: PendingTrip
+    ) : PendingTripsUiEffect
+}
+class PendingTripsComposeViewModel(
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var runnable: Runnable
+    private val _uiState = MutableStateFlow(PendingTripsUiState())
+    val uiState: StateFlow<PendingTripsUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<PendingTripsUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<PendingTripsUiEffect> = _effects.asSharedFlow()
+    private val _pendingTripsFlow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+    fun onScreenStarted() {
+        checkAcceptDialogPermission()
+        loadTrips(forced = true)
+    }
+    fun onScreenStopped() {
+        removeHandlerCallback()
+    }
+    fun onUiEvent(event: PendingTripsUiEvent) {
+        when (event) {
+            PendingTripsUiEvent.ScreenStarted -> onScreenStarted()
+            PendingTripsUiEvent.ScreenStopped -> onScreenStopped()
+            PendingTripsUiEvent.RefreshRequested -> loadTrips(forced = true)
+            is PendingTripsUiEvent.TripClicked -> {
+                val trip = _uiState.value.pendingTrips.firstOrNull { it.tripID == event.tripId }
+                if (trip != null) onTripSelected(trip)
+            }
+            is PendingTripsUiEvent.ConfirmTrip -> confirmAndRequestTrip(event.trip)
+            PendingTripsUiEvent.DismissDialog -> Unit
+        }
+    }
+    fun onTripSelected(trip: PendingTrip) {
+        if (_uiState.value.showDialogOnAccept) {
+            viewModelScope.launch {
+                _effects.emit(
+                    PendingTripsUiEffect.OpenConfirmDialog(
+                        title = "Auction confirm",
+                        description = if (trip.pickupAddress.isNullOrBlank()) {
+                            "Confirm auction trip?"
+                        } else {
+                            "Confirm auction trip: ${trip.pickupAddress}"
+                        },
+                        pendingTrip = trip
+                    )
+                )
+            }
+        } else {
+            requestTrip(trip)
+            emitToastAndNavigateBack()
+        }
+    }
+    fun confirmAndRequestTrip(trip: PendingTrip) {
+        requestTrip(trip)
+        emitToastAndNavigateBack()
+    }
+    fun emitToastAndNavigateBack() {
+        viewModelScope.launch {
+            _effects.emit(PendingTripsUiEffect.ShowToast(ifac.td.taxi.R.string.strDatosTransmitidos))
+            _effects.emit(PendingTripsUiEffect.NavigateBack)
+        }
+    }
+    fun loadTrips(forced: Boolean = false) {
+        if (BravoCentral.isPendingTripsAllowed(false) || forced) {
+            refreshPendingTripsManual(forced)
+        }
+        startChronometer()
+    }
+    fun refreshPendingTripsManual(forced: Boolean = false) {
+        viewModelScope.launch {
+            pendingTripsUseCase.getPendingTripsZone(
+                flow = _pendingTripsFlow,
+                forced = forced
+            )
+            _uiState.update {
+                it.copy(pendingTrips = _pendingTripsFlow.value.orEmpty())
+            }
+            checkClosePendingIfEmpty()
+        }
+    }
+    fun startChronometer() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val refreshRate = 2000L
+            val initRefreshRate = 500L
+            runnable = object : Runnable {
+                override fun run() {
+                    viewModelScope.launch {
+                        if (BravoCentral.isPendingTripsAllowed(true)) {
+                            pendingTripsUseCase.getPendingTripsZone(flow = _pendingTripsFlow)
+                            _uiState.update {
+                                it.copy(pendingTrips = _pendingTripsFlow.value.orEmpty())
+                            }
+                        }
+                    }
+                    handler.postDelayed(this, refreshRate)
+                }
+            }
+            handler.postDelayed(runnable, initRefreshRate)
+        }
+    }
+    fun removeHandlerCallback() {
+        if (::runnable.isInitialized) handler.removeCallbacks(runnable)
+    }
+    fun requestTrip(trip: PendingTrip) {
+        bravoCentralUseCase.requestPendingTrip(trip)
+    }
+    fun checkAcceptDialogPermission() {
+        viewModelScope.launch {
+            val preferences = userPreferencesUseCase.getUserPreferences()
+            val showDialog = preferences?.showConfAcceptDispatch ?: true
+            _uiState.update { it.copy(showDialogOnAccept = showDialog) }
+        }
+    }
+    fun checkClosePendingIfEmpty() {
+        viewModelScope.launch {
+            userPreferencesUseCase.getUserPreferences()?.let {
+                if (it.closePendingTripsIfEmpty && _uiState.value.pendingTrips.isEmpty()) {
+                    _effects.emit(PendingTripsUiEffect.CloseIfEmpty)
+                    _effects.emit(PendingTripsUiEffect.NavigateBack)
+                }
+            }
+        }
+    }
+    fun onTripClicked(tripId: String) {
+        val trip = _uiState.value.pendingTrips.firstOrNull { it.tripID == tripId }
+        trip?.let { onTripSelected(it) }
+    }
+}
+```
+---
+# 3) `PendingTripsButtonsState` replacing fragment button logic
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 329-3: import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
+data class PendingTripsButtonsState(
+    val confirmVisible: Boolean = true,
+    val cancelVisible: Boolean = true,
+    val confirmEnabled: Boolean = true,
+    val cancelEnabled: Boolean = true,
+    val confirmText: String = "Accept",
+    val cancelText: String = "Cancel",
+    val confirmContainerColor: Color = Color(0xFF2E7D32),
+    val confirmContentColor: Color = Color.White,
+    val cancelContainerColor: Color = Color(0xFFE0E0E0),
+    val cancelContentColor: Color = Color(0xFF1F1F1F),
+    val confirmDisabledContainerColor: Color = Color(0xFFBDBDBD),
+    val confirmDisabledContentColor: Color = Color(0xFF757575),
+    val cancelDisabledContainerColor: Color = Color(0xFFF5F5F5),
+    val cancelDisabledContentColor: Color = Color(0xFF9E9E9E),
+    val dialogButtonsState: PendingTripsDialogButtonsState = PendingTripsDialogButtonsState.default()
+) {
+    companion object {
+        fun default() = PendingTripsButtonsState()
+    }
+}
+data class PendingTripsDialogButtonsState(
+    val cancelVisible: Boolean = true,
+    val acceptVisible: Boolean = true,
+    val cancelEnabled: Boolean = true,
+    val acceptEnabled: Boolean = true,
+    val cancelContainerColor: Color = Color(0xFFE0E0E0),
+    val cancelContentColor: Color = Color(0xFF1F1F1F),
+    val acceptContainerColor: Color = Color(0xFF2E7D32),
+    val acceptContentColor: Color = Color.White
+) {
+    companion object {
+        fun default() = PendingTripsDialogButtonsState()
+    }
+}
+enum class PendingTripsScreenButtonAction {
+    CANCEL,
+    ACCEPT
+}
+enum class PendingTripsDialogButton {
+    CANCEL,
+    ACCEPT
+}
+```
+---
+# 4) Compose button styling helpers closer to custom button behavior
+These helpers approximate your custom button component styling and visibility behavior.
+```kotlin
+package ifac.td.taxi.ui.screen
+// # Block 380-4: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.PendingTripsButtonsState
+import ifac.td.taxi.viewmodel.PendingTripsDialogButtonsState
+import ifac.td.taxi.viewmodel.PendingTripsScreenButtonAction
+@Composable
+fun PendingTripsButtonsRow(
+    state: PendingTripsButtonsState,
+    onButtonClick: (PendingTripsScreenButtonAction) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (state.cancelVisible) {
+            PendingTripsButton(
+                text = state.cancelText,
+                enabled = state.cancelEnabled,
+                containerColor = if (state.cancelEnabled) state.cancelContainerColor else state.cancelDisabledContainerColor,
+                contentColor = if (state.cancelEnabled) state.cancelContentColor else state.cancelDisabledContentColor,
+                onClick = { onButtonClick(PendingTripsScreenButtonAction.CANCEL) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (state.confirmVisible) {
+            PendingTripsButton(
+                text = state.confirmText,
+                enabled = state.confirmEnabled,
+                containerColor = if (state.confirmEnabled) state.confirmContainerColor else state.confirmDisabledContainerColor,
+                contentColor = if (state.confirmEnabled) state.confirmContentColor else state.confirmDisabledContentColor,
+                onClick = { onButtonClick(PendingTripsScreenButtonAction.ACCEPT) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+@Composable
+fun PendingTripsButton(
+    text: String,
+    enabled: Boolean,
+    containerColor: androidx.compose.ui.graphics.Color,
+    contentColor: androidx.compose.ui.graphics.Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(48.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+            disabledContainerColor = containerColor,
+            disabledContentColor = contentColor
+        ),
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, containerColor)
+    ) {
+        Text(text)
+    }
+}
+```
+---
+# 5) Compose CustomDialog based on your `custom_dialog.xml` / `CustomDialog.kt`
+```kotlin
+package ifac.td.taxi.ui.screen
+// # Block 453-5: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.PendingTripsDialogButton
+import ifac.td.taxi.viewmodel.PendingTripsDialogButtonsState
+@Composable
+fun PendingTripsCustomDialog(
+    title: String,
+    description: String,
+    buttonsState: PendingTripsDialogButtonsState,
+    onDismissRequest: () -> Unit,
+    onButtonClick: (PendingTripsDialogButton) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text(text = title) },
+        text = { Text(text = description) },
+        confirmButton = {
+            if (buttonsState.acceptVisible) {
+                DialogButton(
+                    text = "Accept",
+                    enabled = buttonsState.acceptEnabled,
+                    containerColor = buttonsState.acceptContainerColor,
+                    contentColor = buttonsState.acceptContentColor,
+                    onClick = { onButtonClick(PendingTripsDialogButton.ACCEPT) }
+                )
+            }
+        },
+        dismissButton = {
+            if (buttonsState.cancelVisible) {
+                DialogButton(
+                    text = "Cancel",
+                    enabled = buttonsState.cancelEnabled,
+                    containerColor = buttonsState.cancelContainerColor,
+                    contentColor = buttonsState.cancelContentColor,
+                    onClick = { onButtonClick(PendingTripsDialogButton.CANCEL) }
+                )
+            }
+        }
+    )
+}
+@Composable
+fun DialogButton(
+    text: String,
+    enabled: Boolean,
+    containerColor: androidx.compose.ui.graphics.Color,
+    contentColor: androidx.compose.ui.graphics.Color,
+    onClick: () -> Unit
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+            disabledContainerColor = containerColor,
+            disabledContentColor = contentColor
+        )
+    ) {
+        Text(text)
+    }
+}
+```
+---
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+data class PendingTripsDialogState(
+    val title: String,
+    val description: String,
+    val pendingTrip: PendingTrip
+)
+```
+---
+# 7) Navigation preservation
+To preserve Jetpack Views navigation semantics, use callbacks from the host `Fragment` or `Activity` when embedding Compose:
+```kotlin
+@Composable
+fun PendingTripsRoute(
+    viewModel: PendingTripsComposeViewModel,
+    navigateBack: () -> Unit,
+    showHeader: (Boolean) -> Unit
+) {
+    PendingTripsScreen(
+        viewModel = viewModel,
+        onNavigateBack = navigateBack,
+        onShowHeader = showHeader
+    )
+}
+```
+```kotlin
+class PendingTripsComposeFragment : Fragment() {
+    private val viewModel: PendingTripsViewModel by viewModel()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ) = ComposeView(requireContext()).apply {
+        setContent {
+            PendingTripsRoute(
+                viewModel = viewModel,
+                navigateBack = { findNavController().navigateUp() },
+                showHeader = { /* iMainActivity.showHeader(it) */ }
+            )
+        }
+    }
+}
+```
+---
+# 8) Notes on matching the old XML/button behavior
+---
+# 9) What changed conceptually from Fragment to Compose
+Original fragment responsibilities now mapped to:
+---
+1. a **fully integrated `NavHost` example** for this screen,  
+2. a **Material3 theme-matching custom button component**, or  
+3. a **more exact XML-to-Compose port** if you paste `custom_dialog.xml` and `CustomButton` implementation.

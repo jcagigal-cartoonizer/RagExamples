@@ -4,8 +4,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// // // # Block 3: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
+// // # Block 428-3: import androidx.compose.runtime.Immutable
+// import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 @Immutable
 data class LoginUserButtonsState(
@@ -55,5 +55,3 @@ fun ComposeButtonStyle.borderColor(): Color = when (this) {
     ComposeButtonStyle.Outline -> Color(0xFF2E7D32)
     else -> Color.Transparent
 }
-// # 4) Compose button that mimics `CustomButton`
-// ## `ComposeCustomButton.kt`

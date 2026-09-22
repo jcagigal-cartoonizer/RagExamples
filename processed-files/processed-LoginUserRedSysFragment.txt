@@ -1,0 +1,413 @@
+I’ll give you:
+1. `LoginUserRedSysScreen` composable
+2. `LoginUserRedSysViewModel` using `StateFlow` + `SharedFlow<LoginUserRedSysUiEffect>`
+3. `LoginUserRedSysButtonsState` with button styling helpers
+4. Compose `CustomDialog` implementation
+5. Lifecycle-aware collection pattern for state/effects
+6. Navigation handling equivalent to the fragment
+---
+## 1) UI models
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+// # Block 11-1: import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
+data class LoginUserRedSysUiState(
+    val user: String = "",
+    val password: String = "",
+    val isLoading: Boolean = false,
+    val userError: String? = null,
+    val passwordError: String? = null,
+    val dialog: LoginUserRedSysDialogState? = null,
+    val buttons: LoginUserRedSysButtonsState = LoginUserRedSysButtonsState()
+)
+sealed interface LoginUserRedSysUiEffect {
+    data object NavigateBack : LoginUserRedSysUiEffect
+    data object NavigateToChangePassword : LoginUserRedSysUiEffect
+    data class ShowToast(val resId: Int) : LoginUserRedSysUiEffect
+}
+sealed interface LoginUserRedSysDialogState {
+    data class Error(
+        val title: String,
+        val message: String,
+        val confirmText: String = "OK"
+    ) : LoginUserRedSysDialogState
+}
+```
+---
+## 2) Buttons state with styling helpers
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+// # Block 39-2: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+@Immutable
+data class LoginUserRedSysButtonsState(
+    val cancelVisible: Boolean = true,
+    val acceptVisible: Boolean = true,
+    val acceptEnabled: Boolean = true,
+    val acceptLoading: Boolean = false,
+    val acceptBackground: Color = Color(0xFF2E7D32), // green
+    val acceptContentColor: Color = Color.White,
+    val cancelBackground: Color = Color(0xFFE0E0E0),
+    val cancelContentColor: Color = Color.Black
+) {
+    companion object {
+        fun enabledGreen() = LoginUserRedSysButtonsState(
+            acceptEnabled = true,
+            acceptLoading = false,
+            acceptBackground = Color(0xFF2E7D32),
+            acceptContentColor = Color.White
+        )
+        fun loading() = LoginUserRedSysButtonsState(
+            acceptEnabled = false,
+            acceptLoading = true,
+            acceptBackground = Color(0xFF2E7D32),
+            acceptContentColor = Color.White
+        )
+        fun disabled() = LoginUserRedSysButtonsState(
+            acceptEnabled = false,
+            acceptLoading = false,
+            acceptBackground = Color(0xFFA5D6A7),
+            acceptContentColor = Color.White
+        )
+    }
+}
+```
+### “More closely matching” button styling helpers
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+// # Block 78-3: import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
+object LoginUserRedSysButtonStyles {
+    val Green = Color(0xFF2E7D32)
+    val GreenDisabled = Color(0xFFA5D6A7)
+    val Gray = Color(0xFFE0E0E0)
+    val Black = Color(0xFF212121)
+    val White = Color.White
+}
+```
+---
+## 3) Compose-friendly ViewModel
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 92-4: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import es.redsys.paysys.Utils.RedCLSErrorCodes
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.RedSysLoginResponse
+import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysButtonsState
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysDialogState
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiEffect
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+class LoginUserRedSysComposeViewModel(
+    private val redSysUseCase: RedSysUseCase,
+    application: Application
+) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(LoginUserRedSysUiState())
+    val uiState: StateFlow<LoginUserRedSysUiState> = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<LoginUserRedSysUiEffect>()
+    val uiEffect: SharedFlow<LoginUserRedSysUiEffect> = _uiEffect.asSharedFlow()
+    fun getUserRedSys() {
+        viewModelScope.launch {
+            val user = redSysUseCase.getUsernameRedSys().orEmpty()
+            _uiState.update {
+                it.copy(
+                    user = user,
+                    password = TemporalData.passwordRedSys
+                )
+            }
+        }
+    }
+    fun onUserChange(value: String) {
+        _uiState.update { it.copy(user = value, userError = null) }
+    }
+    fun onPasswordChange(value: String) {
+        _uiState.update { it.copy(password = value, passwordError = null) }
+    }
+    fun onCancelClick() {
+        viewModelScope.launch {
+            _uiEffect.emit(LoginUserRedSysUiEffect.NavigateBack)
+        }
+    }
+    fun onAcceptClick() {
+        val current = _uiState.value
+        val validUser = current.user.isNotBlank()
+        val validPassword = current.password.isNotBlank()
+        if (!validUser || !validPassword) {
+            _uiState.update {
+                it.copy(
+                    userError = if (!validUser) getApplication<Application>().getString(R.string.incorrect_login) else null,
+                    passwordError = if (!validPassword) getApplication<Application>().getString(R.string.incorrect_login) else null
+                )
+            }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                buttons = LoginUserRedSysButtonsState.loading(),
+                userError = null,
+                passwordError = null
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            redSysUseCase.configureRedSys()
+            val login = redSysUseCase.loginRedSys(
+                username = current.user,
+                password = current.password
+            )
+            when (login) {
+                is RedSysLoginResponse.Success -> {
+                    if (login.merchantList.isNotEmpty()) {
+                        redSysUseCase.saveUsernameRedSys(current.user)
+                        if (current.password.isNotEmpty()) {
+                            TemporalData.passwordRedSys = current.password
+                        }
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                buttons = LoginUserRedSysButtonsState.enabledGreen()
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.ShowToast(R.string.toast_red_sys_login_ok))
+                        _uiEffect.emit(LoginUserRedSysUiEffect.NavigateBack)
+                    } else {
+                        handleLoginFailure()
+                    }
+                }
+                is RedSysLoginResponse.Error -> {
+                    if (login.errorCode == RedCLSErrorCodes.STATUS_KO_FORMATO_RESP_LOGIN_PWD_CAD) {
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                buttons = LoginUserRedSysButtonsState.enabledGreen()
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.NavigateToChangePassword)
+                    } else {
+                        handleLoginFailure()
+                    }
+                }
+            }
+        }
+    }
+    private suspend fun handleLoginFailure() {
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                userError = getApplication<Application>().getString(R.string.incorrect_login),
+                buttons = LoginUserRedSysButtonsState.enabledGreen()
+            )
+        }
+    }
+    fun onDialogDismiss() {
+        _uiState.update { it.copy(dialog = null) }
+    }
+}
+```
+---
+## 4) Compose screen
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+// # Block 224-5: import android.widget.Toast
+import android.widget.Toast
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import kotlinx.coroutines.flow.Flow
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.runtime.LaunchedEffect
+@Composable
+fun LoginUserRedSysScreen(
+    viewModel: ifac.td.taxi.viewmodel.LoginUserRedSysComposeViewModel,
+    navController: NavController,
+    onBack: () -> Unit = { navController.popBackStack() },
+    onNavigateToChangePassword: () -> Unit = {
+        navController.navigate(R.id.action_loginUserRedSysFragment_to_changePasswordRedSysFragment)
+    }
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(Unit) {
+        viewModel.getUserRedSys()
+    }
+    LaunchedEffect(viewModel.uiEffect, lifecycleOwner.lifecycle) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collect { effect ->
+                when (effect) {
+                    is LoginUserRedSysUiEffect.ShowToast -> {
+                        Toast.makeText(context, context.getString(effect.resId), Toast.LENGTH_SHORT).show()
+                    }
+                    LoginUserRedSysUiEffect.NavigateBack -> onBack()
+                    LoginUserRedSysUiEffect.NavigateToChangePassword -> onNavigateToChangePassword()
+                }
+            }
+        }
+    }
+    LoginUserRedSysContent(
+        uiState = uiState,
+        onUserChange = viewModel::onUserChange,
+        onPasswordChange = viewModel::onPasswordChange,
+        onCancelClick = viewModel::onCancelClick,
+        onAcceptClick = viewModel::onAcceptClick,
+        onDialogDismiss = viewModel::onDialogDismiss
+    )
+    uiState.dialog?.let { dialog ->
+        CustomDialog(
+            title = when (dialog) {
+                is LoginUserRedSysDialogState.Error -> dialog.title
+            },
+            message = when (dialog) {
+                is LoginUserRedSysDialogState.Error -> dialog.message
+            },
+            confirmText = when (dialog) {
+                is LoginUserRedSysDialogState.Error -> dialog.confirmText
+            },
+            onDismiss = viewModel::onDialogDismiss,
+            onConfirm = viewModel::onDialogDismiss
+        )
+    }
+}
+```
+---
+## 5) Screen content
+```kotlin
+@Composable
+fun LoginUserRedSysContent(
+    uiState: LoginUserRedSysUiState,
+    onUserChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onCancelClick: () -> Unit,
+    onAcceptClick: () -> Unit,
+    onDialogDismiss: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        OutlinedTextField(
+            value = uiState.user,
+            onValueChange = onUserChange,
+            label = { Text(stringResource(R.string.user)) },
+            isError = uiState.userError != null,
+            supportingText = uiState.userError?.let { { Text(it) } },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = uiState.password,
+            onValueChange = onPasswordChange,
+            label = { Text(stringResource(R.string.password)) },
+            isError = uiState.passwordError != null,
+            supportingText = uiState.passwordError?.let { { Text(it) } },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(24.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            CustomComposeButton(
+                text = stringResource(R.string.cancel),
+                enabled = true,
+                backgroundColor = uiState.buttons.cancelBackground,
+                contentColor = uiState.buttons.cancelContentColor,
+                onClick = onCancelClick,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(12.dp))
+            CustomComposeButton(
+                text = if (uiState.buttons.acceptLoading) stringResource(R.string.loading) else stringResource(R.string.accept),
+                enabled = uiState.buttons.acceptEnabled,
+                backgroundColor = if (uiState.buttons.acceptEnabled) uiState.buttons.acceptBackground else LoginUserRedSysButtonStyles.GreenDisabled,
+                contentColor = uiState.buttons.acceptContentColor,
+                onClick = onAcceptClick,
+                loading = uiState.buttons.acceptLoading,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+```
+---
+## 7) Compose `CustomDialog` based on the XML/dialog behavior
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+// # Block 390-6: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+@Composable
+fun LoginUserRedSysCustomDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = title) },
+        text = { Text(text = message) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(confirmText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+```
+---
+## 8) Notes on preserving fragment navigation
+To preserve the original fragment navigation exactly:
+  `R.id.action_loginUserRedSysFragment_to_changePasswordRedSysFragment`
+---
+## 9) If you want a Fragment wrapper around Compose
+```kotlin
+class LoginUserRedSysFragment : Fragment() {
+    private val viewModel: LoginUserRedSysComposeViewModel by viewModel()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View = ComposeView(requireContext()).apply {
+        setContent {
+            LoginUserRedSysScreen(
+                viewModel = viewModel,
+                navController = findNavController(),
+                onBack = { requireActivity().onBackPressedDispatcher.onBackPressed() }
+            )
+        }
+    }
+}
+```
+---
+## 10) Summary of the architecture mapping
+### Old fragment behavior
+### New Compose architecture

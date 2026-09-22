@@ -1,0 +1,640 @@
+> Notes:
+> - I use only Android + Jetpack Compose + lifecycle/navigation references.
+> - Where your project had custom fragments/services (`iMainActivity.openCropImage()`, `showToast()`, `navigateBack()`, etc.), I preserve them as **effects** so the host Activity/Navigation layer can handle them exactly as before.
+> - Since the actual XML files are not shown, I match the behavior from the fragment and infer reasonable styling structure. You can adjust colors/dimensions to match your exact XML.
+---
+# 1) Compose UI State / Event / Effect model
+## `CropImageUiState.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 9-1: import android.net.Uri
+import android.net.Uri
+data class CropImageUiState(
+    val serviceId: String? = null,
+    val imageUri: Uri? = null,
+    val isUploading: Boolean = false,
+    val dialogState: CustomDialogState = CustomDialogState.Hidden,
+    val buttonsState: CropImageButtonsState = CropImageButtonsState.default()
+)
+sealed interface CustomDialogState {
+    data object Hidden : CustomDialogState
+    data class Visible(
+        val title: String,
+        val description: String,
+        val confirmText: String = "OK",
+        val dismissText: String? = null
+    ) : CustomDialogState
+}
+```
+---
+## `CropImageUiEvent.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 32-2: import android.net.Uri
+import android.net.Uri
+sealed interface CropImageUiEvent {
+    data class ServiceIdChanged(val serviceId: String?) : CropImageUiEvent
+    data class ImageSelected(val uri: Uri) : CropImageUiEvent
+    data object AcceptClicked : CropImageUiEvent
+    data object CropClicked : CropImageUiEvent
+    data object SelectImageClicked : CropImageUiEvent
+    data object DialogDismissed : CropImageUiEvent
+    data object DialogConfirmed : CropImageUiEvent
+}
+```
+---
+## `CropImageUiEffect.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 48-3: import android.net.Uri
+import android.net.Uri
+sealed interface CropImageUiEffect {
+    data class ShowToast(val messageResId: Int) : CropImageUiEffect
+    data class RequestCropImage(val uri: Uri?) : CropImageUiEffect
+    data object RequestImageSelect : CropImageUiEffect
+    data object NavigateBack : CropImageUiEffect
+    data class OpenCustomDialog(
+        val title: String,
+        val description: String,
+        val confirmText: String = "OK",
+        val dismissText: String? = null
+    ) : CropImageUiEffect
+}
+```
+---
+# 2) Button state replacing fragment button logic
+## `CropImageButtonsState.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 68-4: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+@Immutable
+data class CropImageButtonsState(
+    val acceptVisible: Boolean = true,
+    val cropVisible: Boolean = true,
+    val selectImageVisible: Boolean = true,
+    val acceptEnabled: Boolean = true,
+    val cropEnabled: Boolean = true,
+    val selectImageEnabled: Boolean = true,
+    val acceptContainerColor: Color,
+    val acceptContentColor: Color,
+    val cropContainerColor: Color,
+    val cropContentColor: Color,
+    val selectContainerColor: Color,
+    val selectContentColor: Color,
+    val disabledContainerColor: Color,
+    val disabledContentColor: Color
+) {
+    companion object {
+        fun default(): CropImageButtonsState {
+            return CropImageButtonsState(
+                acceptVisible = true,
+                cropVisible = true,
+                selectImageVisible = true,
+                acceptEnabled = true,
+                cropEnabled = true,
+                selectImageEnabled = true,
+                acceptContainerColor = Color(0xFF2E7D32),   // green-ish
+                acceptContentColor = Color.White,
+                cropContainerColor = Color(0xFF1565C0),     // blue-ish
+                cropContentColor = Color.White,
+                selectContainerColor = Color(0xFF455A64),   // gray-blue
+                selectContentColor = Color.White,
+                disabledContainerColor = Color(0xFFE0E0E0),
+                disabledContentColor = Color(0xFF9E9E9E)
+            )
+        }
+    }
+}
+```
+---
+# 3) Compose-friendly ViewModel
+## `CropImageViewModel.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 115-5: import android.app.Application
+import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.SendImageUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.SubscriberUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.PaymentDirections
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+class CropImageComposeViewModel(
+    context: Application,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val tripUseCase: TripUseCase,
+    private val subscriberUseCase: SubscriberUseCase,
+    private val sendImageUseCase: SendImageUseCase,
+    private val ticketUseCase: TicketUseCase
+) : BaseViewModel(context) {
+    private val TAG = "CropImageViewModel"
+    private val _uiState = MutableStateFlow(CropImageUiState())
+    val uiState = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<CropImageUiEffect>()
+    val uiEffect: SharedFlow<CropImageUiEffect> = _uiEffect.asSharedFlow()
+    private var fileName: String = ""
+    fun setServiceId(serviceId: String?) {
+        _uiState.update { it.copy(serviceId = serviceId) }
+    }
+    fun setImageUri(uri: Uri) {
+        _uiState.update { it.copy(imageUri = uri) }
+    }
+    fun onEvent(event: CropImageUiEvent) {
+        when (event) {
+            is CropImageUiEvent.ServiceIdChanged -> setServiceId(event.serviceId)
+            is CropImageUiEvent.ImageSelected -> saveFileFromUri(event.uri)
+            CropImageUiEvent.AcceptClicked -> onAcceptClicked()
+            CropImageUiEvent.CropClicked -> onCropClicked()
+            CropImageUiEvent.SelectImageClicked -> emitEffect(CropImageUiEffect.RequestImageSelect)
+            CropImageUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = CustomDialogState.Hidden) }
+            CropImageUiEvent.DialogConfirmed -> _uiState.update { it.copy(dialogState = CustomDialogState.Hidden) }
+        }
+    }
+    fun onAcceptClicked() {
+        val uri = uiState.value.imageUri
+        if (uri == null) {
+            viewModelScope.launch {
+                _uiEffect.emit(CropImageUiEffect.ShowToast(R.string.dialog_voucher_required))
+            }
+            return
+        }
+        sendImageToAlpha(uiState.value.serviceId)
+    }
+    fun onCropClicked() {
+        viewModelScope.launch {
+            _uiEffect.emit(CropImageUiEffect.RequestCropImage(uiState.value.imageUri))
+        }
+    }
+    fun saveFileFromUri(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "saveFileFromUri: Starting for URI: $uri")
+            setImageUri(uri)
+            val numSubscriber = subscriberUseCase.getSubscriber()?.numberSubscriberFromW2C
+            fileName = generateFileName(false, numSubscriber ?: "")
+            val bitmap = getBitmapFromUri(uri)
+            val rescaledBitmap = bitmap?.let { scaleBitmap(it, 560) }
+            val directory = context.getExternalFilesDir(null)
+            val outputFile = File(directory, fileName)
+            FileOutputStream(outputFile).use { outputStream ->
+                rescaledBitmap?.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+            }
+            Logs.d(TAG, "saveFileFromUri: File saved successfully")
+        }
+    }
+    fun scaleBitmap(bitmap: Bitmap, newHeight: Int): Bitmap? {
+        return try {
+            val originalWidth = bitmap.width
+            val originalHeight = bitmap.height
+            val scaleFactor = newHeight.toFloat() / originalHeight
+            val newWidth = (originalWidth * scaleFactor).toInt()
+            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        } catch (e: Exception) {
+            Logs.e(TAG, "scaleBitmap: Error scaling bitmap: $e")
+            null
+        }
+    }
+    fun generateFileName(isBill: Boolean, numSubscriber: String): String {
+        val nameType = if (isBill) "FACTURA" else "VALE"
+        val currentDate = SimpleDateFormat("yyyy-MM-dd HH_mm_ss", Locale.US).format(Date())
+        return "${nameType}#${numSubscriber}#${currentDate}#canon.png"
+    }
+    fun getBitmapFromUri(uri: Uri): Bitmap? {
+        return context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            BitmapFactory.decodeStream(inputStream)
+        }
+    }
+    fun sendImageToAlpha(serviceId: String?) {
+        viewModelScope.launch {
+            val bitmap = uiState.value.imageUri?.let { getBitmapFromUri(it) }
+            if (bitmap == null) {
+                _uiEffect.emit(CropImageUiEffect.ShowToast(R.string.dialog_error_send_image_description))
+                return@launch
+            }
+            sendImageUseCase.sendImageToAlfa(
+                serviceId = serviceId,
+                bitmap = bitmap,
+                fileName = fileName,
+                callback = _uploadResult
+            )
+        }
+    }
+    private val _uploadResult = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
+    init {
+        viewModelScope.launch {
+            _uploadResult.collect { success ->
+                handleUploadResult(success)
+            }
+        }
+    }
+    private suspend fun handleUploadResult(success: Boolean) {
+        if (success) {
+            if (uiState.value.serviceId == null) {
+                // keep behavior flexible; navigation handled by host/shared VM in old code
+            }
+            _uiEffect.emit(CropImageUiEffect.ShowToast(R.string.dialog_send_image_description))
+            _uiEffect.emit(CropImageUiEffect.NavigateBack)
+        } else {
+            _uiEffect.emit(CropImageUiEffect.ShowToast(R.string.dialog_error_send_image_description))
+        }
+    }
+    fun isPayment(currentStatus: Int): Boolean = shiftStatusUseCase.isPayment(currentStatus)
+    fun isHired(currentStatus: Int): Boolean = shiftStatusUseCase.isHired(currentStatus)
+    fun dispatchSubscriberNextStep(
+        dispatchValue: InfoDispatchModel,
+        trip: Trip,
+        callback: (Trip) -> Unit
+    ) {
+        viewModelScope.launch {
+            if (dispatchValue.requireQr) {
+                navigateTo(PaymentDirections.goToScannerQRFragment(dispatchValue.longDispatchNumber))
+            } else {
+                tripUseCase.endTrip(trip, PaymentMethod.SUBSCRIBER)
+                shiftStatusUseCase.getStatus()?.let {
+                    ticketUseCase.prepareTicket(trip, dispatchValue, it)
+                }
+                val status = shiftStatusUseCase.checkForSubStateModifications(com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_FOR_HIRE)
+                shiftStatusUseCase.setStatus(status, true)
+            }
+        }
+    }
+    fun sendSubscriberAuth(serviceId: String?, tripId: Long?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val accountPaymentRequest = subscriberUseCase.getAccountPaymentRequest(tripId)
+            accountPaymentRequest?.serviceId = serviceId
+            subscriberUseCase.sendAccountPaymentRequest(accountPaymentRequest)
+        }
+    }
+    fun emitEffect(effect: CropImageUiEffect) {
+        viewModelScope.launch { _uiEffect.emit(effect) }
+    }
+}
+```
+---
+# 4) Compose screen implementing the fragment behavior
+## `CropImageScreen.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 301-6: import android.net.Uri
+import android.net.Uri
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavHostController
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.background
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.launch
+import androidx.lifecycle.LifecycleOwner
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import ifac.td.taxi.R
+@Composable
+fun CropImageScreen(
+    viewModel: CropImageComposeViewModel,
+    navController: NavHostController,
+    onRequestHeaderVisibility: (Boolean) -> Unit,
+    onRequestCameraPermission: () -> Unit,
+    onOpenCropImage: (Uri?) -> Unit,
+    onOpenImageSelect: () -> Unit,
+    onShowToast: (Int) -> Unit
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(Unit) {
+        onRequestHeaderVisibility(true)
+        onRequestCameraPermission()
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        is CropImageUiEffect.ShowToast -> onShowToast(effect.messageResId)
+                        is CropImageUiEffect.RequestCropImage -> onOpenCropImage(effect.uri)
+                        CropImageUiEffect.RequestImageSelect -> onOpenImageSelect()
+                        CropImageUiEffect.NavigateBack -> navController.popBackStack()
+                        is CropImageUiEffect.OpenCustomDialog -> {
+                            // if you prefer dialogs from effects, map it here
+                        }
+                    }
+                }
+            }
+        }
+    }
+    val dialogState = state.dialogState
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            ImagePreview(
+                uri = state.imageUri,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(260.dp)
+            )
+            CropImageButtons(
+                state = state.buttonsState,
+                onAccept = { viewModel.onEvent(CropImageUiEvent.AcceptClicked) },
+                onCrop = { viewModel.onEvent(CropImageUiEvent.CropClicked) },
+                onSelectImage = { viewModel.onEvent(CropImageUiEvent.SelectImageClicked) }
+            )
+        }
+        if (state.isUploading) {
+            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+        }
+        when (val dialog = dialogState) {
+            CustomDialogState.Hidden -> Unit
+            is CustomDialogState.Visible -> {
+                CustomDialog(
+                    title = dialog.title,
+                    description = dialog.description,
+                    confirmText = dialog.confirmText,
+                    dismissText = dialog.dismissText,
+                    onConfirm = { viewModel.onEvent(CropImageUiEvent.DialogConfirmed) },
+                    onDismiss = { viewModel.onEvent(CropImageUiEvent.DialogDismissed) }
+                )
+            }
+        }
+    }
+}
+@Composable
+fun ImagePreview(
+    uri: Uri?,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFFF2F2F2)
+    ) {
+        if (uri == null) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Text(
+                    text = "No image selected",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray
+                )
+            }
+        } else {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { context ->
+                    android.widget.ImageView(context).apply {
+                        scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                        setImageURI(uri)
+                    }
+                },
+                update = { it.setImageURI(uri) }
+            )
+        }
+    }
+}
+```
+---
+# 5) Compose buttons implementation with XML-like styling
+## `CropImageButtons.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 441-7: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
+@Composable
+fun CropImageButtons(
+    state: CropImageButtonsState,
+    onAccept: () -> Unit,
+    onCrop: () -> Unit,
+    onSelectImage: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.acceptVisible) {
+            CustomButton(
+                text = "Accept",
+                enabled = state.acceptEnabled,
+                containerColor = state.acceptContainerColor,
+                contentColor = state.acceptContentColor,
+                disabledContainerColor = state.disabledContainerColor,
+                disabledContentColor = state.disabledContentColor,
+                onClick = onAccept
+            )
+        }
+        if (state.cropVisible) {
+            CustomButton(
+                text = "Crop",
+                enabled = state.cropEnabled,
+                containerColor = state.cropContainerColor,
+                contentColor = state.cropContentColor,
+                disabledContainerColor = state.disabledContainerColor,
+                disabledContentColor = state.disabledContentColor,
+                onClick = onCrop
+            )
+        }
+        if (state.selectImageVisible) {
+            CustomButton(
+                text = "Select image",
+                enabled = state.selectImageEnabled,
+                containerColor = state.selectContainerColor,
+                contentColor = state.selectContentColor,
+                disabledContainerColor = state.disabledContainerColor,
+                disabledContentColor = state.disabledContentColor,
+                onClick = onSelectImage
+            )
+        }
+    }
+}
+@Composable
+fun CustomButton(
+    text: String,
+    enabled: Boolean,
+    containerColor: androidx.compose.ui.graphics.Color,
+    contentColor: androidx.compose.ui.graphics.Color,
+    disabledContainerColor: androidx.compose.ui.graphics.Color,
+    disabledContentColor: androidx.compose.ui.graphics.Color,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+            disabledContainerColor = disabledContainerColor,
+            disabledContentColor = disabledContentColor
+        ),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(text = text)
+    }
+}
+```
+---
+## `CustomDialog.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.cropimage
+// # Block 526-8: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun CropImageCustomDialog(
+    title: String,
+    description: String,
+    confirmText: String,
+    dismissText: String? = null,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color.White,
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.Black
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.DarkGray
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dismissText != null) {
+                        TextButton(onClick = onDismiss) {
+                            Text(text = dismissText)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = onConfirm) {
+                        Text(text = confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+# 7) How to preserve Jetpack Views navigation
+In your old fragment, navigation/UI actions were delegated to `iMainActivity`.  
+In Compose, preserve that by passing callbacks from the host:
+So your host Activity/Fragment can keep the same navigation behavior and permission flow.
+---
+# 8) Example usage from a Fragment host
+```kotlin
+class CropImageComposeFragment : Fragment() {
+    private val viewModel: CropImageViewModel by viewModel()
+    private val navController by lazy { findNavController() }
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                CropImageScreen(
+                    viewModel = viewModel,
+                    navController = navController,
+                    onRequestHeaderVisibility = { visible ->
+                        (activity as? YourMainActivity)?.showHeader(visible)
+                    },
+                    onRequestCameraPermission = {
+                        (activity as? YourMainActivity)?.requestPermission(
+                            PermissionRequest.PermissionTypeList.PERMISSION_CAMERA
+                        )
+                    },
+                    onOpenCropImage = { uri ->
+                        (activity as? YourMainActivity)?.openCropImage(uri)
+                    },
+                    onOpenImageSelect = {
+                        (activity as? YourMainActivity)?.openImageSelect()
+                    },
+                    onShowToast = { resId ->
+                        (activity as? YourMainActivity)?.showToast(resId)
+                    }
+                )
+            }
+        }
+    }
+}
+```
+---
+# 9) Exact behavior mapping from the fragment
+## Old fragment logic -> Compose architecture
+### Accept
+### Crop
+### Select image
+### After crop result
+### After upload
+---
+1. a **full integration with your `MainActivityViewModel`** equivalent in Compose,
+2. a **more exact Material 2 / XML-style button design** based on likely `CustomButton`,
+3. a version using **Navigation Compose routes** instead of callback-based host navigation.

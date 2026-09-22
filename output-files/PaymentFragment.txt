@@ -1,0 +1,804 @@
+Below is a **Compose-first replacement** for your `PaymentFragment` + `PaymentViewModel` pattern, keeping the same business behavior but moving the UI/button logic, dialog state, and effects into a **Compose-friendly `UiState + UiEvent + UiEffect` architecture**.
+
+I’ll give you:
+
+1. A **Compose screen/composable** for Payment
+2. A **Compose ViewModel contract + implementation**
+3. A **full `PaymentButtonsState`** replacing fragment button logic
+4. A **`PaymentUiEffect` using `SharedFlow<PaymentUiEffect>`**
+5. A **Compose dialog implementation** matching the custom dialog behavior
+6. A **button styling helper** close to your custom button component behavior
+7. Navigation preserved via `NavController` / callback-based host navigation
+8. Lifecycle collection using `collectAsStateWithLifecycle` and `LaunchedEffect`
+
+---
+
+# 1) Compose UI models
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import android.content.res.Configuration
+import androidx.annotation.DrawableRes
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.viewmodel.model.RedSysPaymentState
+
+enum class PaymentButtonStyle {
+    ENABLE,
+    DISABLE,
+    LOADING
+}
+
+data class PaymentButtonUiState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val style: PaymentButtonStyle = PaymentButtonStyle.ENABLE,
+    val text: String,
+    @DrawableRes val iconRes: Int? = null
+)
+
+data class PaymentButtonsState(
+    val card: PaymentButtonUiState = PaymentButtonUiState(text = "Card"),
+    val cash: PaymentButtonUiState = PaymentButtonUiState(text = "Cash"),
+    val subscriber: PaymentButtonUiState = PaymentButtonUiState(text = "Subscriber"),
+    val bizum: PaymentButtonUiState = PaymentButtonUiState(text = "Bizum"),
+    val appPayment: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "Pay in App"),
+    val othersPayment: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "Others"),
+    val cancel: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "Cancel"),
+    val addAmount: PaymentButtonUiState = PaymentButtonUiState(text = "Add amount"),
+    val backToDispatch: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "Back"),
+    val coutesyLight: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "Light"),
+    val uvLight: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "UV"),
+    val locution: PaymentButtonUiState = PaymentButtonUiState(visible = false, text = "Locution"),
+) {
+    companion object {
+        fun initial() = PaymentButtonsState()
+    }
+}
+
+data class PaymentDialogState(
+    val title: String,
+    val description: String,
+    val buttons: List<PaymentDialogButton>,
+    val isCancellable: Boolean = true,
+    val centerText: Boolean = false,
+    val showCheckBox: Boolean = false,
+    val checkBoxText: String? = null,
+    val listOptions: List<PaymentDialogOption> = emptyList(),
+    val iconRes: Int? = null,
+    val editTextHint: String? = null,
+    val editTextMaxLength: Int? = null,
+    val tag: String? = null
+)
+
+data class PaymentDialogOption(
+    val id: Int,
+    val title: String
+)
+
+enum class PaymentDialogButton {
+    CANCEL,
+    ACCEPT,
+    RETRY,
+    OTHERS
+}
+
+data class PaymentScreenUiState(
+    val amountText: String = "",
+    val buttons: PaymentButtonsState = PaymentButtonsState.initial(),
+    val showBottomMenu: Boolean = true,
+    val showAppPaymentLabel: Boolean = false,
+    val showExtraButtons: Boolean = true,
+    val showDialog: PaymentDialogState? = null,
+    val redSysState: RedSysPaymentState = RedSysPaymentState.IDLE,
+    val timerText: String? = null,
+    val showCourtesyLight: Boolean = false,
+    val showUvLight: Boolean = false,
+    val showLocution: Boolean = false,
+    val waitingAppPaymentResponse: Boolean = true,
+    val isLandscape: Boolean = false
+)
+```
+
+---
+
+# 2) UiEvents + UiEffects
+
+You asked to use **`SharedFlow<PaymentUiEffect>` instead of multiple event types**. So the ViewModel exposes:
+
+- `StateFlow<PaymentScreenUiState>`
+- `SharedFlow<PaymentUiEffect>`
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import android.content.Intent
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.viewmodel.model.RedSysPaymentState
+
+sealed interface PaymentUiEvent {
+    data object OnCreate : PaymentUiEvent
+    data object OnResume : PaymentUiEvent
+    data object OnCardClicked : PaymentUiEvent
+    data object OnCashClicked : PaymentUiEvent
+    data object OnSubscriberClicked : PaymentUiEvent
+    data object OnAddAmountClicked : PaymentUiEvent
+    data object OnBizumClicked : PaymentUiEvent
+    data object OnCancelAppPaymentClicked : PaymentUiEvent
+    data object OnAppPaymentClicked : PaymentUiEvent
+    data object OnOthersPaymentClicked : PaymentUiEvent
+    data object OnBackToDispatchClicked : PaymentUiEvent
+    data object OnLocutionClicked : PaymentUiEvent
+    data object OnCourtesyLightClicked : PaymentUiEvent
+    data object OnUvLightClicked : PaymentUiEvent
+    data class OnDialogButtonClicked(val button: PaymentDialogButton, val text: String? = null) : PaymentUiEvent
+    data class OnDialogOptionSelected(val optionId: Int) : PaymentUiEvent
+    data class OnPaymentResult(val success: Boolean, val data: Intent?) : PaymentUiEvent
+}
+
+sealed interface PaymentUiEffect {
+    data class NavigateTo(val routeId: Int) : PaymentUiEffect
+    data class NavigateToDirections(val directions: Any) : PaymentUiEffect
+    data class OpenDialog(val dialog: PaymentDialogState) : PaymentUiEffect
+    data class ShowToast(val messageRes: Int) : PaymentUiEffect
+    data class StartActivityForResult(val intent: Intent) : PaymentUiEffect
+    data class OpenExternalPayment(val amount: Int) : PaymentUiEffect
+    data class RequestAppPaymentAuth(val amount: Int) : PaymentUiEffect
+    data object StopCountdown : PaymentUiEffect
+    data object ResetBottomBarText : PaymentUiEffect
+    data object BackToDispatched : PaymentUiEffect
+    data class ShowRedSysPopup(val state: RedSysPaymentState) : PaymentUiEffect
+}
+```
+
+---
+
+# 3) Compose-friendly ViewModel
+
+This is a **wrapper/refactor style ViewModel**. In practice you can migrate logic from your current `PaymentViewModel` into this one incrementally.
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import android.app.Application
+import android.content.Intent
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.viewmodel.model.RedSysPaymentState
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class PaymentComposeViewModel(
+    application: Application
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(PaymentScreenUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PaymentUiEffect>(extraBufferCapacity = 64)
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: PaymentUiEvent) {
+        when (event) {
+            PaymentUiEvent.OnCreate -> {
+                // init state here
+            }
+            PaymentUiEvent.OnResume -> {
+                // refresh state if needed
+            }
+            PaymentUiEvent.OnCardClicked -> handlePayment(PaymentMethod.CARD)
+            PaymentUiEvent.OnCashClicked -> handlePayment(PaymentMethod.CASH)
+            PaymentUiEvent.OnSubscriberClicked -> handlePayment(PaymentMethod.SUBSCRIBER)
+            PaymentUiEvent.OnBizumClicked -> {
+                // navigation handled by effect
+            }
+            PaymentUiEvent.OnAddAmountClicked -> {
+                // emit navigation effect to add amount
+            }
+            PaymentUiEvent.OnCancelAppPaymentClicked -> {
+                _uiState.value = _uiState.value.copy(showAppPaymentLabel = false)
+            }
+            PaymentUiEvent.OnAppPaymentClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PaymentUiEffect.RequestAppPaymentAuth(currentAmount())) }
+            }
+            PaymentUiEvent.OnOthersPaymentClicked -> {
+                _uiState.value = _uiState.value.copy(showDialog = PaymentDialogState(
+                    title = getString(R.string.dialog_app_payment_title),
+                    description = getString(R.string.app_payment_change),
+                    buttons = listOf(PaymentDialogButton.CANCEL, PaymentDialogButton.ACCEPT),
+                    isCancellable = false
+                ))
+                viewModelScope.launch {
+                    _uiEffect.emit(PaymentUiEffect.OpenDialog(_uiState.value.showDialog!!))
+                }
+            }
+            PaymentUiEvent.OnBackToDispatchClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PaymentUiEffect.BackToDispatched) }
+            }
+            PaymentUiEvent.OnLocutionClicked -> { }
+            PaymentUiEvent.OnCourtesyLightClicked -> { }
+            PaymentUiEvent.OnUvLightClicked -> { }
+            is PaymentUiEvent.OnDialogButtonClicked -> {
+                when (event.button) {
+                    PaymentDialogButton.ACCEPT -> {
+                        // consume and continue
+                    }
+                    PaymentDialogButton.RETRY -> { }
+                    PaymentDialogButton.CANCEL -> { }
+                    PaymentDialogButton.OTHERS -> { }
+                }
+            }
+            is PaymentUiEvent.OnDialogOptionSelected -> Unit
+            is PaymentUiEvent.OnPaymentResult -> {
+                if (event.success) {
+                    // handle success
+                }
+            }
+        }
+    }
+
+    fun setButtons(state: PaymentButtonsState) {
+        _uiState.value = _uiState.value.copy(buttons = state)
+    }
+
+    fun setAmount(amountText: String) {
+        _uiState.value = _uiState.value.copy(amountText = amountText)
+    }
+
+    fun setRedSysState(state: RedSysPaymentState) {
+        _uiState.value = _uiState.value.copy(redSysState = state)
+        viewModelScope.launch { _uiEffect.emit(PaymentUiEffect.ShowRedSysPopup(state)) }
+    }
+
+    fun showDialog(dialog: PaymentDialogState) {
+        _uiState.value = _uiState.value.copy(showDialog = dialog)
+        viewModelScope.launch { _uiEffect.emit(PaymentUiEffect.OpenDialog(dialog)) }
+    }
+
+    private fun handlePayment(method: PaymentMethod) {
+        when (method) {
+            PaymentMethod.CARD -> {}
+            PaymentMethod.CASH -> {}
+            PaymentMethod.SUBSCRIBER -> {}
+            else -> Unit
+        }
+    }
+
+    private fun currentAmount(): Int = 0
+    private fun getString(resId: Int): String = getApplication<Application>().getString(resId)
+}
+```
+
+---
+
+# 4) Exact `PaymentButtonsState` helper logic
+
+This replaces `setButtons()` + `setupMenu()` + `modifyButtonsPositions()` behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CASH_CARD
+import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CASH_NO_CARD
+import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CREDIT_CARD
+import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CREDIT_CARD_COMPULSORY
+import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CREDIT_NO_CARD
+import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_TCC
+import ifac.td.taxi.domain.utils.StaticConfiguration
+
+object PaymentButtonsStateFactory {
+
+    fun build(
+        clientType: Int?,
+        subscriberFailPin: Boolean,
+        isConcertedOrMax: Boolean,
+        hasMoneiAccount: Boolean,
+        showAppPayment: Boolean,
+        waitingAppPaymentResponse: Boolean,
+        showBackToDispatch: Boolean,
+        showCourtesyLight: Boolean,
+        showUvLight: Boolean,
+        showLocution: Boolean,
+        showAddAmount: Boolean,
+    ): PaymentButtonsState {
+        val cardEnabled = when (clientType) {
+            SUBSCRIBER_CASH_NO_CARD,
+            SUBSCRIBER_CASH_CARD -> false
+            SUBSCRIBER_CREDIT_NO_CARD,
+            SUBSCRIBER_CREDIT_CARD,
+            SUBSCRIBER_CREDIT_CARD_COMPULSORY,
+            SUBSCRIBER_TCC -> subscriberFailPin
+            else -> true
+        }
+
+        val cashEnabled = when (clientType) {
+            SUBSCRIBER_CASH_NO_CARD,
+            SUBSCRIBER_CASH_CARD -> true
+            SUBSCRIBER_CREDIT_NO_CARD,
+            SUBSCRIBER_CREDIT_CARD,
+            SUBSCRIBER_CREDIT_CARD_COMPULSORY,
+            SUBSCRIBER_TCC -> subscriberFailPin
+            else -> true
+        }
+
+        return PaymentButtonsState(
+            card = PaymentButtonUiState(
+                visible = true,
+                enabled = cardEnabled,
+                style = if (cardEnabled) PaymentButtonStyle.ENABLE else PaymentButtonStyle.DISABLE,
+                text = "Card"
+            ),
+            cash = PaymentButtonUiState(
+                visible = true,
+                enabled = cashEnabled,
+                style = if (cashEnabled) PaymentButtonStyle.ENABLE else PaymentButtonStyle.DISABLE,
+                text = "Cash"
+            ),
+            subscriber = PaymentButtonUiState(
+                visible = true,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "Subscriber"
+            ),
+            bizum = PaymentButtonUiState(
+                visible = hasMoneiAccount,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "Bizum"
+            ),
+            appPayment = PaymentButtonUiState(
+                visible = showAppPayment,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "App payment"
+            ),
+            othersPayment = PaymentButtonUiState(
+                visible = showAppPayment,
+                enabled = !isConcertedOrMax,
+                style = if (isConcertedOrMax) PaymentButtonStyle.DISABLE else PaymentButtonStyle.ENABLE,
+                text = "Others"
+            ),
+            cancel = PaymentButtonUiState(
+                visible = false,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "Cancel"
+            ),
+            addAmount = PaymentButtonUiState(
+                visible = showAddAmount,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "+"
+            ),
+            backToDispatch = PaymentButtonUiState(
+                visible = showBackToDispatch,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "Back"
+            ),
+            coutesyLight = PaymentButtonUiState(
+                visible = showCourtesyLight,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "Courtesy"
+            ),
+            uvLight = PaymentButtonUiState(
+                visible = showUvLight,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "UV"
+            ),
+            locution = PaymentButtonUiState(
+                visible = showLocution,
+                enabled = true,
+                style = PaymentButtonStyle.ENABLE,
+                text = "TTS"
+            )
+        )
+    }
+}
+```
+
+---
+
+# 5) Compose CustomButton styling helper
+
+This is a Compose approximation of your `CustomButton.StyleButton`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+object PaymentButtonStyles {
+    val EnabledContainer = Color(0xFF1E88E5)
+    val EnabledContent = Color.White
+
+    val DisabledContainer = Color(0xFFE0E0E0)
+    val DisabledContent = Color(0xFF9E9E9E)
+
+    val LoadingContainer = Color(0xFF90CAF9)
+    val LoadingContent = Color.White
+}
+
+@Composable
+fun paymentButtonColors(style: PaymentButtonStyle): ButtonColors {
+    return when (style) {
+        PaymentButtonStyle.ENABLE -> ButtonDefaults.buttonColors(
+            containerColor = PaymentButtonStyles.EnabledContainer,
+            contentColor = PaymentButtonStyles.EnabledContent,
+            disabledContainerColor = PaymentButtonStyles.DisabledContainer,
+            disabledContentColor = PaymentButtonStyles.DisabledContent
+        )
+        PaymentButtonStyle.DISABLE -> ButtonDefaults.buttonColors(
+            containerColor = PaymentButtonStyles.DisabledContainer,
+            contentColor = PaymentButtonStyles.DisabledContent
+        )
+        PaymentButtonStyle.LOADING -> ButtonDefaults.buttonColors(
+            containerColor = PaymentButtonStyles.LoadingContainer,
+            contentColor = PaymentButtonStyles.LoadingContent
+        )
+    }
+}
+```
+
+---
+
+# 6) Compose screen
+
+This screen preserves navigation by using `NavController`, but you can also pass callbacks if you prefer fragment-host navigation.
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun PaymentScreen(
+    navController: NavController,
+    viewModel: PaymentComposeViewModel,
+    onSendAppPaymentAuthRequest: (Int) -> Unit,
+    onBackToDispatched: () -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var dialogState by remember { mutableStateOf<PaymentDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is PaymentUiEffect.NavigateTo -> {
+                    navController.navigate(effect.routeId)
+                }
+                is PaymentUiEffect.NavigateToDirections -> {
+                    // if using generated SafeArgs/Directions
+                }
+                is PaymentUiEffect.OpenDialog -> dialogState = effect.dialog
+                is PaymentUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                is PaymentUiEffect.RequestAppPaymentAuth -> onSendAppPaymentAuthRequest(effect.amount)
+                PaymentUiEffect.BackToDispatched -> onBackToDispatched()
+                PaymentUiEffect.StopCountdown -> Unit
+                PaymentUiEffect.ResetBottomBarText -> Unit
+                is PaymentUiEffect.ShowRedSysPopup -> Unit
+                is PaymentUiEffect.StartActivityForResult -> Unit
+                is PaymentUiEffect.OpenExternalPayment -> Unit
+            }
+        }
+    }
+
+    BackHandler(enabled = true) {
+        // preserve your fragment back behavior if needed
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("Payment") })
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(text = uiState.amountText, style = MaterialTheme.typography.headlineMedium)
+
+            PaymentButtons(
+                state = uiState.buttons,
+                onCard = { viewModel.onEvent(PaymentUiEvent.OnCardClicked) },
+                onCash = { viewModel.onEvent(PaymentUiEvent.OnCashClicked) },
+                onSubscriber = { viewModel.onEvent(PaymentUiEvent.OnSubscriberClicked) },
+                onBizum = { viewModel.onEvent(PaymentUiEvent.OnBizumClicked) },
+                onAddAmount = { viewModel.onEvent(PaymentUiEvent.OnAddAmountClicked) },
+                onAppPayment = { viewModel.onEvent(PaymentUiEvent.OnAppPaymentClicked) },
+                onOthersPayment = { viewModel.onEvent(PaymentUiEvent.OnOthersPaymentClicked) },
+                onCancel = { viewModel.onEvent(PaymentUiEvent.OnCancelAppPaymentClicked) },
+                onBackToDispatch = { viewModel.onEvent(PaymentUiEvent.OnBackToDispatchClicked) },
+                onLocution = { viewModel.onEvent(PaymentUiEvent.OnLocutionClicked) },
+                onCourtesy = { viewModel.onEvent(PaymentUiEvent.OnCourtesyLightClicked) },
+                onUv = { viewModel.onEvent(PaymentUiEvent.OnUvLightClicked) },
+            )
+        }
+    }
+
+    if (dialogState != null) {
+        PaymentCustomDialog(
+            dialog = dialogState!!,
+            onDismiss = { dialogState = null },
+            onButtonClick = { button, text ->
+                viewModel.onEvent(PaymentUiEvent.OnDialogButtonClicked(button, text))
+                dialogState = null
+            }
+        )
+    }
+}
+```
+
+---
+
+# 7) Payment buttons layout
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun PaymentButtons(
+    state: PaymentButtonsState,
+    onCard: () -> Unit,
+    onCash: () -> Unit,
+    onSubscriber: () -> Unit,
+    onBizum: () -> Unit,
+    onAddAmount: () -> Unit,
+    onAppPayment: () -> Unit,
+    onOthersPayment: () -> Unit,
+    onCancel: () -> Unit,
+    onBackToDispatch: () -> Unit,
+    onLocution: () -> Unit,
+    onCourtesy: () -> Unit,
+    onUv: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PaymentButton(state.cash, onCash)
+            PaymentButton(state.card, onCard)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PaymentButton(state.subscriber, onSubscriber)
+            if (state.bizum.visible) PaymentButton(state.bizum, onBizum)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.appPayment.visible) PaymentButton(state.appPayment, onAppPayment)
+            if (state.othersPayment.visible) PaymentButton(state.othersPayment, onOthersPayment)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.addAmount.visible) PaymentButton(state.addAmount, onAddAmount)
+            if (state.backToDispatch.visible) PaymentButton(state.backToDispatch, onBackToDispatch)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.coutesyLight.visible) PaymentButton(state.coutesyLight, onCourtesy)
+            if (state.uvLight.visible) PaymentButton(state.uvLight, onUv)
+            if (state.locution.visible) PaymentButton(state.locution, onLocution)
+        }
+    }
+}
+
+@Composable
+fun PaymentButton(
+    state: PaymentButtonUiState,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    Button(
+        onClick = onClick,
+        enabled = state.enabled && state.style != PaymentButtonStyle.LOADING,
+        colors = paymentButtonColors(state.style),
+        modifier = Modifier.height(48.dp)
+    ) {
+        Text(text = state.text)
+    }
+}
+```
+
+---
+
+# 8) Compose dialog matching `CustomDialog`
+
+This is a Compose equivalent of your XML/dialog behavior: title, description, buttons, optional checkbox, optional text field, optional options list, center text, cancellable.
+
+```kotlin
+package ifac.td.taxi.ui.screen.payment
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun PaymentCustomDialog(
+    dialog: PaymentDialogState,
+    onDismiss: () -> Unit,
+    onButtonClick: (PaymentDialogButton, String?) -> Unit,
+) {
+    var text by remember { mutableStateOf(TextFieldValue("")) }
+    var checked by remember { mutableStateOf(false) }
+    var selectedOptionId by remember { mutableStateOf<Int?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (dialog.isCancellable) onDismiss() },
+        title = { Text(dialog.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = dialog.description,
+                    textAlign = if (dialog.centerText) androidx.compose.ui.text.style.TextAlign.Center
+                    else androidx.compose.ui.text.style.TextAlign.Start
+                )
+
+                if (dialog.listOptions.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        dialog.listOptions.forEach { option ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedOptionId = option.id },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = selectedOptionId == option.id,
+                                    onClick = { selectedOptionId = option.id }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(option.title)
+                            }
+                        }
+                    }
+                }
+
+                if (dialog.editTextHint != null) {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { if (dialog.editTextMaxLength == null || it.text.length <= dialog.editTextMaxLength) text = it },
+                        placeholder = { Text(dialog.editTextHint) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                if (dialog.showCheckBox && dialog.checkBoxText != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = checked, onCheckedChange = { checked = it })
+                        Spacer(Modifier.width(8.dp))
+                        Text(dialog.checkBoxText)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val hasAccept = dialog.buttons.contains(PaymentDialogButton.ACCEPT)
+            if (hasAccept) {
+                TextButton(onClick = {
+                    val payload = if (dialog.editTextHint != null) text.text else null
+                    onButtonClick(PaymentDialogButton.ACCEPT, payload)
+                }) {
+                    Text("Accept")
+                }
+            }
+        },
+        dismissButton = {
+            if (dialog.buttons.contains(PaymentDialogButton.CANCEL)) {
+                TextButton(onClick = { onButtonClick(PaymentDialogButton.CANCEL, null) }) {
+                    Text("Cancel")
+                }
+            }
+            if (dialog.buttons.contains(PaymentDialogButton.RETRY)) {
+                TextButton(onClick = { onButtonClick(PaymentDialogButton.RETRY, null) }) {
+                    Text("Retry")
+                }
+            }
+            if (dialog.buttons.contains(PaymentDialogButton.OTHERS)) {
+                TextButton(onClick = { onButtonClick(PaymentDialogButton.OTHERS, null) }) {
+                    Text("Others")
+                }
+            }
+        },
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+```
+
+---
+
+# 9) How to preserve your existing navigation
+
+If you need to keep **Jetpack Views navigation** exactly as-is, the cleanest approach is:
+
+- Keep your current `NavController` / Fragment navigation destinations
+- In the Compose screen, handle `PaymentUiEffect.NavigateTo(routeId)` or `NavigateToDirections(...)`
+- Call the same navigation methods from the host
+
+Example:
+
+```kotlin
+LaunchedEffect(Unit) {
+    viewModel.uiEffect.collectLatest { effect ->
+        when (effect) {
+            is PaymentUiEffect.NavigateTo -> navController.navigate(effect.routeId)
+            is PaymentUiEffect.ShowToast -> showToast(effect.messageRes)
+            else -> Unit
+        }
+    }
+}
+```
+
+If you are hosting Compose inside the existing fragment, you can also make the composable accept callbacks:
+- `onNavigateToAddAmount`
+- `onNavigateToLoginRedSys`
+- `onShowDialog`
+- `onLaunchIntent`
+
+---
+
+# 10) Important mapping notes from your fragment
+
+To fully replicate the fragment you’ll want to move these into state/effects gradually:
+
+- `btnCard`, `btnCash`, `btnSubscriber`, `btnBizum`
+- `btnAppPayment`, `btnOthersPayment`, `btnCancel`
+- `fabBackToDispatch`
+- `fabLocution`, `fabUvLight`, `fabCourtesyLight`
+- `tvAmount`, `timer`
+- `showDialogFlow`, `redSysPaymentStateFlow`, `sumUpResponseFlow`, etc.
+
+The pattern should be:
+
+- **StateFlow** for current UI state
+- **SharedFlow<PaymentUiEffect>** for one-shot actions:
+  - open dialog
+  - toast
+  - navigate
+  - launch external activity
+  - start app payment auth
+
+---
+
+If you want, I can provide a **second pass** that is even closer to your exact fragment behavior, including:
+
+- full mapping of every flow from `PaymentViewModel` into `PaymentScreenUiState`
+- a complete Compose `PaymentComposeViewModel` that wraps your existing use cases
+- Compose replacements for `CustomTopBar`, `CustomButton`, and `CustomDialog` with more exact visual parity

@@ -1,11 +1,14 @@
 package com.cartoonizer.rag.shared.utils;
 
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.LAYOUT;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.LAYOUTS;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIX;
-import static com.cartoonizer.rag.openai.SimpleExampleOpenAi.PREFIXES;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FILE_NAME;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.getIface;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldIgnore;
+import java.io.File;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -14,12 +17,13 @@ import java.util.Map.Entry;
 import java.util.regex.Pattern;
 
 public class GenerateComposeFiles {
+
     //Revisar: solo procesa Home
     public static void main(String[] args) {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if (!PREFIX.equals(ONLY_THIS)) {
+            if (!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) {
                 continue;
             }
             FILE_NAME = PREFIX + "Fragment.txt";
@@ -27,11 +31,20 @@ public class GenerateComposeFiles {
             String processedAnswerPath = "./processed-files/processed-" + FILE_NAME;
             GeneralAnswerProcessor answerProcessor = new GeneralAnswerProcessor(answerPath, processedAnswerPath);
             answerProcessor.load();
-            
-//            System.out.println("GenerateFiles from " + processedAnswerPath);
+
             GenerateFiles reader = new GenerateFiles(answerProcessor, processedAnswerPath, PREFIX);
             reader.load();
         }
+        System.out.println("GenerarComposeFiles FILES OPEN: " + GenerateFiles.openFiles.size());
+        for (Entry<String, Integer> entry : GenerateFiles.openFiles.entrySet()) {
+            System.out.println("GenerarComposeFiles OPEN " + entry.getKey() + " " + entry.getValue());
+        }
+        System.out.println("GenerarComposeFiles FILES CLOSED: " + GenerateFiles.closedFiles.size());
+        for (Entry<String, Integer> entry : GenerateFiles.closedFiles.entrySet()) {
+            System.out.println("GenerarComposeFiles CLOSED " + entry.getKey() + " " + entry.getValue());
+        }
+        RemoveFilesWithoutContent purge = new RemoveFilesWithoutContent(new File("./generated-files"), true);
+        purge.process();
     }
 
     public static class GenerateFiles extends ReadFile {
@@ -52,8 +65,11 @@ public class GenerateComposeFiles {
         }
         public HashMap<String, String> imports = new HashMap<>();
         public HashMap<String, String> lines = new HashMap<>();
+        public static HashMap<String, Integer> openFiles = new HashMap<>();
+        public static HashMap<String, Integer> closedFiles = new HashMap<>();
         public ArrayList<String> orderedLines = new ArrayList<>();
         public boolean doPrint = true;
+        private String previousLine = "";
 
         @Override
         public void processLine(String line) {
@@ -63,22 +79,32 @@ public class GenerateComposeFiles {
             if (line.trim().startsWith("---")) {
                 return;
             }
+//            if (shouldIgnore(line)) {
+//                return;
+//            }
             if (iface == null) {
-                if ("InfoDispatch".equals(PREFIX)) {
-                    iface = new InfoDispatchBlocks();
-                } else if ("ContactCentral".equals(PREFIX)) {
-                    iface = new ContactCentralBlocks();
-                } else if ("Dashboard".equals(PREFIX)) {
-                    iface = new DashboardBlocks();
-                } else {
-                    iface = new GeneralBlocks();
-                }
+                iface = getIface();
             }
+//            if (line.trim().startsWith("package ")) {
+//                packageFound = true;
+//                line = "";
+//            }
+//            if (packageFound) {
+//                printAlways = true;
+//            }
+//            System.out.println("==> processLine printAlways = " + printAlways + " in " + super.origen.getName() + " " + line);
             line = processBlocks(iface, line);
+            boolean isEnd = iface.isEndTag(line.trim());
+            if (isEnd) {
+                System.out.println("*** GenerateComposeFiles isEndTag line = " + line);
+                printAlways = false;
+            }
+            if (!isEnd && outputPath != null) {
+                printAlways = true;
+            }
 //            System.out.println("*** currentFile = " + currentFile);
 //            System.out.println("=== outputPath = " + outputPath);
             if (printAlways) {
-//                    System.out.println(line);
 // R.string. navigate -> btn_navegar
                 if (line.contains("R.string.btn_notifications")) {
                     line = line.replaceAll(Pattern.quote("R.string.btn_notifications"), "R.string.btn_avisos");
@@ -95,52 +121,53 @@ public class GenerateComposeFiles {
                 if (line.contains("R.string.navigate")) {
                     line = line.replaceAll(Pattern.quote("R.string.navigate"), "R.string.btn_navegar");
                 }
-                if (line.contains("CustomDialog(")) {
+                if (line.contains("CustomDialog(") && !line.contains(PREFIX + "CustomDialog")) {
                     line = line.replaceAll(Pattern.quote("CustomDialog"), PREFIX + "CustomDialog");
                 }
-                if (line.contains(PREFIX + "Effect")) {
+                if (line.contains(PREFIX + "Effect") && !line.contains(PREFIX + "Effect")) {
                     line = line.replaceAll(Pattern.quote(PREFIX + "Effect"), PREFIX + "UiEffect");
                 }
                 if (line.trim().startsWith("fun composeButtonColors(")) {
                     line = "@Composable\n" + line;
                 }
-                if (outputPath.contains(PREFIX + "ComposeViewModel")) {
-                    if (line.trim().startsWith("fun canOpenPendingTrips()")) {
-                        canOpenPendingTrips = true;
-                    }
-                    if (canOpenPendingTrips) {
-                        doPrint = false;
-                    }
-                    if (line.contains("fun onPendingClick() = canOpenPendingTrips()")) {
-                        line = line.replaceAll(Pattern.quote("fun onPendingClick() = canOpenPendingTrips()"), "fun onPendingClick() = emitNav(HomeUiEvent.OpenPendingTrips)");
-                    }
+                    if (outputPath != null && outputPath.contains(PREFIX + "ComposeViewModel")) {
+                        if (line.trim().startsWith("fun canOpenPendingTrips()")) {
+                            canOpenPendingTrips = true;
+                        }
+                        if (canOpenPendingTrips) {
+                            doPrint = false;
+                        }
+                        if (line.contains("fun onPendingClick() = canOpenPendingTrips()")) {
+                            line = line.replaceAll(Pattern.quote("fun onPendingClick() = canOpenPendingTrips()"), "fun onPendingClick() = emitNav(HomeUiEvent.OpenPendingTrips)");
+                        }
                 }
-                if (outputPath.contains("DialogState.")) {
-                    if (line.contains("dialogState?.let")) {
-                        insideDialogStateLet = true;
-                    }
+                if (outputPath != null && outputPath.contains("DialogState.")) {
+                        if (line.contains("dialogState?.let")) {
+                            insideDialogStateLet = true;
+                        }
                     if (insideDialogStateLet && (line.contains("dialogState?.let") || line.contains("CustomDialog(") || 
                             line.contains("state = dialog,") || line.contains("onDismiss = { dialogState") || 
                             line.trim().equals(")") || line.trim().equals("}"))
                             ) {
-                        doPrint = false;
-                    }
+                            doPrint = false;
+                        }
                 }
-                if (outputPath.contains(PREFIX + "ComposeViewModel")) {
-                    if (canOpenPendingTrips && line.trim().startsWith("fun changeStateHiredManual")) {
-                        canOpenPendingTrips = false;
-                        doPrint = true;
+                if (outputPath != null && outputPath.contains(PREFIX + "ComposeViewModel")) {
+                        if (canOpenPendingTrips && line.trim().startsWith("fun changeStateHiredManual")) {
+                            canOpenPendingTrips = false;
+                            doPrint = true;
+                        }
                     }
-                }
-                print(line);
-                if (outputPath.contains("DialogState.") && line.trim().equals("}")) {
+                if (outputPath != null && outputPath.contains("DialogState.") && line.trim().equals("}")) {
                     doPrint = true;
                     insideDialogStateLet = false;
                 }
+                print(line);
             }
+            previousLine = line;
 
 // End processing
-            if (line.trim().contains(iface.getEndTag())) {
+            if (isEnd) {
                 printAlways = false;
             }
         }
@@ -150,17 +177,47 @@ public class GenerateComposeFiles {
             super.end();
             if (writer != null) {
                 closeFile();
+            } else {
+                String processedAnswerPath = this.answerProcessor.origen.getName();
+                System.out.println("*** DEBUG!!! GenerateComposeFiles writer IS NULL in " + processedAnswerPath);
+            }
+        }
+
+        @Override
+        public void begin() {
+            super.begin();
+            System.out.println("*** " + super.origen.getName() + " BLOCKS:");
+            for (String entry : answerProcessor.blocksList) {
+                System.out.println("    " + entry);
+            }
+            System.out.println("*** FILES:");
+            for (Map.Entry<String, String> entry : answerProcessor.blockFiles.entrySet()) {
+                System.out.println("    " + entry.getKey() + " -> " + entry.getValue());
             }
         }
 
         private void closeFile() {
-            System.out.println("*** closeFile outputPath " + outputPath + " writer " + (writer == null ? " IS NULL" : " NOT NULL"));
-            if (secondPass != null && writer != null) {
-                secondPass.printAll(lines, orderedLines);
+            String processedAnswerPath = this.answerProcessor.origen.getName();
+            if (outputPath != null && writer != null) {
+                if (closedFiles.get(outputPath) == null) {
+                    closedFiles.put(outputPath, orderedLines.size());
+                    System.out.println("*** generateComposeFile CLOSE FILE outputPath " + outputPath + " orderedLines = " + orderedLines.size());
+                } else {
+                    System.out.println("*** generateComposeFile CLOSE FILE outputPath " + outputPath + " ALREADY ADDED new orderedLines = " + orderedLines.size());
+                }
+                if (secondPass != null && writer != null) {
+                    secondPass.printAll(lines, orderedLines);
+                } else {
+                    System.out.println("*** generateComposeFile NOT CALLING printAll outputPath " + outputPath + " orderedLines = " + orderedLines.size());
+                }
+                if (writer != null) {
+                    writer.close();
+                }
+            } else {
+                System.out.println("*** generateComposeFile CLOSE FILE outputPath = " + (outputPath == null ? "NULL" : "NOT NULL") + " writer = " + (writer == null ? "NULL" : "NOT NULL"));
             }
-            if (writer != null) {
-                writer.close();
-            }
+//            outputPath = null;
+//            writer = null;
         }
 
         private void printOtherImports(String path) {
@@ -169,32 +226,40 @@ public class GenerateComposeFiles {
             print("import androidx.compose.runtime.mutableStateOf");
             print("import androidx.compose.runtime.remember");
             print("import ifac.td.taxi.R");
-            if (path.contains("ViewModel")) {
-                print("import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl");
-                print("import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip");
-            }
-            if (path.endsWith("Screen.kt")) {
-                print("import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel");
-            }
+//            if (path.contains("ViewModel")) {
+//                print("import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl");
+//                print("import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip");
+//            }
             if (path.contains("CustomDialog")) {
                 print("import androidx.compose.ui.window.Dialog");
             }
-                
+
         }
 
         private void openFile(String path, String packageName) {
-            System.out.println("*** openFile " + path);
             if (path != null && !path.isEmpty()) {
                 try {
+                    if (path.contains("CustomDialog") && !path.contains(PREFIX + "CustomDialog")) {
+                        path = path.replaceAll("CustomDialog", PREFIX + "CustomDialog");
+                    }
+                    if (openFiles.get(path) == null) {
+                        openFiles.put(path, orderedLines.size());
+                    } else {
+                        return;
+                    }
                     outputPath = path;
+                    System.out.println("*** GenerarComposeFiles OPEN FILE orderedLines size = " + orderedLines.size() + " " + path);
                     if (writer != null) {
                         closeFile();
                     }
                     writer = new PrintWriter(outputPath);
-                    secondPass = new SecondPass(writer, outputPath);
+                    secondPass = new SecondPass(this, writer, outputPath);
                     lines.clear();
                     orderedLines.clear();
                     print("package " + packageName);
+                    if (path.endsWith("ViewModel.kt")) {
+                        print("import android.app.Application");
+                    }
                     for (Map.Entry<String, String> entry : secondPass.internalImports.entrySet()) {
                         print(entry.getKey());
                     }
@@ -205,6 +270,7 @@ public class GenerateComposeFiles {
                     imports.clear();
                     this.packageName = packageName;
                     doPrint = true;
+                    printAlways = true;
                 } catch (Exception ex) {
                     System.out.println("*** EXCEPTION openFile " + path + ": " + ex);
                     writer = null;
@@ -212,8 +278,8 @@ public class GenerateComposeFiles {
             }
         }
         private int numLines = 0;
+
         private void print(String line) {
-//            System.out.println("*** doPrint = " + doPrint + " " + line);
             if (doPrint) {
                 numLines++;
                 orderedLines.add(line);
@@ -222,20 +288,29 @@ public class GenerateComposeFiles {
         }
 
         private String processBlocks(IGeneralBlocks iface, String line) {
+            if (iface == null) {
+                iface = getIface();
+            }
             for (int i = 0; i < answerProcessor.blocksList.length; i++) {
-                if (line.trim().startsWith("This ") || line.trim().startsWith("You ") || line.trim().startsWith("Single ") || 
-                        line.contains("Note: ") || line.trim().startsWith("- ") || line.trim().startsWith("Only one ") || line.trim().startsWith("Use ")) {
-                    line = "// " + line;
-                }
-                if (line.trim().contains(answerProcessor.blocksList[i])) {
-                    line = "// " + line;
+//                if (shouldIgnore(line)) {
+//                    line = "// " + line;
+//                }
+                if (answerProcessor.blocksList[i].replaceAll("// ", "").contains(line.replaceAll("// ", ""))) {
+//                    line = "// " + line;
                     printAlways = true;
-                    if (outputPath != null && !outputPath.isEmpty()) {
+                    if (answerProcessor.blockFilesList[i] != null && openFiles.get(answerProcessor.blockFilesList[i]) != null) {
+                        continue;
+                    }
+                    if (outputPath != null && !outputPath.isEmpty() && !answerProcessor.blockFilesList[i].equals(outputPath)) {
                         closeFile();
                     }
                     outputPath = answerProcessor.blockFilesList[i];
-                    System.out.println("*** processBlocks call openFile " + outputPath + " block = " + answerProcessor.blocksList[i]);
+                    if (openFiles.get(outputPath) == null) {
+                        openFiles.put(outputPath, orderedLines.size());
+                    }
+                    System.out.println("*** processBlocks line = " + numLines + " call openFile " + outputPath + " block = " + answerProcessor.blocksList[i] + " line = " + line);
                     openFile(outputPath, answerProcessor.packagesArray[i]);
+                    break;
                 }
             }
             return line;
@@ -246,40 +321,50 @@ public class GenerateComposeFiles {
         private String outputPath;
         private HashMap<String, String> addedImports = new HashMap<>();
         private HashMap<String, String> internalImports = new HashMap<>();
+        private GenerateFiles generateFiles;
+        public boolean packageSet = false;
         private SecondPass() {
-            
+
         }
-        public SecondPass(PrintWriter writer, String outputPath) {
+        public SecondPass(GenerateFiles generateFiles, PrintWriter writer, String outputPath) {
             this.writer = writer;
             this.outputPath = outputPath;
+            this.generateFiles = generateFiles;
         }
+
         private void print(String line) {
             // print in second pass
-                if (writer != null) {
-                    writer.println(line);
-                    writer.flush();
-                } else {
-                    System.out.println("*** print writer IS NULL " );
-                }
+            if (shouldIgnore(line) || line.trim().startsWith("#") || (line.trim().startsWith("package ") && packageSet)) {
+                return;
+            }
+            if (line.trim().startsWith("package ")) {
+                packageSet = true;
+            }
+            if (writer != null) {
+                writer.println(line);
+                writer.flush();
+            } else {
+                System.out.println("*** print writer IS NULL ");
+            }
         }
 
         private void addImportForInternalVars(HashMap<String, String> lines, ArrayList<String> orderedLines) {
 //            System.out.println("==> addImportForInternalVars " + outputPath + " orderedLines  " + orderedLines.size());
             for (String line : orderedLines) {
                 if (line.contains(PREFIX + "ComposeViewModel") && !line.startsWith("import ") && !outputPath.contains("ComposeViewModel")) {
-                        String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
+                    String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
+                    // internalImports.put(lineImport, lineImport);
                 } else if (line.contains(PREFIX + "CustomDialog") && !line.startsWith("import ")) {
-                        String lineImport = "import ifac.td.taxi.ui.screen.components." + PREFIX + "CustomDialog";
+                    String lineImport = "import ifac.td.taxi.ui.screen.components." + PREFIX + "CustomDialog";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
+                    // internalImports.put(lineImport, lineImport);
                 } else if (line.contains(PREFIX + "Screen") && !line.startsWith("import ")) {
-                        String lineImport = "import ifac.td.taxi.ui.screen." + PREFIX + "Screen";
+                    String lineImport = "import ifac.td.taxi.ui.screen." + PREFIX + "Screen";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
-                } else if ((line.contains(PREFIX + "DialogState") || line.contains(PREFIX + "DialogType") || line.contains(PREFIX + "ButtonsState") || line.contains(PREFIX + "Buttons")) &&
-                        !line.startsWith("import ")) {
+                    // internalImports.put(lineImport, lineImport);
+                } else if ((line.contains(PREFIX + "DialogState") || line.contains(PREFIX + "DialogType") || line.contains(PREFIX + "ButtonsState") || line.contains(PREFIX + "Buttons"))
+                        && !line.startsWith("import ")) {
                     if (line.contains(PREFIX + "DialogState")) {
                         String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogState";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
@@ -302,14 +387,16 @@ public class GenerateComposeFiles {
         }
 
         private void printAll(HashMap<String, String> lines, ArrayList<String> orderedLines) {
-            addImportForInternalVars(lines, orderedLines);
-//            System.out.println("*** printAll " + outputPath + " orderedLines  " + orderedLines.size());
+//            addImportForInternalVars(lines, orderedLines);
+            System.out.println("*** printAll " + outputPath + " orderedLines  " + orderedLines.size());
+            int linesPrinted = 0;
             for (String line : orderedLines) {
                 if (line.trim().startsWith("import ")) {
                     String val = internalImports.get(line);
                     String added = addedImports.get(line);
                     if (val == null && added == null) {
                         print(line);
+                        linesPrinted++;
                         if (added == null) {
                             addedImports.put(line, line);
                         }
@@ -321,13 +408,16 @@ public class GenerateComposeFiles {
                     }
                 } else {
                     print(line);
+                    linesPrinted++;
                     if (line.startsWith("package ")) {
                         for (Entry<String, String> entry : internalImports.entrySet()) {
                             print(entry.getKey());
+                            linesPrinted++;
                         }
                     }
                 }
             }
+            System.out.println("*** printAll END " + " linesPrinted =  " + linesPrinted + " in " + outputPath);
         }
     }
 }

@@ -1,0 +1,573 @@
+I’ll provide:
+1. `PortugalInvoiceScreen` composable
+2. `PortugalInvoiceViewModel` refactor with `UiState + UiEffect`
+3. `PortugalInvoiceButtonsState` with button styling helpers
+4. Compose `PortugalInvoiceCustomDialog` equivalent
+5. Lifecycle-aware state/effect collection
+6. Navigation preservation notes
+---
+# 1) Compose UI state, effects, and button state
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 11-1: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+@Immutable
+data class PortugalInvoiceUiState(
+    val countryOptions: List<String> = emptyList(),
+    val selectedCountryIndex: Int = 0,
+    val nif: String = "",
+    val name: String = "",
+    val localidade: String = "",
+    val externalCustomer: Boolean = false,
+    val isAcceptLoading: Boolean = false,
+    val showExternalCustomerDialog: Boolean = false,
+) {
+    val selectedCountry: String
+        get() = countryOptions.getOrNull(selectedCountryIndex).orEmpty()
+    val isPortugalSelected: Boolean
+        get() = selectedCountryIndex == 0
+}
+sealed interface PortugalInvoiceUiEffect {
+    data object NavigateBack : PortugalInvoiceUiEffect
+    data class NavigateToReceiptHistory(val tripId: Long = -1L) : PortugalInvoiceUiEffect
+    data object ShowExternalCustomerDialog : PortugalInvoiceUiEffect
+    data object HideExternalCustomerDialog : PortugalInvoiceUiEffect
+    data object EnableAcceptButton : PortugalInvoiceUiEffect
+}
+@Immutable
+data class PortugalInvoiceButtonsState(
+    val cancel: ButtonUiState = ButtonUiState(),
+    val accept: ButtonUiState = ButtonUiState(),
+)
+@Immutable
+data class ButtonUiState(
+    val text: String = "",
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val visible: Boolean = true,
+    val backgroundColor: Color = Color.Unspecified,
+    val contentColor: Color = Color.Unspecified,
+    val disabledBackgroundColor: Color = Color.Unspecified,
+    val disabledContentColor: Color = Color.Unspecified,
+)
+```
+---
+# 2) ViewModel with `UiState + UiEffect`
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 58-2: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.utils.CountryUtils
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCaseImpl
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toInfoDispatchModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+class PortugalInvoiceComposeViewModel(
+    context: Application,
+    private val portugalUseCase: PortugalUseCase,
+    private val tripUseCase: TripUseCase,
+    private val ticketUseCase: TicketUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val printerUseCase: PrinterUseCase,
+) : BaseViewModel(context) {
+    private val _uiState = MutableStateFlow(
+        PortugalInvoiceUiState(
+            countryOptions = CountryUtils.arrayCountries.toList()
+        )
+    )
+    val uiState = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<PortugalInvoiceUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+    fun onCancelClick() {
+        viewModelScope.launch {
+            _uiEffect.emit(PortugalInvoiceUiEffect.NavigateBack)
+        }
+    }
+    fun onCountrySelected(index: Int) {
+        _uiState.update { it.copy(selectedCountryIndex = index) }
+    }
+    fun onNifChanged(value: String) {
+        _uiState.update { it.copy(nif = value) }
+    }
+    fun onNameChanged(value: String) {
+        _uiState.update { it.copy(name = value) }
+    }
+    fun onLocalidadeChanged(value: String) {
+        _uiState.update { it.copy(localidade = value) }
+    }
+    fun onAcceptClicked() {
+        val state = _uiState.value
+        if (state.isAcceptLoading) return
+        _uiState.update { it.copy(isAcceptLoading = true) }
+        viewModelScope.launch {
+            val selectedCountry = state.selectedCountry
+            val isPortugalSelected = selectedCountryIndexIsPortugal(state.selectedCountryIndex)
+            if (isPortugalSelected && !state.externalCustomer) {
+                if (isValidPortugalNif(state.nif)) {
+                    acceptInvoice(
+                        nif = state.nif,
+                        name = state.name,
+                        localidade = state.localidade,
+                        country = selectedCountry
+                    )
+                } else {
+                    _uiState.update { it.copy(isAcceptLoading = false, showExternalCustomerDialog = true) }
+                    _uiEffect.emit(PortugalInvoiceUiEffect.ShowExternalCustomerDialog)
+                }
+            } else {
+                acceptInvoice(
+                    nif = state.nif,
+                    name = state.name,
+                    localidade = state.localidade,
+                    country = selectedCountry
+                )
+            }
+        }
+    }
+    fun onExternalCustomerDialogResult(accepted: Boolean) {
+        viewModelScope.launch {
+            if (accepted) {
+                _uiState.update {
+                    it.copy(
+                        externalCustomer = true,
+                        showExternalCustomerDialog = false,
+                        isAcceptLoading = false
+                    )
+                }
+                _uiEffect.emit(PortugalInvoiceUiEffect.HideExternalCustomerDialog)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        showExternalCustomerDialog = false,
+                        isAcceptLoading = false
+                    )
+                }
+                _uiEffect.emit(PortugalInvoiceUiEffect.HideExternalCustomerDialog)
+            }
+        }
+    }
+    fun setExternalCustomer(externalCustomer: Boolean) {
+        _uiState.update { it.copy(externalCustomer = externalCustomer) }
+    }
+    fun selectedCountryIndexIsPortugal(index: Int): Boolean = index == 0
+    fun isValidPortugalNif(nif: String): Boolean {
+        // preserve original FieldType.NIF_PORTUGAL behavior with your validation rule
+        return nif.length == 9 && nif.all { it.isDigit() }
+    }
+    fun acceptInvoice(
+        nif: String,
+        name: String,
+        localidade: String,
+        country: String
+    ) {
+        viewModelScope.launch {
+            val getLastTrip = tripUseCase.getLastTrip()
+            getLastTrip?.let { trip ->
+                trip.nif = nif
+                trip.name = name
+                trip.localidade = localidade
+                trip.country = country
+                trip.iso = CountryUtils.arrayISOCountries[CountryUtils.arrayCountries.indexOf(country)]
+                tripUseCase.updateTripPortugalThings(
+                    trip.id, trip.nif, trip.name, trip.localidade, trip.country, trip.iso
+                )
+                portugalUseCase.calculateHashPortugal(true, trip)
+                prepareTicket(trip)
+            }
+            _uiState.update { it.copy(isAcceptLoading = false) }
+        }
+    }
+    private suspend fun prepareTicket(trip: Trip) {
+        val dispatch: InfoDispatchModel? = if (trip.fromDispatch) {
+            dispatchUseCase.getDispatchByTripId(trip.id)?.let {
+                it.id?.let { _ -> it.toInfoDispatchModel() }
+            }
+        } else {
+            null
+        }
+        val callback = object : TicketUseCaseImpl.PrepareTicketCallback {
+            override fun onSuccess() {
+                viewModelScope.launch {
+                    _uiEffect.emit(PortugalInvoiceUiEffect.NavigateToReceiptHistory(-1L))
+                }
+            }
+        }
+        shiftStatusUseCase.getStatus()?.let { shiftStatus ->
+            ticketUseCase.prepareTicket(
+                trip = trip,
+                dispatch = dispatch,
+                shiftStatus = shiftStatus,
+                portugalByPass = true,
+                ticketPrinted = true,
+                callback = callback
+            )
+        }
+    }
+}
+```
+---
+# 3) Compose screen replacing the Fragment
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 226-3: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.domain.utils.CountryUtils
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.fields.FieldType
+import ifac.td.taxi.viewmodel.PortugalInvoiceViewModel
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun PortugalInvoiceScreen(
+    viewModel: PortugalInvoiceComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateToReceiptHistory: (Long) -> Unit,
+    showHeader: Boolean = false, // preserve original behavior, handled by host if needed
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState = remember(uiState) {
+        PortugalInvoiceButtonsState(
+            cancel = ButtonUiState(
+                text = "Cancelar",
+                enabled = true,
+                visible = true,
+                backgroundColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            ),
+            accept = ButtonUiState(
+                text = "Aceitar",
+                enabled = !uiState.isAcceptLoading,
+                loading = uiState.isAcceptLoading,
+                visible = true,
+                backgroundColor = if (uiState.isAcceptLoading)
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                else
+                    MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            )
+        )
+    }
+    var showDialog by remember { mutableStateOf(uiState.showExternalCustomerDialog) }
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is PortugalInvoiceUiEffect.NavigateBack -> onNavigateBack()
+                is PortugalInvoiceUiEffect.NavigateToReceiptHistory -> onNavigateToReceiptHistory(effect.tripId)
+                PortugalInvoiceUiEffect.ShowExternalCustomerDialog -> showDialog = true
+                PortugalInvoiceUiEffect.HideExternalCustomerDialog -> showDialog = false
+                PortugalInvoiceUiEffect.EnableAcceptButton -> Unit
+            }
+        }
+    }
+    if (showDialog) {
+        PortugalExternalCustomerDialog(
+            onCancel = {
+                showDialog = false
+                viewModel.onExternalCustomerDialogResult(false)
+            },
+            onAccept = {
+                showDialog = false
+                viewModel.onExternalCustomerDialogResult(true)
+            }
+        )
+    }
+    PortugalInvoiceContent(
+        uiState = uiState,
+        buttonsState = buttonsState,
+        onCancel = viewModel::onCancelClick,
+        onAccept = viewModel::onAcceptClicked,
+        onCountrySelected = viewModel::onCountrySelected,
+        onNifChanged = viewModel::onNifChanged,
+        onNameChanged = viewModel::onNameChanged,
+        onLocalidadeChanged = viewModel::onLocalidadeChanged,
+    )
+}
+@Composable
+fun PortugalInvoiceContent(
+    uiState: PortugalInvoiceUiState,
+    buttonsState: PortugalInvoiceButtonsState,
+    onCancel: () -> Unit,
+    onAccept: () -> Unit,
+    onCountrySelected: (Int) -> Unit,
+    onNifChanged: (String) -> Unit,
+    onNameChanged: (String) -> Unit,
+    onLocalidadeChanged: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        // Replace with your actual fields
+        OutlinedTextField(
+            value = uiState.nif,
+            onValueChange = onNifChanged,
+            label = { Text("NIF") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = uiState.name,
+            onValueChange = onNameChanged,
+            label = { Text("Nome") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = uiState.localidade,
+            onValueChange = onLocalidadeChanged,
+            label = { Text("Localidade") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        CountryDropdown(
+            countries = uiState.countryOptions,
+            selectedIndex = uiState.selectedCountryIndex,
+            onSelected = onCountrySelected
+        )
+        Spacer(Modifier.weight(1f))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            ComposeCustomButton(
+                state = buttonsState.cancel,
+                onClick = onCancel
+            )
+            ComposeCustomButton(
+                state = buttonsState.accept,
+                onClick = onAccept
+            )
+        }
+    }
+}
+```
+---
+# 4) Compose button state helpers matching the custom button feel
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 365-4: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+@Composable
+fun ComposeCustomButton(
+    state: ButtonUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!state.visible) return
+    val bg = if (state.enabled) state.backgroundColor else state.disabledBackgroundColor.takeOrElse {
+        state.backgroundColor.copy(alpha = 0.4f)
+    }
+    val fg = if (state.enabled) state.contentColor else state.disabledContentColor.takeOrElse {
+        state.contentColor.copy(alpha = 0.6f)
+    }
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .widthIn(min = 120.dp)
+            .background(bg, RoundedCornerShape(12.dp))
+            .clickable(enabled = state.enabled && !state.loading) { onClick() }
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (state.loading) {
+            CircularProgressIndicator(
+                color = fg,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(20.dp)
+            )
+        } else {
+            Text(
+                text = state.text,
+                color = fg,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+fun Color.takeOrElse(default: () -> Color): Color =
+    if (this == Color.Unspecified) default() else this
+```
+---
+# 5) Compose dropdown for country selection
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 422-5: import androidx.compose.material3.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CountryDropdown(
+    countries: List<String>,
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = countries.getOrNull(selectedIndex).orEmpty()
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selected,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("País") },
+            modifier = Modifier.menuAnchor(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            countries.forEachIndexed { index, country ->
+                DropdownMenuItem(
+                    text = { Text(country) },
+                    onClick = {
+                        onSelected(index)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+```
+---
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.unit.dp
+@Composable
+fun PortugalExternalCustomerDialog(
+    onCancel: () -> Unit,
+    onAccept: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 8.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(20.dp)
+            ) {
+                Text(
+                    text = "Cliente externo",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Este cliente parece ser externo. Deseja continuar?",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onCancel) {
+                        Text("Cancelar")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onAccept) {
+                        Text("Aceitar")
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+# 7) Navigation preservation
+```kotlin
+onNavigateToReceiptHistory = { tripId ->
+    navController.navigate("receiptHistory/$tripId")
+}
+```
+```kotlin
+when (effect) {
+    is PortugalInvoiceUiEffect.NavigateToReceiptHistory -> {
+        navController.navigate(
+            PortugalInvoiceFragmentDirections
+                .actionPortugalInvoiceFragmentToReceiptHistoryFragment(effect.tripId)
+        )
+    }
+}
+```
+---
+# 8) If you want a direct `Fragment -> ComposeView` migration
+```kotlin
+class PortugalInvoiceComposeFragment : Fragment() {
+    private val viewModel: PortugalInvoiceViewModel by viewModel()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ) = ComposeView(requireContext()).apply {
+        setContent {
+            PortugalInvoiceScreen(
+                viewModel = viewModel,
+                onNavigateBack = { findNavController().popBackStack() },
+                onNavigateToReceiptHistory = { tripId ->
+                    findNavController().navigate(
+                        PortugalInvoiceFragmentDirections
+                            .actionPortugalInvoiceFragmentToReceiptHistoryFragment(tripId)
+                    )
+                }
+            )
+        }
+    }
+}
+```
+---
+# Notes on matching the original XML/button behavior
+1. a more exact XML-to-Compose port of `fragment_portugal_invoice.xml`,
+2. a Material3 `CustomButton` matching your old `CustomButton` API more closely,
+3. a fully typed `PortugalInvoiceContract` file split into `State`, `Effect`, `Action`, and `Reducer`.

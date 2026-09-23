@@ -1,0 +1,433 @@
+I’ll split it into clear parts.
+---
+# 1) Compose UI: `TotalizersScreen`
+## What it does
+---
+## `TotalizersUiState`, `TotalizersUiEffect`, `TotalizersButtonsState`
+```kotlin
+package ifac.td.taxi.ui.screen.totalizers
+// # Block 8-1: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+@Immutable
+data class TotalizersUiState(
+    val isLoading: Boolean = false,
+    val rawTotalizersContent: String? = null,
+    val ticketContent: String = "",
+    val showNoContentDialog: Boolean = false,
+    val buttons: TotalizersButtonsState = TotalizersButtonsState()
+)
+sealed interface TotalizersUiEffect {
+    data object NavigateBack : TotalizersUiEffect
+    data class PrintTicket(val content: String) : TotalizersUiEffect
+    data class ShowToast(val messageRes: Int) : TotalizersUiEffect
+    data object HideNoContentDialog : TotalizersUiEffect
+}
+```
+---
+## Button state matching XML behavior
+Because the fragment logic is simple:
+```kotlin
+package ifac.td.taxi.ui.screen.totalizers
+// # Block 30-2: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+@Immutable
+data class TotalizersButtonsState(
+    val cancel: ButtonUiState = ButtonUiState(
+        textRes = android.R.string.cancel,
+        visible = true,
+        enabled = true,
+        containerColor = Color(0xFFE0E0E0),
+        contentColor = Color(0xFF1F1F1F)
+    ),
+    val print: ButtonUiState = ButtonUiState(
+        textRes = R.string.print,
+        visible = true,
+        enabled = true,
+        containerColor = Color(0xFF1976D2),
+        contentColor = Color.White
+    )
+) {
+    companion object {
+        fun from(hasContent: Boolean): TotalizersButtonsState {
+            return TotalizersButtonsState(
+                cancel = ButtonUiState(
+                    textRes = android.R.string.cancel,
+                    visible = true,
+                    enabled = true,
+                    containerColor = Color(0xFFE0E0E0),
+                    contentColor = Color(0xFF1F1F1F)
+                ),
+                print = ButtonUiState(
+                    textRes = R.string.print,
+                    visible = true,
+                    enabled = true,
+                    containerColor = if (hasContent) Color(0xFF1976D2) else Color(0xFFBDBDBD),
+                    contentColor = if (hasContent) Color.White else Color(0xFF757575)
+                )
+            )
+        }
+    }
+}
+@Immutable
+data class ButtonUiState(
+    val textRes: Int,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val containerColor: Color,
+    val contentColor: Color
+)
+```
+---
+## ViewModel using `UiState + UiEffect`
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 85-3: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.taximeter.events.TotalizersRetrievedEvent
+import ifac.td.taxi.R
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+class TotalizersComposeViewModel(
+    application: Application,
+    private val ticketUseCase: TicketUseCase
+) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(TotalizersUiState())
+    val uiState: StateFlow<TotalizersUiState> = _uiState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<TotalizersUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<TotalizersUiEffect> = _uiEffect.asSharedFlow()
+    fun loadTotalizersTicket(taximeterTotalizersFlow: TotalizersRetrievedEvent?) {
+        viewModelScope.launch {
+            val rawTicket = taximeterTotalizersFlow?.let {
+                ticketUseCase.prepareTotalizersTicket(it)
+            }
+            val hasContent = !rawTicket.isNullOrEmpty()
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                rawTotalizersContent = rawTicket,
+                ticketContent = rawTicket ?: getApplication<Application>()
+                    .getString(R.string.no_active_totalizers_with_data),
+                buttons = TotalizersButtonsState.from(hasContent)
+            )
+            if (rawTicket == null) {
+                // Mirrors fragment behavior: no ticket content; user can still press print and get toast.
+            }
+        }
+    }
+    fun onCancelClicked() {
+        _uiEffect.tryEmit(TotalizersUiEffect.NavigateBack)
+    }
+    fun onPrintClicked() {
+        val content = uiState.value.rawTotalizersContent
+        if (!content.isNullOrEmpty()) {
+            _uiEffect.tryEmit(TotalizersUiEffect.PrintTicket(content))
+        } else {
+            _uiEffect.tryEmit(TotalizersUiEffect.ShowToast(R.string.no_totalizers_to_print))
+        }
+    }
+    fun dismissNoContentDialog() {
+        _uiState.value = _uiState.value.copy(showNoContentDialog = false)
+        _uiEffect.tryEmit(TotalizersUiEffect.HideNoContentDialog)
+    }
+}
+```
+---
+# 2) Compose screen implementation
+```kotlin
+package ifac.td.taxi.ui.screen.totalizers
+// # Block 146-4: import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import ifac.td.taxi.R
+@Composable
+fun TotalizersScreen(
+    viewModel: TotalizersComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onPrintTicket: (String) -> Unit,
+    onShowToast: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is TotalizersUiEffect.NavigateBack -> onNavigateBack()
+                is TotalizersUiEffect.PrintTicket -> onPrintTicket(effect.content)
+                is TotalizersUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                TotalizersUiEffect.HideNoContentDialog -> Unit
+            }
+        }
+    }
+    Scaffold(
+        modifier = modifier.fillMaxSize()
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(16.dp)
+        ) {
+            Text(
+                text = uiState.ticketContent,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                TotalizersButton(
+                    state = uiState.buttons.cancel,
+                    onClick = viewModel::onCancelClicked
+                )
+                TotalizersButton(
+                    state = uiState.buttons.print,
+                    onClick = viewModel::onPrintClicked
+                )
+            }
+        }
+    }
+    if (uiState.showNoContentDialog) {
+        TotalizersCustomDialog(
+            title = "Information",
+            message = "No totalizers to print",
+            confirmText = "OK",
+            onConfirm = viewModel::dismissNoContentDialog,
+            onDismiss = viewModel::dismissNoContentDialog
+        )
+    }
+}
+```
+---
+# 3) Compose button that mimics custom button styling
+```kotlin
+package ifac.td.taxi.ui.screen.totalizers
+// # Block 235-5: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.sizeIn
+@Composable
+fun TotalizersButton(
+    state: ButtonUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!state.visible) return
+    Box(
+        modifier = modifier
+            .background(state.containerColor, RoundedCornerShape(12.dp))
+            .clickable(enabled = state.enabled, onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 12.dp)
+            .defaultMinSize(minWidth = 120.dp)
+            .alpha(if (state.enabled) 1f else 0.6f)
+    ) {
+        Text(
+            text = androidx.compose.ui.res.stringResource(state.textRes),
+            color = state.contentColor,
+            fontSize = 16.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+```
+---
+# 4) Compose `TotalizersCustomDialog` matching the XML/custom dialog pattern
+```kotlin
+package ifac.td.taxi.ui.screen.totalizers
+// # Block 281-6: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+@Composable
+fun TotalizersCustomDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    dismissText: String? = null,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    onOutsideClickDismiss: Boolean = true
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0x66000000))
+            .clickable(enabled = onOutsideClickDismiss) { onDismiss() },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(min = 280.dp, max = 360.dp)
+                .clickable(enabled = false) {}
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dismissText != null) {
+                        Button(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFE0E0E0),
+                                contentColor = Color.Black
+                            )
+                        ) {
+                            Text(dismissText)
+                        }
+                    }
+                    Button(
+                        onClick = onConfirm,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF1976D2),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text(confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+# 5) Compose navigation preservation
+Your fragment behavior had:
+In Compose, preserve that at the screen boundary:
+```kotlin
+@Composable
+fun TotalizersRoute(
+    viewModel: TotalizersComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onPrintTicket: (String) -> Unit,
+    onShowToast: (Int) -> Unit
+) {
+    TotalizersScreen(
+        viewModel = viewModel,
+        onNavigateBack = onNavigateBack,
+        onPrintTicket = onPrintTicket,
+        onShowToast = onShowToast
+    )
+}
+```
+Then in your `Activity` or NavHost parent:
+```kotlin
+TotalizersRoute(
+    viewModel = totalizersViewModel,
+    onNavigateBack = { navController.popBackStack() },
+    onPrintTicket = { content -> sharedViewModel.printTicket(content.addTicketLines()) },
+    onShowToast = { resId -> Toast.makeText(context, context.getString(resId), Toast.LENGTH_SHORT).show() }
+)
+```
+---
+# 7) Notes on exact XML behavior
+Your fragment code suggests:
+  `R.string.no_active_totalizers_with_data`
+---
+# 8) Full minimal usage example
+```kotlin
+@Composable
+fun TotalizersRouteExample(
+    viewModel: TotalizersComposeViewModel,
+    sharedViewModel: MainActivityViewModel,
+    navigateBack: () -> Unit,
+    showToast: (Int) -> Unit
+) {
+    LaunchedEffect(Unit) {
+        viewModel.loadTotalizersTicket(sharedViewModel.taximeterTotalizersFlow.value)
+    }
+    TotalizersScreen(
+        viewModel = viewModel,
+        onNavigateBack = navigateBack,
+        onPrintTicket = { content ->
+            sharedViewModel.printTicket(content.addTicketLines())
+        },
+        onShowToast = showToast
+    )
+}
+```
+---
+1. a **full `NavHost` integration example** for this screen  
+2. a **Koin Compose module** for `TotalizersComposeViewModel`  
+3. a **closer replica of your `CustomButton` XML styling** once you share that layout/component code

@@ -1,0 +1,796 @@
+1. **Compose UI (`ReceiptHistoryScreen`)**
+2. **Compose-friendly ViewModel architecture (`ReceiptHistoryComposeViewModel`)**
+3. **State holders for buttons and dialog**
+4. **Compose `ReceiptHistoryCustomDialog` equivalent**
+I’ll also show how to preserve navigation via `NavController`/`NavDirections`.
+---
+# 1) Compose screen
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 9-1: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.rememberCoroutineScope
+import androidx.navigation.NavController
+import androidx.navigation.NavDirections
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.ui.screen.compose.model.*
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.launch
+@Composable
+fun ReceiptHistoryRoute(
+    ticketId: Long,
+    navController: NavController,
+    viewModel: ReceiptHistoryComposeViewModel,
+    onShowHeader: (Boolean) -> Unit = {},
+    onShareImage: (android.net.Uri) -> Unit = {},
+    onToast: (Int) -> Unit = {}
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
+    val dialogState by viewModel.dialogState.collectAsStateWithLifecycle()
+    // Equivalent of onResume()
+    LifecycleStartEffect(ticketId) {
+        viewModel.onScreenStarted(ticketId)
+        onShowHeader(true)
+        onStopOrDispose { }
+    }
+    // SharedFlow effects -> one pipeline
+    CollectReceiptHistoryEffects(
+        effects = viewModel.uiEffect,
+        navController = navController,
+        onShareImage = onShareImage,
+        onToast = onToast,
+        onOpenDialog = { viewModel.openDialog(it) }
+    )
+    ReceiptHistoryScreen(
+        uiState = uiState,
+        buttonsState = buttonsState,
+        dialogState = dialogState,
+        onEvent = viewModel::onEvent
+    )
+}
+@Composable
+fun ReceiptHistoryScreen(
+    uiState: ReceiptHistoryUiState,
+    buttonsState: ReceiptHistoryButtonsState,
+    dialogState: ReceiptHistoryDialogState,
+    onEvent: (ReceiptHistoryUiEvent) -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            ReceiptViewer(
+                trip = uiState.trip,
+                isVisible = uiState.trip != null,
+                isEmpty = uiState.isReceiptEmpty,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (uiState.trip == null || uiState.isReceiptEmpty) {
+                Text(
+                    text = "No hay viajes",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            ReceiptHistoryButtons(
+                state = buttonsState,
+                onPrint = { onEvent(ReceiptHistoryUiEvent.PrintClicked) },
+                onPrevious = { onEvent(ReceiptHistoryUiEvent.PreviousClicked) },
+                onPartials = { onEvent(ReceiptHistoryUiEvent.PartialsClicked) },
+                onCard = { onEvent(ReceiptHistoryUiEvent.CardClicked) },
+                onBill = { onEvent(ReceiptHistoryUiEvent.BillClicked) },
+                onFoto = { onEvent(ReceiptHistoryUiEvent.PhotoClicked) }
+            )
+        }
+        if (dialogState.visible) {
+            ReceiptHistoryCustomDialogCompose(
+                state = dialogState,
+                onDismiss = { onEvent(ReceiptHistoryUiEvent.DialogDismissed) },
+                onButtonClick = { btn -> onEvent(ReceiptHistoryUiEvent.DialogButtonClicked(btn)) }
+            )
+        }
+    }
+}
+@Composable
+fun ReceiptViewer(
+    trip: Trip?,
+    isVisible: Boolean,
+    isEmpty: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (!isVisible) return
+    Surface(modifier = modifier) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Text(text = "Recibo", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(text = "Trip: ${trip?.id ?: "-"}")
+            Text(text = "Importe: ${trip?.totalAmount ?: 0.0}")
+            Text(text = "Empty: $isEmpty")
+        }
+    }
+}
+```
+---
+# 2) Effect collector with `SharedFlow<ReceiptHistoryUiEffect>`
+```kotlin
+@Composable
+fun CollectReceiptHistoryEffects(
+    effects: SharedFlow<ReceiptHistoryUiEffect>,
+    navController: NavController,
+    onShareImage: (android.net.Uri) -> Unit,
+    onToast: (Int) -> Unit,
+    onOpenDialog: (ReceiptHistoryDialogState) -> Unit
+) {
+    LaunchedEffect(Unit) {
+        effects.collect { effect ->
+            when (effect) {
+                ReceiptHistoryUiEffect.NavigateToTripHistory -> {
+                    navController.navigate(R.id.action_receiptHistoryFragment_to_tripHistoryFragment)
+                }
+                ReceiptHistoryUiEffect.NavigateToHome -> {
+                    navController.navigate(R.id.action_receiptHistoryFragment_to_homeFragment)
+                }
+                ReceiptHistoryUiEffect.NavigateToOnTrip -> {
+                    navController.navigate(R.id.action_receiptHistoryFragment_to_onTripFragment)
+                }
+                is ReceiptHistoryUiEffect.NavigateToOnlineInvoice -> {
+                    navController.navigate(
+                        ReceiptHistoryFragmentDirections.actionReceiptHistoryFragmentToOnlineInvoiceFragment(
+                            effect.tripId
+                        )
+                    )
+                }
+                is ReceiptHistoryUiEffect.NavigateToOfflineInvoice -> {
+                    navController.navigate(
+                        ReceiptHistoryFragmentDirections.actionReceiptHistoryFragmentToOfflineInvoiceFragment(
+                            effect.tripId
+                        )
+                    )
+                }
+                is ReceiptHistoryUiEffect.NavigateToRefundMonei -> {
+                    navController.navigate(
+                        ReceiptHistoryFragmentDirections.actionReceiptHistoryFragmentToRefundMoneiFragment(
+                            effect.tripId
+                        )
+                    )
+                }
+                is ReceiptHistoryUiEffect.NavigateToReceiptRedSys -> {
+                    navController.navigate(
+                        ReceiptHistoryFragmentDirections.actionReceiptHistoryFragmentToReceiptRedSysFragment(
+                            effect.operations
+                        )
+                    )
+                }
+                is ReceiptHistoryUiEffect.NavigateToCropImage -> {
+                    navController.navigate(
+                        HomeDirections.goToCropImageViewFragment(effect.dispatchNumber)
+                    )
+                }
+                is ReceiptHistoryUiEffect.ShareTicketImage -> onShareImage(effect.uri)
+                is ReceiptHistoryUiEffect.ToastRes -> onToast(effect.resId)
+                is ReceiptHistoryUiEffect.ShowDialog -> onOpenDialog(effect.dialogState)
+            }
+        }
+    }
+}
+```
+---
+# 3) UI State, Events, Effects, and Button State
+## 3.1 Main screen UI state
+```kotlin
+package ifac.td.taxi.ui.screen.compose.model
+// # Block 189-2: import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.Trip
+data class ReceiptHistoryUiState(
+    val trip: Trip? = null,
+    val isLastTrip: Boolean = false,
+    val isReceiptEmpty: Boolean = true,
+    val invoiceConfig: InvoiceConfig = InvoiceConfig(),
+    val licensingFiscal: Boolean = false
+)
+data class InvoiceConfig(
+    val isInvoiceEnabled: Boolean = false,
+    val isShowInvoiceButton: Boolean = false
+)
+```
+---
+## 3.2 Button state with XML-like behavior
+```kotlin
+package ifac.td.taxi.ui.screen.compose.model
+// # Block 207-3: import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.Trip
+data class ReceiptHistoryButtonsState(
+    val print: ButtonUiState = ButtonUiState.Disabled(text = "Print"),
+    val previous: ButtonUiState = ButtonUiState.Enabled(text = "Previous"),
+    val partials: ButtonUiState = ButtonUiState.Enabled(text = "Partials"),
+    val card: ButtonUiState = ButtonUiState.Empty(text = "Card"),
+    val bill: ButtonUiState = ButtonUiState.Empty(text = "Factura"),
+    val foto: ButtonUiState = ButtonUiState.Disabled(text = "Foto")
+) {
+    companion object {
+        fun from(
+            trip: Trip?,
+            isReceiptEmpty: Boolean,
+            canGenerateInvoice: Boolean,
+            isVoucherEnabled: Boolean,
+            isSubscriberAndFromDispatch: Boolean,
+            shouldPrint: Boolean,
+            isCardLoading: Boolean = false
+        ): ReceiptHistoryButtonsState {
+            val printState = when {
+                isReceiptEmpty || trip == null -> ButtonUiState.Disabled("Print")
+                isCardLoading -> ButtonUiState.Loading("Print")
+                shouldPrint -> ButtonUiState.Enabled("Print")
+                else -> ButtonUiState.Disabled("Print")
+            }
+            val billState = when {
+                trip == null || isReceiptEmpty -> ButtonUiState.Empty("Factura")
+                canGenerateInvoice -> ButtonUiState.Invoice("Factura")
+                else -> ButtonUiState.Empty("Factura")
+            }
+            val fotoState = when {
+                trip == null || isReceiptEmpty -> ButtonUiState.Disabled("Foto")
+                isVoucherEnabled && isSubscriberAndFromDispatch -> ButtonUiState.Enabled("Foto")
+                else -> ButtonUiState.Disabled("Foto")
+            }
+            val cardState = when {
+                trip == null || isReceiptEmpty -> ButtonUiState.Empty("Card")
+                else -> ButtonUiState.Enabled("Card")
+            }
+            return ReceiptHistoryButtonsState(
+                print = printState,
+                previous = ButtonUiState.Enabled("Previous"),
+                partials = ButtonUiState.Enabled("Partials"),
+                card = cardState,
+                bill = billState,
+                foto = fotoState
+            )
+        }
+    }
+}
+sealed class ButtonUiState(
+    val text: String,
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val background: Color,
+    val content: Color,
+    val border: Color
+) {
+    class Enabled(text: String) : ButtonUiState(
+        text = text,
+        enabled = true,
+        background = Color(0xFF1976D2),
+        content = Color.White,
+        border = Color(0xFF1976D2)
+    )
+    class Disabled(text: String) : ButtonUiState(
+        text = text,
+        enabled = false,
+        background = Color(0xFFE0E0E0),
+        content = Color(0xFF9E9E9E),
+        border = Color(0xFFBDBDBD)
+    )
+    class Loading(text: String) : ButtonUiState(
+        text = text,
+        enabled = false,
+        loading = true,
+        background = Color(0xFF1565C0),
+        content = Color.White,
+        border = Color(0xFF1565C0)
+    )
+    class Empty(text: String) : ButtonUiState(
+        text = text,
+        visible = false,
+        enabled = false,
+        background = Color.Transparent,
+        content = Color.Transparent,
+        border = Color.Transparent
+    )
+    class Invoice(text: String) : ButtonUiState(
+        text = text,
+        enabled = true,
+        background = Color(0xFF2E7D32),
+        content = Color.White,
+        border = Color(0xFF2E7D32)
+    )
+}
+```
+---
+## 3.3 Dialog state
+```kotlin
+package ifac.td.taxi.ui.screen.compose.model
+// # Block 312-4: import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.ButtonType
+data class ReceiptHistoryDialogState(
+    val visible: Boolean = false,
+    val title: String = "",
+    val description: String = "",
+    val buttons: List<ButtonType> = emptyList(),
+    val tag: String? = null,
+    val redSysUsername: String? = null,
+    val redSysPassword: String? = null,
+    val isRedSysDialog: Boolean = false
+)
+```
+---
+## 3.4 UI events
+```kotlin
+package ifac.td.taxi.ui.screen.compose.model
+// # Block 329-5: import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.ButtonType
+sealed interface ReceiptHistoryUiEvent {
+    data object ScreenStarted : ReceiptHistoryUiEvent
+    data object PrintClicked : ReceiptHistoryUiEvent
+    data object PreviousClicked : ReceiptHistoryUiEvent
+    data object PartialsClicked : ReceiptHistoryUiEvent
+    data object CardClicked : ReceiptHistoryUiEvent
+    data object BillClicked : ReceiptHistoryUiEvent
+    data object PhotoClicked : ReceiptHistoryUiEvent
+    data object DialogDismissed : ReceiptHistoryUiEvent
+    data class DialogButtonClicked(val button: ButtonType) : ReceiptHistoryUiEvent
+}
+```
+---
+## 3.5 UI effects using a single `SharedFlow<ReceiptHistoryUiEffect>`
+```kotlin
+package ifac.td.taxi.ui.screen.compose.model
+// # Block 347-6: import android.net.Uri
+import android.net.Uri
+import ifac.td.taxi.domain.model.RedSysOperation
+sealed interface ReceiptHistoryUiEffect {
+    data object NavigateToTripHistory : ReceiptHistoryUiEffect
+    data object NavigateToHome : ReceiptHistoryUiEffect
+    data object NavigateToOnTrip : ReceiptHistoryUiEffect
+    data class NavigateToOnlineInvoice(val tripId: Long) : ReceiptHistoryUiEffect
+    data class NavigateToOfflineInvoice(val tripId: Long) : ReceiptHistoryUiEffect
+    data class NavigateToRefundMonei(val tripId: Long) : ReceiptHistoryUiEffect
+    data class NavigateToReceiptRedSys(val operations: Array<RedSysOperation>) : ReceiptHistoryUiEffect
+    data class NavigateToCropImage(val dispatchNumber: String) : ReceiptHistoryUiEffect
+    data class ShareTicketImage(val uri: Uri) : ReceiptHistoryUiEffect
+    data class ToastRes(val resId: Int) : ReceiptHistoryUiEffect
+    data class ShowDialog(val dialogState: ReceiptHistoryDialogState) : ReceiptHistoryUiEffect
+}
+```
+---
+# 4) Compose ViewModel
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 368-7: import android.app.Application
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.*
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ReceiptUseCase
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.screen.compose.model.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+class ReceiptHistoryComposeViewModel(
+    application: Application,
+    private val receiptUseCase: ReceiptUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val tripUseCase: TripUseCase,
+    private val partialUseCase: PartialUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val portugalUseCase: PortugalUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val redSysUseCase: RedSysUseCase,
+    private val bravoConfigurationUseCase: BravoCentralConfigurationUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(ReceiptHistoryUiState())
+    val uiState: StateFlow<ReceiptHistoryUiState> = _uiState.asStateFlow()
+    private val _buttonsState = MutableStateFlow(ReceiptHistoryButtonsState())
+    val buttonsState: StateFlow<ReceiptHistoryButtonsState> = _buttonsState.asStateFlow()
+    private val _dialogState = MutableStateFlow(ReceiptHistoryDialogState())
+    val dialogState: StateFlow<ReceiptHistoryDialogState> = _dialogState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<ReceiptHistoryUiEffect>()
+    val uiEffect: SharedFlow<ReceiptHistoryUiEffect> = _uiEffect.asSharedFlow()
+    private var currentTrip: Trip? = null
+    fun onScreenStarted(ticketId: Long) {
+        viewModelScope.launch {
+            checkNavigateWithStatus(null)
+            getTicket(ticketId)
+            checkVoucherConfiguration()
+            checkFiscalLicensing()
+            loadLicensingInvoice()
+        }
+    }
+    fun onEvent(event: ReceiptHistoryUiEvent) {
+        when (event) {
+            ReceiptHistoryUiEvent.ScreenStarted -> Unit
+            ReceiptHistoryUiEvent.PrintClicked -> currentTrip?.let { printActualTicket(it) } ?: emitToast(R.string.error_no_trip_loaded)
+            ReceiptHistoryUiEvent.PreviousClicked -> emitEffect(ReceiptHistoryUiEffect.NavigateToTripHistory)
+            ReceiptHistoryUiEvent.PartialsClicked -> clickPartials()
+            ReceiptHistoryUiEvent.CardClicked -> currentTrip?.let { checkCardInfo(it) } ?: emitToast(R.string.error_no_trip_loaded)
+            ReceiptHistoryUiEvent.BillClicked -> onInvoiceClick()
+            ReceiptHistoryUiEvent.PhotoClicked -> showPhotoDialog()
+            ReceiptHistoryUiEvent.DialogDismissed -> _dialogState.value = _dialogState.value.copy(visible = false)
+            is ReceiptHistoryUiEvent.DialogButtonClicked -> handleDialogButton(event.button)
+        }
+    }
+    fun openDialog(state: ReceiptHistoryDialogState) {
+        _dialogState.value = state.copy(visible = true)
+    }
+    fun handleDialogButton(button: ButtonType) {
+        _dialogState.value = _dialogState.value.copy(visible = false)
+    }
+    fun emitToast(resId: Int) = viewModelScope.launch { _uiEffect.emit(ReceiptHistoryUiEffect.ToastRes(resId)) }
+    fun emitEffect(effect: ReceiptHistoryUiEffect) = viewModelScope.launch { _uiEffect.emit(effect) }
+    fun loadLicensingInvoice() {
+        val params = com.interfacom.sdk.taximeter.licensing.Licensing.getParameters()
+        val invoiceConfig = InvoiceConfig(
+            isInvoiceEnabled = params?.isInvoiceEnabled ?: false,
+            isShowInvoiceButton = params?.isShowInvoiceButton ?: false
+        )
+        _uiState.value = _uiState.value.copy(invoiceConfig = invoiceConfig)
+    }
+    fun getTicket(tripId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val lastFinishedTrip = tripUseCase.getLastTripFinished()
+            val trip = if (tripId >= 0) tripUseCase.getTripById(tripId) else lastFinishedTrip
+            currentTrip = trip
+            val isLastTrip = trip != null && trip.id == lastFinishedTrip?.id
+            _uiState.update {
+                it.copy(
+                    trip = trip,
+                    isLastTrip = isLastTrip,
+                    isReceiptEmpty = trip == null
+                )
+            }
+            recomputeButtons()
+        }
+    }
+    fun checkNavigateWithStatus(currentStatus: Int?) {
+        _uiState.update { it }
+    }
+    fun checkFiscalLicensing() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val fiscal = licensingUseCase.getLicensingParameters()?.isFiscalService ?: false
+            _uiState.update { it.copy(licensingFiscal = fiscal) }
+            recomputeButtons()
+        }
+    }
+    fun checkVoucherConfiguration() {
+        viewModelScope.launch {
+            bravoConfigurationUseCase.getBravoConfigurationVariable()?.let { config ->
+                val enabled = config.tripReceipt == "1" || config.subscriberVouchers != "0"
+                recomputeButtons(voucherEnabled = enabled)
+            }
+        }
+    }
+    fun printActualTicket(trip: Trip) {
+        viewModelScope.launch {
+            if (_uiState.value.licensingFiscal) portugalUseCase.increaseTicketPrinted(trip)
+            printerUseCase.printTicket(trip, true)
+        }
+    }
+    fun clickPartials() {
+        viewModelScope.launch {
+            val activePartial = partialUseCase.getActivePartial()
+            if (activePartial != null && activePartial.hasTrips()) {
+                emitEffect(ReceiptHistoryUiEffect.NavigateToTripHistory)
+            } else {
+                emitEffect(ReceiptHistoryUiEffect.NavigateToTripHistory)
+            }
+        }
+    }
+    fun checkPinPadRedSysEnabled() {
+        viewModelScope.launch {
+            val prefs = userPreferencesUseCase.getUserPreferences()
+            val serialNumber = prefs?.pinPadSerialNumber
+            val username = redSysUseCase.getUsernameRedSys()
+            val password = TemporalData.passwordRedSys
+            val requirementOK = (serialNumber != null && serialNumber.length >= 6 && prefs.pinPadTypeId == 2)
+            val userSaved = !username.isNullOrEmpty() && password.isNotEmpty()
+            if (requirementOK && userSaved) {
+                loginRedSys(null, null)
+            } else if (requirementOK) {
+                _uiEffect.emit(
+                    ReceiptHistoryUiEffect.ShowDialog(
+                        ReceiptHistoryDialogState(
+                            visible = true,
+                            title = getApplication<Application>().getString(R.string.red_sys_title),
+                            description = getApplication<Application>().getString(R.string.red_sys_description),
+                            isRedSysDialog = true,
+                            redSysUsername = username,
+                            redSysPassword = password,
+                            buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT)
+                        )
+                    )
+                )
+            } else {
+                emitToast(R.string.not_match_requirements)
+            }
+        }
+    }
+    fun loginRedSys(user: String?, password: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            redSysUseCase.configureRedSys()
+            val usernameRedSys = user ?: redSysUseCase.getUsernameRedSys()
+            val passwordRedSys = password ?: TemporalData.passwordRedSys
+            if (usernameRedSys != null) {
+                when (val response = redSysUseCase.loginRedSys(usernameRedSys, passwordRedSys)) {
+                    is ifac.td.taxi.domain.model.RedSysLoginResponse.Success -> {
+                        TemporalData.passwordRedSys = passwordRedSys
+                        val consulta = redSysUseCase.consultaRedSys(response.merchantList[0].terminalList[0], null)
+                        val ops = redSysUseCase.parseConsulta(consulta)
+                        emitEffect(ReceiptHistoryUiEffect.NavigateToReceiptRedSys(ops.toTypedArray()))
+                    }
+                    is ifac.td.taxi.domain.model.RedSysLoginResponse.Error -> {
+                        emitToast(R.string.red_sys_login_error)
+                    }
+                }
+            }
+        }
+    }
+    fun checkCardInfo(trip: Trip?) {
+        viewModelScope.launch {
+            if (trip == null) {
+                emitToast(R.string.error_no_trip_loaded)
+                return@launch
+            }
+            val isLastTrip = trip.id == tripUseCase.getLastTripFinished()?.id
+            if (isLastTrip) {
+                hasMoneiInfo(trip)
+            } else {
+                checkPinPadRedSysEnabled()
+            }
+        }
+    }
+    fun hasMoneiInfo(trip: Trip) {
+        viewModelScope.launch {
+            if (!trip.moneiPaymentId.isNullOrBlank()) {
+                emitEffect(ReceiptHistoryUiEffect.NavigateToRefundMonei(trip.id))
+            } else {
+                checkPinPadRedSysEnabled()
+            }
+        }
+    }
+    fun gotoOfflineInvoiceFragment(tripId: Long) {
+        emitEffect(ReceiptHistoryUiEffect.NavigateToOfflineInvoice(tripId))
+    }
+    fun goToOnlineInvoiceFragment(tripId: Long) {
+        emitEffect(ReceiptHistoryUiEffect.NavigateToOnlineInvoice(tripId))
+    }
+    fun sendPhotoVoucher(id: Long) {
+        viewModelScope.launch {
+            val dispatch = dispatchUseCase.getDispatchByTripId(id)?.longDispatchNumber
+            if (dispatch != null) emitEffect(ReceiptHistoryUiEffect.NavigateToCropImage(dispatch))
+        }
+    }
+    fun onInvoiceClick() {
+        val trip = currentTrip ?: run {
+            emitToast(R.string.error_no_trip_loaded)
+            return
+        }
+        if (!canGenerateInvoice(trip)) {
+            emitToast(R.string.cannot_generate_invoice)
+            return
+        }
+        val invoiceConfig = _uiState.value.invoiceConfig
+        when {
+            invoiceConfig.isInvoiceEnabled && invoiceConfig.isShowInvoiceButton -> {
+                _dialogState.value = ReceiptHistoryDialogState(
+                    visible = true,
+                    title = getApplication<Application>().getString(R.string.dialog_invoice_options_title),
+                    description = getApplication<Application>().getString(R.string.dialog_invoice_options_desc),
+                    buttons = listOf(ButtonType.EMAIL, ButtonType.IMPRIMIR)
+                )
+            }
+            invoiceConfig.isInvoiceEnabled -> goToOnlineInvoiceFragment(trip.id)
+            invoiceConfig.isShowInvoiceButton -> gotoOfflineInvoiceFragment(trip.id)
+        }
+    }
+    fun showPhotoDialog() {
+        val trip = currentTrip ?: run {
+            emitToast(R.string.error_no_trip_loaded)
+            return
+        }
+        _dialogState.value = ReceiptHistoryDialogState(
+            visible = true,
+            title = getApplication<Application>().getString(R.string.warning),
+            description = getApplication<Application>().getString(R.string.subscriber_photo_confirmation),
+            buttons = listOf(ButtonType.IMPRIMIR, ButtonType.ACCEPT)
+        )
+    }
+    fun canGenerateInvoice(trip: Trip): Boolean {
+        if (_uiState.value.licensingFiscal) {
+            if (trip.id != tripUseCase.getLastTripFinished()?.id) return false
+        }
+        if (trip.invoiceAlreadyGenerated) return false
+        return (_uiState.value.invoiceConfig.isInvoiceEnabled || _uiState.value.invoiceConfig.isShowInvoiceButton) &&
+            trip.totalAmount > 0 &&
+            trip.paymentMethod != PaymentMethod.SUBSCRIBER.paymentString
+    }
+    fun recomputeButtons(voucherEnabled: Boolean = _uiState.value.invoiceConfig.isShowInvoiceButton) {
+        val trip = currentTrip
+        val isSubscriberAndFromDispatch = trip?.paymentMethod == PaymentMethod.SUBSCRIBER.paymentString && trip.fromDispatch == true
+        val canInvoice = trip != null && canGenerateInvoice(trip)
+        val shouldPrint = trip != null && !_uiState.value.isReceiptEmpty
+        _buttonsState.value = ReceiptHistoryButtonsState.from(
+            trip = trip,
+            isReceiptEmpty = _uiState.value.isReceiptEmpty,
+            canGenerateInvoice = canInvoice,
+            isVoucherEnabled = voucherEnabled,
+            isSubscriberAndFromDispatch = isSubscriberAndFromDispatch,
+            shouldPrint = shouldPrint
+        )
+    }
+}
+```
+---
+# 5) Compose ReceiptHistoryCustomDialog equivalent
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 645-8: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.screen.compose.model.ReceiptHistoryDialogState
+@Composable
+fun ReceiptHistoryCustomDialogCompose(
+    state: ReceiptHistoryDialogState,
+    onDismiss: () -> Unit,
+    onButtonClick: (ButtonType) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { onDismiss() },
+        containerColor = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        title = { Text(text = state.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = state.description,
+                    textAlign = TextAlign.Start
+                )
+                if (state.isRedSysDialog) {
+                    // Keep simple; can be expanded to TextFields as needed
+                    Text(
+                        text = "RedSys login dialog",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            DialogButtonsRow(
+                buttons = state.buttons,
+                onButtonClick = onButtonClick
+            )
+        },
+        dismissButton = {}
+    )
+}
+@Composable
+fun DialogButtonsRow(
+    buttons: List<ButtonType>,
+    onButtonClick: (ButtonType) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        buttons.forEach { btn ->
+            Button(onClick = { onButtonClick(btn) }) {
+                Text(btn.name)
+            }
+        }
+    }
+}
+```
+---
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.compose.model.ButtonUiState
+import ifac.td.taxi.ui.screen.compose.model.ReceiptHistoryButtonsState
+@Composable
+fun ReceiptHistoryButtons(
+    state: ReceiptHistoryButtonsState,
+    onPrint: () -> Unit,
+    onPrevious: () -> Unit,
+    onPartials: () -> Unit,
+    onCard: () -> Unit,
+    onBill: () -> Unit,
+    onFoto: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReceiptButton(state.print, onPrint, modifier = Modifier.weight(1f))
+            ReceiptButton(state.previous, onPrevious, modifier = Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReceiptButton(state.partials, onPartials, modifier = Modifier.weight(1f))
+            ReceiptButton(state.card, onCard, modifier = Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReceiptButton(state.bill, onBill, modifier = Modifier.weight(1f))
+            ReceiptButton(state.foto, onFoto, modifier = Modifier.weight(1f))
+        }
+    }
+}
+@Composable
+fun ReceiptButton(
+    state: ButtonUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!state.visible) return
+    Button(
+        onClick = onClick,
+        enabled = state.enabled,
+        modifier = modifier.height(48.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = state.background,
+            contentColor = state.content,
+            disabledContainerColor = state.background,
+            disabledContentColor = state.content
+        )
+    ) {
+        if (state.loading) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(state.text)
+    }
+}
+```
+---
+# 7) Notes on preserving Jetpack Views navigation
+To preserve your current Navigation graph behavior:
+Example fragment wrapper:
+```kotlin
+class ReceiptHistoryComposeFragment : Fragment() {
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ) = ComposeView(requireContext()).apply {
+        setContent {
+            ReceiptHistoryRoute(
+                ticketId = requireArguments().getLong("ticketId"),
+                navController = findNavController(),
+                viewModel = /* inject */
+            )
+        }
+    }
+}
+```
+---
+# 8) What this covers from your requirements
+---
+1. a **fully compiling version** with missing imports filled in,
+2. a **Koin module** for the Compose ViewModel,
+3. or a **more exact recreation** of the XML `ReceiptHistoryCustomDialog` and `CustomButton` visuals using Material 3 + custom shapes/colors.

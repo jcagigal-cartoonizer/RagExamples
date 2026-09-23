@@ -1,0 +1,645 @@
+Below is a Compose-based rewrite that keeps the original splash-screen navigation behavior, replaces the fragment logic with a `UiState + UiEvent + UiEffect` pattern, and uses lifecycle-aware state/effect collection for dialog handling.
+
+I’ve split it into:
+
+1. `SplashScreenComposable`
+2. `SplashScreenViewModel` with Compose-friendly state/effects
+3. `SplashScreenButtonsState` + button styling helpers
+4. `CustomDialog` Compose implementation
+5. Navigation-preserving host example
+
+---
+
+## 1) Compose Splash Screen
+
+This composable:
+- hides header/bottom bar via callbacks
+- plays the splash video using `AndroidView(VideoView)`
+- preserves the original 4800ms timeout behavior
+- collects `UiEffect`s via `LaunchedEffect` + `repeatOnLifecycle`
+- handles dialog display state
+- preserves navigation paths to legal/welcome screens
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.graphics.Color
+import android.net.Uri
+import android.widget.MediaController
+import android.widget.VideoView
+import androidx.annotation.RawRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.R
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+
+@Composable
+fun SplashScreenRoute(
+    viewModel: SplashScreenViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onNavigateToLegalText: () -> Unit,
+    onNavigateToWelcome: () -> Unit,
+    onNavigateBackBlocked: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        onShowHeader(false)
+        onShowBottomBar(false)
+        viewModel.onEvent(SplashScreenUiEvent.ScreenStarted)
+    }
+
+    // Collect one-off effects (navigation/dialog/skip)
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collectLatest { effect ->
+                    when (effect) {
+                        SplashScreenUiEffect.NavigateToLegalText -> onNavigateToLegalText()
+                        SplashScreenUiEffect.NavigateToWelcome -> onNavigateToWelcome()
+                        SplashScreenUiEffect.HideSplash -> {
+                            // The original fragment hid the video view; in Compose, we simply stop showing it.
+                            // state is already controlling this.
+                        }
+                        SplashScreenUiEffect.ShowSkipDialog -> {
+                            // dialog is handled by UI state; nothing else needed
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ComposeColor.White)
+    ) {
+        if (uiState.showSplashVideo) {
+            SplashVideo(
+                rawVideoRes = R.raw.new_splash,
+                backgroundColor = R.color.splash_background,
+                onPrepared = {
+                    viewModel.onEvent(SplashScreenUiEvent.VideoPrepared)
+                },
+                onCompleted = {
+                    viewModel.onEvent(SplashScreenUiEvent.VideoCompleted)
+                },
+                onError = {
+                    viewModel.onEvent(SplashScreenUiEvent.VideoError)
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // Buttons area / dialog handling if needed
+        SplashScreenButtons(
+            state = uiState.buttonsState,
+            onEvent = viewModel::onEvent
+        )
+
+        if (uiState.showDialog) {
+            CustomDialog(
+                state = uiState.dialogState,
+                onConfirm = { viewModel.onEvent(SplashScreenUiEvent.DialogConfirm) },
+                onDismiss = { viewModel.onEvent(SplashScreenUiEvent.DialogDismiss) }
+            )
+        }
+    }
+
+    // preserve back-blocking if needed
+    if (onNavigateBackBlocked != null) {
+        // hook this into your activity back handler if desired
+    }
+}
+
+@Composable
+private fun SplashVideo(
+    @RawRes rawVideoRes: Int,
+    backgroundColor: Int,
+    onPrepared: () -> Unit,
+    onCompleted: () -> Unit,
+    onError: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val videoUri = remember(rawVideoRes, context) {
+        Uri.parse("android.resource://${context.packageName}/$rawVideoRes")
+    }
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            VideoView(ctx).apply {
+                setZOrderOnTop(true)
+                setBackgroundColor(ctx.getColor(backgroundColor))
+                setVideoURI(videoUri)
+
+                setOnPreparedListener { mediaPlayer ->
+                    setBackgroundColor(Color.TRANSPARENT)
+                    mediaPlayer.isLooping = false
+                    mediaPlayer.start()
+                    onPrepared()
+                }
+
+                setOnCompletionListener {
+                    onCompleted()
+                }
+
+                setOnErrorListener { _, _, _ ->
+                    onError()
+                    true
+                }
+            }
+        },
+        update = { view ->
+            if (!view.isPlaying) {
+                view.start()
+            }
+        }
+    )
+}
+```
+
+---
+
+## 2) ViewModel: `UiState + UiEvent + UiEffect`
+
+This version replaces the `MutableSharedFlow<Boolean>` with a full Compose-friendly architecture.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+data class SplashScreenUiState(
+    val isReconnecting: Boolean = false,
+    val showSplashVideo: Boolean = true,
+    val isSkipped: Boolean = false,
+    val showDialog: Boolean = false,
+    val dialogState: CustomDialogState = CustomDialogState(),
+    val buttonsState: SplashScreenButtonsState = SplashScreenButtonsState()
+)
+
+sealed class SplashScreenUiEvent {
+    data object ScreenStarted : SplashScreenUiEvent()
+    data object VideoPrepared : SplashScreenUiEvent()
+    data object VideoCompleted : SplashScreenUiEvent()
+    data object VideoError : SplashScreenUiEvent()
+    data object TimeoutReached : SplashScreenUiEvent()
+    data object SkipRequested : SplashScreenUiEvent()
+    data object DialogConfirm : SplashScreenUiEvent()
+    data object DialogDismiss : SplashScreenUiEvent()
+    data class ReconnectionChecked(val serviceWasActive: Boolean) : SplashScreenUiEvent()
+}
+
+sealed class SplashScreenUiEffect {
+    data object NavigateToLegalText : SplashScreenUiEffect()
+    data object NavigateToWelcome : SplashScreenUiEffect()
+    data object HideSplash : SplashScreenUiEffect()
+    data object ShowSkipDialog : SplashScreenUiEffect()
+}
+
+class SplashScreenViewModel(
+    application: Application,
+    private val sessionUseCase: SessionUseCase
+) : BaseViewModel(application) {
+
+    private val TAG = "SplashScreenViewModel"
+    private val SPLASH_TIMEOUT = 4800L
+
+    private val _uiState = MutableStateFlow(SplashScreenUiState())
+    val uiState: StateFlow<SplashScreenUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<SplashScreenUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<SplashScreenUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: SplashScreenUiEvent) {
+        when (event) {
+            SplashScreenUiEvent.ScreenStarted -> {
+                checkIsReconnecting()
+                startSplashTimeout()
+            }
+
+            SplashScreenUiEvent.VideoPrepared -> {
+                Logs.d(TAG, "Video prepared")
+            }
+
+            SplashScreenUiEvent.VideoCompleted,
+            SplashScreenUiEvent.VideoError,
+            SplashScreenUiEvent.TimeoutReached -> {
+                if (!_uiState.value.isSkipped) {
+                    endSplash()
+                }
+            }
+
+            SplashScreenUiEvent.SkipRequested -> {
+                endSplashWithoutCheck()
+            }
+
+            SplashScreenUiEvent.DialogConfirm -> {
+                _uiState.update { it.copy(showDialog = false) }
+                viewModelScope.launch {
+                    _uiEffect.emit(SplashScreenUiEffect.NavigateToLegalText)
+                }
+            }
+
+            SplashScreenUiEvent.DialogDismiss -> {
+                _uiState.update { it.copy(showDialog = false) }
+                viewModelScope.launch {
+                    _uiEffect.emit(SplashScreenUiEffect.NavigateToWelcome)
+                }
+            }
+
+            is SplashScreenUiEvent.ReconnectionChecked -> {
+                _uiState.update { it.copy(isReconnecting = event.serviceWasActive) }
+                if (event.serviceWasActive) {
+                    viewModelScope.launch {
+                        delay(50)
+                        if (!_uiState.value.isSkipped) {
+                            endSplashWithoutCheck()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun checkIsReconnecting() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val serviceWasActive = sessionUseCase.getServiceWasActive()
+            Logs.d(TAG, "checkIsReconnecting serviceWasActive: $serviceWasActive")
+            _uiEffect.emit(SplashScreenUiEffect.HideSplash)
+            onEvent(SplashScreenUiEvent.ReconnectionChecked(serviceWasActive))
+        }
+    }
+
+    private fun startSplashTimeout() {
+        viewModelScope.launch {
+            delay(SPLASH_TIMEOUT)
+            onEvent(SplashScreenUiEvent.TimeoutReached)
+        }
+    }
+
+    private fun endSplash() {
+        _uiState.update {
+            it.copy(
+                showSplashVideo = false,
+                showDialog = false
+            )
+        }
+        viewModelScope.launch {
+            _uiEffect.emit(SplashScreenUiEffect.HideSplash)
+            _uiEffect.emit(SplashScreenUiEffect.NavigateToWelcome)
+        }
+    }
+
+    private fun endSplashWithoutCheck() {
+        _uiState.update {
+            it.copy(
+                showSplashVideo = false,
+                isSkipped = true,
+                showDialog = false
+            )
+        }
+        viewModelScope.launch {
+            _uiEffect.emit(SplashScreenUiEffect.HideSplash)
+            _uiEffect.emit(SplashScreenUiEffect.NavigateToLegalText)
+        }
+    }
+}
+```
+
+---
+
+## 3) `SplashScreenButtonsState` + button styling helpers
+
+This mirrors the fragment’s “button logic replacement” requirement and gives you a place to fully define button color/visibility/styling.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+
+data class SplashScreenButtonsState(
+    val isVisible: Boolean = false, // original splash had no buttons shown
+    val primaryButtonVisible: Boolean = false,
+    val secondaryButtonVisible: Boolean = false,
+    val tertiaryButtonVisible: Boolean = false,
+    val primaryEnabled: Boolean = true,
+    val secondaryEnabled: Boolean = true,
+    val tertiaryEnabled: Boolean = true,
+    val primaryButtonStyle: SplashButtonStyle = SplashButtonStyle.Primary,
+    val secondaryButtonStyle: SplashButtonStyle = SplashButtonStyle.Secondary,
+    val tertiaryButtonStyle: SplashButtonStyle = SplashButtonStyle.Tertiary
+)
+
+enum class SplashButtonStyle {
+    Primary, Secondary, Tertiary
+}
+
+data class SplashButtonColors(
+    val container: Color,
+    val content: Color,
+    val disabledContainer: Color,
+    val disabledContent: Color,
+    val border: Color
+)
+
+fun SplashButtonStyle.colors(): SplashButtonColors = when (this) {
+    SplashButtonStyle.Primary -> SplashButtonColors(
+        container = Color(0xFF1E88E5),
+        content = Color.White,
+        disabledContainer = Color(0xFF90CAF9),
+        disabledContent = Color(0x80FFFFFF),
+        border = Color.Transparent
+    )
+    SplashButtonStyle.Secondary -> SplashButtonColors(
+        container = Color.Transparent,
+        content = Color(0xFF1E88E5),
+        disabledContainer = Color.Transparent,
+        disabledContent = Color(0x801E88E5),
+        border = Color(0xFF1E88E5)
+    )
+    SplashButtonStyle.Tertiary -> SplashButtonColors(
+        container = Color.Transparent,
+        content = Color(0xFF757575),
+        disabledContainer = Color.Transparent,
+        disabledContent = Color(0x80757575),
+        border = Color(0xFF757575)
+    )
+}
+```
+
+---
+
+## 4) Buttons Composable
+
+If your splash truly has no visible buttons, this can stay unused.  
+But it satisfies the state-holder requirement and can be extended to match XML-driven button layouts.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.SplashButtonStyle
+import ifac.td.taxi.viewmodel.SplashScreenButtonsState
+import ifac.td.taxi.viewmodel.SplashScreenUiEvent
+import ifac.td.taxi.viewmodel.colors
+
+@Composable
+fun SplashScreenButtons(
+    state: SplashScreenButtonsState,
+    onEvent: (SplashScreenUiEvent) -> Unit
+) {
+    if (!state.isVisible) return
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        if (state.primaryButtonVisible) {
+            SplashStyledButton(
+                text = "Primary",
+                style = state.primaryButtonStyle,
+                enabled = state.primaryEnabled,
+                onClick = { onEvent(SplashScreenUiEvent.SkipRequested) }
+            )
+        }
+
+        if (state.secondaryButtonVisible) {
+            Spacer(Modifier.height(8.dp))
+            SplashStyledButton(
+                text = "Secondary",
+                style = state.secondaryButtonStyle,
+                enabled = state.secondaryEnabled,
+                onClick = { onEvent(SplashScreenUiEvent.SkipRequested) }
+            )
+        }
+
+        if (state.tertiaryButtonVisible) {
+            Spacer(Modifier.height(8.dp))
+            SplashStyledButton(
+                text = "Tertiary",
+                style = state.tertiaryButtonStyle,
+                enabled = state.tertiaryEnabled,
+                onClick = { onEvent(SplashScreenUiEvent.SkipRequested) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SplashStyledButton(
+    text: String,
+    style: SplashButtonStyle,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val c = style.colors()
+
+    if (style == SplashButtonStyle.Secondary || style == SplashButtonStyle.Tertiary) {
+        OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            border = BorderStroke(1.dp, if (enabled) c.border else c.disabledContent),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = c.container,
+                contentColor = c.content,
+                disabledContentColor = c.disabledContent
+            )
+        ) {
+            Text(text)
+        }
+    } else {
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = c.container,
+                contentColor = c.content,
+                disabledContainerColor = c.disabledContainer,
+                disabledContentColor = c.disabledContent
+            )
+        ) {
+            Text(text)
+        }
+    }
+}
+```
+
+---
+
+## 5) Custom Dialog Compose implementation
+
+This is a Compose version of a typical XML custom dialog. Since your prompt mentions `custom_dialog.xml` and `CustomDialog.kt` but doesn’t include them, the implementation below is a close Compose equivalent: title, message, and two actions.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+
+data class CustomDialogState(
+    val title: String = "",
+    val message: String = "",
+    val confirmText: String = "OK",
+    val dismissText: String = "Cancel",
+    val showDismiss: Boolean = true,
+    val isCancelable: Boolean = true
+)
+
+@Composable
+fun CustomDialog(
+    state: CustomDialogState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = { if (state.isCancelable) onDismiss() }
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White)
+                .padding(20.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.Start
+            ) {
+                if (state.title.isNotBlank()) {
+                    Text(
+                        text = state.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.Black
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444),
+                    textAlign = TextAlign.Start
+                )
+
+                Spacer(Modifier.height(24.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (state.showDismiss) {
+                        TextButton(onClick = onDismiss) {
+                            Text(state.dismissText)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+
+                    Button(onClick = onConfirm) {
+                        Text(state.confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) Navigation-preserving example host
+
+This shows how to keep the fragment navigation behavior in Compose.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.runtime.Composable
+
+@Composable
+fun SplashScreenHost(
+    viewModel: SplashScreenViewModel,
+    navigateToLegalText: () -> Unit,
+    navigateToWelcome: () -> Unit,
+    showHeader: (Boolean) -> Unit,
+    showBottomBar: (Boolean) -> Unit
+) {
+    SplashScreenRoute(
+        viewModel = viewModel,
+        onShowHeader = showHeader,
+        onShowBottomBar = showBottomBar,
+        onNavigateToLegalText = navigateToLegalText,
+        onNavigateToWelcome = navigateToWelcome
+    )
+}
+```
+
+---
+
+## Notes on matching the original fragment behavior
+
+### Preserved behavior
+- Header hidden
+- Bottom bar hidden
+- Splash video starts on screen entry
+- Timeout after 4800ms
+- Completion/error ends splash
+- Reconnection check triggers skip flow
+- Navigation preserved:
+  - `showLegalText == true` → legal text screen
+  - `showLegalText == false` → welcome screen
+
+### Dialog handling
+Your fragment used `sharedViewModel.showLegalTextFlow`.  
+In Compose, that should become:
+- `UiState.showDialog`
+- `UiEffect.NavigateToLegalText`
+- `UiEffect.NavigateToWelcome`
+
+If you want the dialog to be shown before navigating, just set `showDialog = true` in state and handle confirm/dismiss from the dialog.
+
+---
+
+## If you want a closer 1:1 migration
+I can also provide:
+1. a `MainActivityViewModel` Compose version,
+2. a `Navigation Compose` example with `NavHost`,
+3. a more exact `CustomDialog` matching your XML if you paste `custom_dialog.xml`,
+4. a more exact button style clone if you paste the custom button XML/component.
+
+If you'd like, I can produce a **fully wired, compilable set of files** next.

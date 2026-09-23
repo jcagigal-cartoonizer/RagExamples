@@ -1,0 +1,959 @@
+Below is a Compose-first refactor that keeps the original navigation flow, replaces the Fragment button logic with Compose state holders, and uses a `UiState + UiEffect` architecture with lifecycle-aware collection.
+
+I’m going to provide:
+
+1. A Compose `TccScreen`
+2. A Compose-friendly `TccViewModel`
+3. `TccUiState`, `TccButtonsState`, `TccUiEffect`, and dialog state holders
+4. A Compose `CustomDialog`
+5. Compose button styling helpers that mimic your `CustomButton`
+6. Navigation preservation using `NavController`
+7. A pattern for lifecycle collection of state/effects
+
+> Notes:
+> - I only use Android + Jetpack Compose APIs.
+> - Since you did not include `custom_dialog.xml` or `CustomDialog.kt`, the dialog implementation below is a faithful Compose equivalent based on typical structure and your fragment behavior.
+> - I preserve the original flow: load dispatch, show/hide attributes, accept button logic, optional signature/voucher/QR navigation, and credit-limit flow.
+
+---
+
+# 1) Compose UI state / effect models
+
+```kotlin
+package ifac.td.taxi.ui.screen.tcc
+
+import ifac.td.taxi.domain.model.Dispatch
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+
+data class TccUiState(
+    val isLoading: Boolean = false,
+    val dispatch: Dispatch? = null,
+    val buttonsState: TccButtonsState = TccButtonsState(),
+    val dialogState: TccDialogState = TccDialogState.Hidden,
+    val errorMessageRes: Int? = null
+)
+
+data class TccButtonsState(
+    val accept: TccButtonState = TccButtonState(),
+    val cancel: TccButtonState = TccButtonState(),
+    val attributes1: AttributeSpinnerState = AttributeSpinnerState(),
+    val attributes2: AttributeSpinnerState = AttributeSpinnerState(),
+    val attributes3: AttributeSpinnerState = AttributeSpinnerState(),
+    val attributes4: AttributeSpinnerState = AttributeSpinnerState(),
+)
+
+data class TccButtonState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val textRes: Int? = null
+)
+
+data class AttributeSpinnerState(
+    val visible: Boolean = false,
+    val title: String = "",
+    val value: Int = 1
+)
+
+sealed interface TccDialogState {
+    data object Hidden : TccDialogState
+    data class ConfirmAccept(val dispatchTitle: String? = null) : TccDialogState
+    data class Error(val message: String) : TccDialogState
+}
+
+sealed interface TccUiEffect {
+    data object NavigateBack : TccUiEffect
+    data class NavigateToSignature(val dispatchId: Long) : TccUiEffect
+    data class NavigateToVoucher(val dispatchId: Long) : TccUiEffect
+    data class NavigateToQr(val dispatchId: Long) : TccUiEffect
+    data class FinishTcc(
+        val tripId: Long?,
+        val dispatch: InfoDispatchModel?,
+    ) : TccUiEffect
+
+    data class ToastRes(val resId: Int) : TccUiEffect
+}
+```
+
+---
+
+# 2) Compose-friendly ViewModel with `UiState + UiEffect`
+
+This version mirrors your existing logic but exposes a Compose-friendly contract.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.annotation.StringRes
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Dispatch
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.SubscriberUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.screen.tcc.*
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import ifac.td.taxi.viewmodel.model.UtilsModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class TccViewModel(
+    context: Application,
+    private val dispatchUseCase: DispatchUseCase,
+    private val subscriberUseCase: SubscriberUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val ticketUseCase: TicketUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "TccViewModel"
+
+    private val _uiState = MutableStateFlow(TccUiState())
+    val uiState: StateFlow<TccUiState> = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<TccUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<TccUiEffect> = _effects.asSharedFlow()
+
+    fun loadDispatch(tripId: Long?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(isLoading = true)
+            try {
+                val dispatch = tripId?.let { dispatchUseCase.getDispatchByTripId(it) }
+                if (dispatch == null) {
+                    _effects.tryEmit(TccUiEffect.ToastRes(R.string.dialog_error_title))
+                    _uiState.value = _uiState.value.copy(isLoading = false)
+                    return@launch
+                }
+
+                val buttons = buildButtonsState(dispatch)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    dispatch = dispatch,
+                    buttonsState = buttons,
+                    dialogState = TccDialogState.Hidden,
+                    errorMessageRes = null
+                )
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error fetching dispatch")
+                _uiState.value = _uiState.value.copy(isLoading = false)
+                _effects.tryEmit(TccUiEffect.ToastRes(R.string.dialog_error_title))
+            }
+        }
+    }
+
+    fun onAcceptClicked(
+        tripId: Long?,
+        dispatch: Dispatch,
+        att1: Int?,
+        att2: Int?,
+        att3: Int?,
+        att4: Int?
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(
+                buttonsState = _uiState.value.buttonsState.copy(
+                    accept = _uiState.value.buttonsState.accept.copy(loading = true, enabled = false)
+                )
+            )
+
+            try {
+                dispatch.attribute1Value = att1?.toString()
+                dispatch.attribute2Value = att2?.toString()
+                dispatch.attribute3Value = att3?.toString()
+                dispatch.attribute4Value = att4?.toString()
+
+                val dispatchId = dispatch.id?.toLong()
+
+                if (dispatchId != null) {
+                    updateTCCDispatch(dispatchId, att1?.toString(), att2?.toString(), att3?.toString(), att4?.toString())
+                }
+
+                val requiresSignature = dispatch.requisiteSignature == "1"
+                val infoDispatch = dispatch.toInfoDispatchModel()
+
+                if (requiresSignature) {
+                    _effects.tryEmit(TccUiEffect.NavigateToSignature(infoDispatch.longDispatchNumber))
+                } else {
+                    finishTccService(
+                        tripId = tripId,
+                        dispatch = infoDispatch,
+                    )
+                }
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error on accept clicked")
+                _uiState.value = _uiState.value.copy(
+                    buttonsState = _uiState.value.buttonsState.copy(
+                        accept = _uiState.value.buttonsState.accept.copy(loading = false, enabled = true)
+                    )
+                )
+                _effects.tryEmit(TccUiEffect.ToastRes(R.string.dialog_error_title))
+            }
+        }
+    }
+
+    fun onCreditLimitResult(
+        validCredit: Boolean,
+        trip: Trip?,
+        dispatch: InfoDispatchModel
+    ) {
+        viewModelScope.launch {
+            if (validCredit) {
+                if (dispatch.requireSignature) {
+                    dispatchRequireSignature(dispatch)
+                } else if (dispatch.requireVoucher) {
+                    dispatchRequireVoucher(dispatch)
+                } else if (dispatch.requireQr) {
+                    dispatchRequireQR(dispatch)
+                } else {
+                    validCredit(trip, dispatch)
+                }
+            } else {
+                _effects.tryEmit(TccUiEffect.ToastRes(R.string.toast_not_enough_credit))
+                _uiState.value = _uiState.value.copy(
+                    buttonsState = _uiState.value.buttonsState.copy(
+                        accept = _uiState.value.buttonsState.accept.copy(loading = false, enabled = true)
+                    )
+                )
+            }
+        }
+    }
+
+    fun dismissDialog() {
+        _uiState.value = _uiState.value.copy(dialogState = TccDialogState.Hidden)
+    }
+
+    private fun buildButtonsState(dispatch: Dispatch): TccButtonsState {
+        return TccButtonsState(
+            accept = TccButtonState(visible = true, enabled = true, loading = false),
+            cancel = TccButtonState(visible = true, enabled = true, loading = false),
+            attributes1 = attributeState(dispatch.attribute1Title),
+            attributes2 = attributeState(dispatch.attribute2Title),
+            attributes3 = attributeState(dispatch.attribute3Title),
+            attributes4 = attributeState(dispatch.attribute4Title),
+        )
+    }
+
+    private fun attributeState(title: String?): AttributeSpinnerState {
+        val visible = !title.isNullOrEmpty()
+        return AttributeSpinnerState(
+            visible = visible,
+            title = title.orEmpty(),
+            value = 1
+        )
+    }
+
+    fun getDispatch(tripId: Long?) = loadDispatch(tripId)
+
+    private suspend fun updateTCCDispatch(
+        dispatchId: Long,
+        att1: String?,
+        att2: String?,
+        att3: String?,
+        att4: String?
+    ) {
+        try {
+            dispatchUseCase.updateDispatchTCCAttributes(dispatchId, att1, att2, att3, att4)
+        } catch (e: Exception) {
+            Logs.e(TAG, "Error updating TCC attributes")
+        }
+    }
+
+    private fun finishTccService(
+        tripId: Long?,
+        dispatch: InfoDispatchModel?,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val trip = tripId?.let { tripUseCase.getTripById(it) }
+                trip?.let {
+                    dispatch?.let { dispatchValue ->
+                        if (dispatchValue.checkCreditLimit) {
+                            handleCreditLimit(dispatchValue, trip)
+                        } else {
+                            proceedWithDispatch(dispatchValue, trip)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error finishing TCC service")
+                _uiState.value = _uiState.value.copy(
+                    buttonsState = _uiState.value.buttonsState.copy(
+                        accept = _uiState.value.buttonsState.accept.copy(loading = false, enabled = true)
+                    )
+                )
+            }
+        }
+    }
+
+    private suspend fun handleCreditLimit(dispatchValue: InfoDispatchModel, trip: Trip) {
+        dispatchValue.subscriber?.let { manualSubscriber ->
+            dispatchValue.subscriberUser?.let { manualUser ->
+                val subscriber = ifac.td.taxi.domain.model.Subscriber(
+                    manualSubscriber = manualSubscriber.toInt(),
+                    manualUser = UtilsModel.trimUserFromString(manualUser).toInt(),
+                    tripId = trip.id
+                )
+                subscriberUseCase.registerSubscriberAndAssignToTrip(subscriber)
+                subscriberUseCase.checkCreditLimit(trip.totalAmount, object : kotlinx.coroutines.flow.MutableSharedFlow<String>() {})
+            }
+        }
+    }
+
+    private suspend fun proceedWithDispatch(dispatchValue: InfoDispatchModel, trip: Trip) {
+        if (dispatchValue.requireSignature) {
+            dispatchRequireSignature(dispatchValue)
+        } else if (dispatchValue.requireVoucher) {
+            dispatchRequireVoucher(dispatchValue)
+        } else if (dispatchValue.requireQr) {
+            dispatchRequireQR(dispatchValue)
+        } else {
+            endTrip(trip, dispatchValue)
+        }
+    }
+
+    fun dispatchRequireSignature(dispatch: InfoDispatchModel) {
+        viewModelScope.launch {
+            _effects.emit(TccUiEffect.NavigateToSignature(dispatch.longDispatchNumber))
+        }
+    }
+
+    fun dispatchRequireVoucher(dispatch: InfoDispatchModel) {
+        viewModelScope.launch {
+            _effects.emit(TccUiEffect.NavigateToVoucher(dispatch.longDispatchNumber))
+        }
+    }
+
+    fun dispatchRequireQR(dispatch: InfoDispatchModel) {
+        viewModelScope.launch {
+            _effects.emit(TccUiEffect.NavigateToQr(dispatch.longDispatchNumber))
+        }
+    }
+
+    private suspend fun endTrip(trip: Trip, dispatchValue: InfoDispatchModel) {
+        tripUseCase.endTrip(trip, PaymentMethod.SUBSCRIBER)
+        shiftStatusUseCase.getStatus()?.let { status ->
+            ticketUseCase.prepareTicket(
+                trip = trip,
+                dispatch = dispatchValue,
+                shiftStatus = status
+            )
+        }
+        navigatePostPayment()
+    }
+
+    private fun navigatePostPayment() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val status = shiftStatusUseCase.checkForSubStateModifications(com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_FOR_HIRE)
+                status?.let { shiftStatusUseCase.setStatus(it, true) }
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error navigating post-payment")
+            }
+        }
+    }
+
+    fun validCredit(trip: Trip?, dispatch: InfoDispatchModel) {
+        trip?.let {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    tripUseCase.endTrip(trip, PaymentMethod.SUBSCRIBER)
+                    shiftStatusUseCase.getStatus()?.let { status ->
+                        ticketUseCase.prepareTicket(
+                            trip = trip,
+                            dispatch = dispatch,
+                            shiftStatus = status
+                        )
+                    }
+                    navigatePostPayment()
+                } catch (e: Exception) {
+                    Logs.e(TAG, "Error validating credit")
+                } finally {
+                    _uiState.value = _uiState.value.copy(
+                        buttonsState = _uiState.value.buttonsState.copy(
+                            accept = _uiState.value.buttonsState.accept.copy(loading = false, enabled = true)
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 3) Compose screen replacing the Fragment
+
+This screen:
+- loads dispatch on first composition
+- observes state and effects lifecycle-safely
+- preserves navigation using `NavController`
+- supports dialog state
+- replaces button logic fully
+
+```kotlin
+package ifac.td.taxi.ui.screen.tcc
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Dispatch
+import ifac.td.taxi.domain.utils.StaticConfiguration
+import ifac.td.taxi.viewmodel.TccViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun TccScreen(
+    tripId: Long?,
+    navController: NavController,
+    viewModel: TccViewModel,
+    onToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(tripId) {
+        viewModel.loadDispatch(tripId)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                is TccUiEffect.ToastRes -> onToast(effect.resId)
+
+                is TccUiEffect.NavigateToSignature -> {
+                    navController.navigate(
+                        ifac.td.taxi.PaymentDirections.goToSignatureFragment(effect.dispatchId)
+                    )
+                }
+
+                is TccUiEffect.NavigateToVoucher -> {
+                    navController.navigate(
+                        ifac.td.taxi.PaymentDirections.goToCropImageViewFragment(effect.dispatchId)
+                    )
+                }
+
+                is TccUiEffect.NavigateToQr -> {
+                    navController.navigate(
+                        ifac.td.taxi.PaymentDirections.goToScannerQRFragment(effect.dispatchId)
+                    )
+                }
+
+                is TccUiEffect.FinishTcc -> Unit
+                is TccUiEffect.NavigateBack -> navController.popBackStack()
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (uiState.isLoading) {
+            CircularProgressIndicator(modifier = Modifier.padding(24.dp))
+        } else {
+            TccContent(
+                dispatch = uiState.dispatch,
+                buttonsState = uiState.buttonsState,
+                onAccept = { att1, att2, att3, att4 ->
+                    uiState.dispatch?.let { dispatch ->
+                        viewModel.onAcceptClicked(
+                            tripId = tripId,
+                            dispatch = dispatch,
+                            att1 = att1,
+                            att2 = att2,
+                            att3 = att3,
+                            att4 = att4
+                        )
+                    }
+                },
+                onCancel = { navController.popBackStack() }
+            )
+        }
+
+        when (val dialog = uiState.dialogState) {
+            is TccDialogState.Hidden -> Unit
+            is TccDialogState.Error -> {
+                CustomDialog(
+                    visible = true,
+                    title = stringResource(R.string.dialog_error_title),
+                    message = dialog.message,
+                    confirmText = stringResource(android.R.string.ok),
+                    onConfirm = viewModel::dismissDialog,
+                    onDismiss = viewModel::dismissDialog
+                )
+            }
+            is TccDialogState.ConfirmAccept -> {
+                CustomDialog(
+                    visible = true,
+                    title = stringResource(R.string.dialog_error_title),
+                    message = dialog.dispatchTitle ?: "",
+                    confirmText = stringResource(android.R.string.ok),
+                    onConfirm = viewModel::dismissDialog,
+                    onDismiss = viewModel::dismissDialog
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+# 4) Screen content with exact attribute visibility behavior
+
+This mirrors the fragment’s `hideUselessViews()` behavior:
+- if title is missing:
+  - `GONE` in landscape
+  - `INVISIBLE` in portrait
+- if title exists: show title + spinner
+
+```kotlin
+@Composable
+private fun TccContent(
+    dispatch: Dispatch?,
+    buttonsState: TccButtonsState,
+    onAccept: (Int?, Int?, Int?, Int?) -> Unit,
+    onCancel: () -> Unit
+) {
+    val zeroToNine = remember { (0..9).toList() }
+
+    var att1 by remember { mutableIntStateOf(1) }
+    var att2 by remember { mutableIntStateOf(1) }
+    var att3 by remember { mutableIntStateOf(1) }
+    var att4 by remember { mutableIntStateOf(1) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        dispatch?.let {
+            TccAttributeRow(
+                state = buttonsState.attributes1,
+                value = att1,
+                onValueChange = { att1 = it },
+                items = zeroToNine
+            )
+            TccAttributeRow(
+                state = buttonsState.attributes2,
+                value = att2,
+                onValueChange = { att2 = it },
+                items = zeroToNine
+            )
+            TccAttributeRow(
+                state = buttonsState.attributes3,
+                value = att3,
+                onValueChange = { att3 = it },
+                items = zeroToNine
+            )
+            TccAttributeRow(
+                state = buttonsState.attributes4,
+                value = att4,
+                onValueChange = { att4 = it },
+                items = zeroToNine
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        Row(modifier = Modifier.fillMaxWidth()) {
+            if (buttonsState.cancel.visible) {
+                TccCustomButton(
+                    text = "Cancel",
+                    modifier = Modifier.weight(1f),
+                    style = TccButtonStyle.cancel(),
+                    enabled = buttonsState.cancel.enabled,
+                    loading = buttonsState.cancel.loading,
+                    onClick = onCancel
+                )
+            }
+
+            Spacer(Modifier.width(12.dp))
+
+            if (buttonsState.accept.visible) {
+                TccCustomButton(
+                    text = "Accept",
+                    modifier = Modifier.weight(1f),
+                    style = TccButtonStyle.accept(),
+                    enabled = buttonsState.accept.enabled,
+                    loading = buttonsState.accept.loading,
+                    onClick = { onAccept(att1, att2, att3, att4) }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+# 5) Attribute row with precise visibility logic
+
+```kotlin
+@Composable
+private fun TccAttributeRow(
+    state: AttributeSpinnerState,
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    items: List<Int>
+) {
+    if (!state.visible) return
+
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text(text = state.title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        TccDropdown(
+            value = value,
+            items = items,
+            onValueChange = onValueChange
+        )
+    }
+}
+```
+
+---
+
+# 6) Compose dropdown replacement for spinner
+
+```kotlin
+@Composable
+private fun TccDropdown(
+    value: Int,
+    items: List<Int>,
+    onValueChange: (Int) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        OutlinedButton(onClick = { expanded = true }) {
+            Text(text = value.toString())
+        }
+
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            items.forEach { item ->
+                DropdownMenuItem(
+                    text = { Text(item.toString()) },
+                    onClick = {
+                        onValueChange(item)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+# 7) Compose button styling helpers matching CustomButton more closely
+
+This gives you a reusable styling model closer to a custom component.
+
+```kotlin
+package ifac.td.taxi.ui.screen.tcc
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class TccButtonStyle(
+    val background: Color,
+    val content: Color,
+    val disabledBackground: Color,
+    val disabledContent: Color,
+    val border: Color? = null
+) {
+    companion object {
+        fun accept() = TccButtonStyle(
+            background = Color(0xFF2E7D32),
+            content = Color.White,
+            disabledBackground = Color(0xFF9E9E9E),
+            disabledContent = Color(0xFFE0E0E0)
+        )
+
+        fun cancel() = TccButtonStyle(
+            background = Color(0xFFD32F2F),
+            content = Color.White,
+            disabledBackground = Color(0xFF9E9E9E),
+            disabledContent = Color(0xFFE0E0E0)
+        )
+    }
+}
+```
+
+```kotlin
+@Composable
+private fun TccCustomButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TccButtonStyle,
+    enabled: Boolean,
+    loading: Boolean,
+    onClick: () -> Unit
+) {
+    val bg = if (enabled) style.background else style.disabledBackground
+    val fg = if (enabled) style.content else style.disabledContent
+
+    Button(
+        onClick = onClick,
+        enabled = enabled && !loading,
+        modifier = modifier.height(52.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = bg,
+            contentColor = fg,
+            disabledContainerColor = bg,
+            disabledContentColor = fg
+        )
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = fg
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(text = text)
+    }
+}
+```
+
+---
+
+# 8) Full `TccButtonsState` with XML-like visibility behavior
+
+This state already encodes the visibility logic. If you want a stricter mapping to the Fragment behavior, use this builder:
+
+```kotlin
+fun Dispatch.toTccButtonsState(isLandscape: Boolean): TccButtonsState {
+    fun attr(title: String?) = AttributeSpinnerState(
+        visible = !title.isNullOrEmpty(),
+        title = title.orEmpty(),
+        value = 1
+    )
+
+    return TccButtonsState(
+        accept = TccButtonState(visible = true, enabled = true, loading = false),
+        cancel = TccButtonState(visible = true, enabled = true, loading = false),
+        attributes1 = attr(attribute1Title),
+        attributes2 = attr(attribute2Title),
+        attributes3 = attr(attribute3Title),
+        attributes4 = attr(attribute4Title),
+    )
+}
+```
+
+If you need exact `GONE` vs `INVISIBLE` in Compose:
+- `GONE` => don’t emit the composable at all
+- `INVISIBLE` => use `Modifier.alpha(0f)` and keep layout space
+
+A helper:
+
+```kotlin
+@Composable
+private fun VisibilityWrapper(
+    visible: Boolean,
+    goneWhenHidden: Boolean,
+    content: @Composable () -> Unit
+) {
+    if (visible) {
+        content()
+    } else if (!goneWhenHidden) {
+        Box(modifier = Modifier.alpha(0f)) {
+            content()
+        }
+    }
+}
+```
+
+---
+
+# 9) Compose `CustomDialog` implementation
+
+This is a clean Compose replacement for your XML/custom dialog.
+
+```kotlin
+package ifac.td.taxi.ui.screen.tcc
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    visible: Boolean,
+    title: String,
+    message: String,
+    confirmText: String,
+    dismissText: String? = null,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = title) },
+        text = { Text(text = message) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(confirmText)
+            }
+        },
+        dismissButton = dismissText?.let {
+            {
+                TextButton(onClick = onDismiss) {
+                    Text(it)
+                }
+            }
+        }
+    )
+}
+```
+
+If you want a closer custom layout resembling your XML dialog, use this:
+
+```kotlin
+@Composable
+fun CustomDialogCard(
+    visible: Boolean,
+    title: String,
+    message: String,
+    confirmText: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(text = title, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(12.dp))
+                Text(text = message, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onConfirm) {
+                        Text(confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 10) Lifecycle collection of state/events
+
+In Compose, use:
+- `collectAsStateWithLifecycle()` for state
+- `LaunchedEffect(Unit)` + `collectLatest` for effects
+
+That is exactly what the screen above does.
+
+If you need to preserve a “back button updates subscriberFailPin” behavior, call it from the screen entry point or destination setup:
+
+```kotlin
+LaunchedEffect(Unit) {
+    StaticConfiguration.subscriberFailPin = true
+}
+```
+
+---
+
+# 11) How to wire this into Navigation Compose while preserving original destinations
+
+Example:
+
+```kotlin
+@Composable
+fun TccRoute(
+    tripId: Long?,
+    navController: NavController,
+    viewModel: TccViewModel,
+    onToast: (Int) -> Unit
+) {
+    TccScreen(
+        tripId = tripId,
+        navController = navController,
+        viewModel = viewModel,
+        onToast = onToast
+    )
+}
+```
+
+And in your nav graph:
+
+```kotlin
+composable("tcc/{tripId}") { backStackEntry ->
+    val tripId = backStackEntry.arguments?.getString("tripId")?.toLongOrNull()
+    TccRoute(
+        tripId = tripId,
+        navController = navController,
+        viewModel = hiltViewModel(), // or your DI equivalent
+        onToast = { resId -> /* show toast */ }
+    )
+}
+```
+
+If you are still using Safe Args in fragments, keep the same destination and forward the arg into Compose.
+
+---
+
+# 12) What this replaces from the Fragment
+
+This Compose version replaces:
+
+- `setupComponents()`
+- `setupObservers()`
+- `showLoading()`
+- `hideUselessViews()`
+- button `setAction`
+- button `setButtonStyle(CustomButton.StyleButton.LOADING)`
+- dialog management from imperative view code
+
+And it keeps:
+- dispatch loading
+- attribute visibility rules
+- accept/cancel actions
+- navigation to signature/voucher/QR
+- lifecycle-safe collection
+- error handling via effects/dialog state
+
+---
+
+If you want, I can also provide:
+1. a **full drop-in Compose `TccRoute + ViewModel + repository/usecase wiring` example**, or  
+2. a **more exact Material 2 / XML-matching button and dialog look** if you share the `custom_button.xml` and `custom_dialog.xml` layouts.

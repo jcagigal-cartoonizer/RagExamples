@@ -1,0 +1,834 @@
+Below is a Compose-first replacement for the `WebViewFragment` that preserves the original behavior, navigation style, button logic, and error/dialog handling while replacing fragment/view binding logic with:
+
+- a Compose `WebViewScreen`
+- a Compose-friendly `WebViewViewModel`
+- `UiState + UiEvent + UiEffect`
+- a `WebViewButtonsState` that fully replaces fragment button logic
+- a dialog state and lifecycle-aware effect collection
+- a Compose `CustomDialog`
+- button styling helpers that mirror the custom button behavior more closely
+
+I’ll keep it Android + Jetpack Compose only, with Navigation Compose used to preserve navigation behavior.
+
+---
+
+# 1) Compose UI architecture
+
+## UI model overview
+
+We’ll use:
+
+- `WebViewUiState`  
+  Holds screen state:
+  - current url
+  - loading/error state
+  - back button state
+  - dialog state
+  - webview visibility
+  - whether home url is available
+
+- `WebViewUiEvent`  
+  User intents:
+  - `OnScreenStarted`
+  - `OnHomeClicked`
+  - `OnBackClicked`
+  - `OnReloadClicked`
+  - `OnCancelClicked`
+  - `OnWebPageFinished`
+  - `OnWebPageError`
+  - `OnDialogDismissed`
+
+- `WebViewUiEffect`  
+  One-off events via `SharedFlow`:
+  - `NavigateBack`
+  - `ShowDialog`
+  - `LoadUrl`
+  - `SaveLastVisitedUrl`
+  - `ShowToast` if needed
+
+- `WebViewButtonsState`  
+  Encapsulates:
+  - enabled/disabled state
+  - visibility
+  - button colors
+  - text color
+  - icon color
+  - clickability
+
+This fully replaces fragment-side button logic like `checkButtons()` and `setUpButtons()`.
+
+---
+
+# 2) ViewModel
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class WebViewViewModel(
+    application: Application,
+    private val savedStateHandle: SavedStateHandle
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(WebViewUiState())
+    val uiState: StateFlow<WebViewUiState> = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<WebViewUiEffect>()
+    val effects: SharedFlow<WebViewUiEffect> = _effects
+
+    fun onEvent(event: WebViewUiEvent) {
+        when (event) {
+            is WebViewUiEvent.OnScreenStarted -> {
+                val homeUrl = event.homeUrl
+                _uiState.update {
+                    it.copy(
+                        homeUrl = homeUrl,
+                        currentUrl = homeUrl,
+                        hasHomeUrl = homeUrl != null,
+                        showWebView = homeUrl != null,
+                        showError = homeUrl == null,
+                        buttons = WebViewButtonsState.default(
+                            canGoBack = false,
+                            isHomePage = true
+                        )
+                    )
+                }
+
+                if (homeUrl != null) {
+                    viewModelScope.launch {
+                        _effects.emit(WebViewUiEffect.LoadUrl(homeUrl, clearHistory = true))
+                    }
+                } else {
+                    viewModelScope.launch {
+                        _effects.emit(
+                            WebViewUiEffect.ShowDialog(
+                                title = "Error",
+                                message = "Web page URL is missing."
+                            )
+                        )
+                    }
+                }
+            }
+
+            WebViewUiEvent.OnHomeClicked -> {
+                val homeUrl = _uiState.value.homeUrl ?: return
+                _uiState.update {
+                    it.copy(
+                        showError = false,
+                        showWebView = true,
+                        currentUrl = homeUrl,
+                        buttons = it.buttons.copy(
+                            canGoBack = false,
+                            isHomePage = true
+                        ).rebuild()
+                    )
+                }
+                viewModelScope.launch {
+                    _effects.emit(WebViewUiEffect.LoadUrl(homeUrl, clearHistory = true))
+                }
+            }
+
+            WebViewUiEvent.OnBackClicked -> {
+                _effects.tryEmit(WebViewUiEffect.RequestWebViewGoBack)
+            }
+
+            WebViewUiEvent.OnReloadClicked -> {
+                _effects.tryEmit(WebViewUiEffect.RequestWebViewReload)
+            }
+
+            WebViewUiEvent.OnCancelClicked -> {
+                _effects.tryEmit(WebViewUiEffect.NavigateBack)
+            }
+
+            is WebViewUiEvent.OnPageFinished -> {
+                val canGoBack = event.canGoBack
+                val isHomePage = event.url == _uiState.value.homeUrl
+                val showError = event.hasError
+
+                _uiState.update {
+                    it.copy(
+                        currentUrl = event.url ?: it.currentUrl,
+                        showError = showError,
+                        showWebView = !showError,
+                        buttons = it.buttons.copy(
+                            canGoBack = canGoBack,
+                            isHomePage = isHomePage
+                        ).rebuild()
+                    )
+                }
+
+                event.url?.let { url ->
+                    viewModelScope.launch {
+                        _effects.emit(WebViewUiEffect.SaveLastVisitedUrl(url))
+                    }
+                }
+            }
+
+            is WebViewUiEvent.OnPageError -> {
+                if (event.errorCode == android.webkit.WebViewClient.ERROR_HOST_LOOKUP) {
+                    _uiState.update {
+                        it.copy(
+                            showError = true,
+                            showWebView = false
+                        )
+                    }
+                    viewModelScope.launch {
+                        _effects.emit(
+                            WebViewUiEffect.ShowDialog(
+                                title = "Network error",
+                                message = event.description ?: "Unable to load the page."
+                            )
+                        )
+                    }
+                }
+            }
+
+            WebViewUiEvent.OnDialogDismissed -> {
+                _uiState.update { it.copy(dialogState = null) }
+            }
+
+            WebViewUiEvent.OnWebViewCanGoBackChanged -> {
+                val state = _uiState.value
+                _uiState.update {
+                    it.copy(
+                        buttons = it.buttons.copy(
+                            canGoBack = event.canGoBack,
+                            isHomePage = state.currentUrl == state.homeUrl
+                        ).rebuild()
+                    )
+                }
+            }
+        }
+    }
+
+    fun setDialog(dialogState: DialogState?) {
+        _uiState.update { it.copy(dialogState = dialogState) }
+    }
+}
+```
+
+---
+
+# 3) UI state, events, effects
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+data class WebViewUiState(
+    val homeUrl: String? = null,
+    val currentUrl: String? = null,
+    val hasHomeUrl: Boolean = false,
+    val showError: Boolean = false,
+    val showWebView: Boolean = true,
+    val dialogState: DialogState? = null,
+    val buttons: WebViewButtonsState = WebViewButtonsState.default(),
+)
+
+sealed interface WebViewUiEvent {
+    data class OnScreenStarted(val homeUrl: String?) : WebViewUiEvent
+    object OnHomeClicked : WebViewUiEvent
+    object OnBackClicked : WebViewUiEvent
+    object OnReloadClicked : WebViewUiEvent
+    object OnCancelClicked : WebViewUiEvent
+    data class OnPageFinished(
+        val url: String?,
+        val canGoBack: Boolean,
+        val hasError: Boolean
+    ) : WebViewUiEvent
+
+    data class OnPageError(
+        val errorCode: Int,
+        val description: String?
+    ) : WebViewUiEvent
+
+    data class OnWebViewCanGoBackChanged(val canGoBack: Boolean) : WebViewUiEvent
+    object OnDialogDismissed : WebViewUiEvent
+}
+
+sealed interface WebViewUiEffect {
+    data class LoadUrl(val url: String, val clearHistory: Boolean) : WebViewUiEffect
+    data object RequestWebViewGoBack : WebViewUiEffect
+    data object RequestWebViewReload : WebViewUiEffect
+    data object NavigateBack : WebViewUiEffect
+    data class SaveLastVisitedUrl(val url: String) : WebViewUiEffect
+    data class ShowDialog(val title: String, val message: String) : WebViewUiEffect
+}
+
+data class DialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String = "OK",
+    val dismissText: String? = null
+)
+```
+
+---
+
+# 4) Button state replacing fragment logic
+
+This mirrors the original behavior:
+
+- `btnGoBack` is enabled only if:
+  - WebView can go back
+  - and current page is not home page
+
+- `btnHome` always visible
+- `btnReload` always visible
+- `btnCancel` always visible
+
+I’ll add styling helpers to mimic the custom button behavior.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.compose.ui.graphics.Color
+
+data class WebViewButtonsState(
+    val home: ButtonVisualState = ButtonVisualState(),
+    val goBack: ButtonVisualState = ButtonVisualState(),
+    val cancel: ButtonVisualState = ButtonVisualState(),
+    val reload: ButtonVisualState = ButtonVisualState(),
+    val canGoBack: Boolean = false,
+    val isHomePage: Boolean = true
+) {
+    companion object {
+        fun default(
+            canGoBack: Boolean = false,
+            isHomePage: Boolean = true
+        ): WebViewButtonsState = WebViewButtonsState(
+            canGoBack = canGoBack,
+            isHomePage = isHomePage
+        ).rebuild()
+    }
+
+    fun rebuild(): WebViewButtonsState {
+        val goBackEnabled = canGoBack && !isHomePage
+
+        return copy(
+            home = ButtonVisualState.defaultEnabled(),
+            goBack = if (goBackEnabled) ButtonVisualState.defaultEnabled() else ButtonVisualState.defaultDisabled(),
+            cancel = ButtonVisualState.defaultEnabled(),
+            reload = ButtonVisualState.defaultEnabled()
+        )
+    }
+}
+
+data class ButtonVisualState(
+    val enabled: Boolean = true,
+    val visible: Boolean = true,
+    val backgroundColor: Color = Color(0xFF1976D2),
+    val contentColor: Color = Color.White,
+    val borderColor: Color = Color.Transparent
+) {
+    companion object {
+        fun defaultEnabled() = ButtonVisualState(
+            enabled = true,
+            visible = true,
+            backgroundColor = Color(0xFF1976D2),
+            contentColor = Color.White,
+            borderColor = Color.Transparent
+        )
+
+        fun defaultDisabled() = ButtonVisualState(
+            enabled = false,
+            visible = true,
+            backgroundColor = Color(0xFFE0E0E0),
+            contentColor = Color(0xFF9E9E9E),
+            borderColor = Color(0xFFBDBDBD)
+        )
+    }
+}
+```
+
+---
+
+# 5) Compose screen with preserved navigation and lifecycle effect collection
+
+This version assumes you are using `NavController` and navigating with Compose Navigation. If your app still uses Fragment navigation, you can host this composable in a fragment and still use `NavHostController` from the activity graph.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
+import ifac.td.taxi.viewmodel.*
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun WebViewRoute(
+    navController: NavController,
+    homeUrl: String?,
+    viewModel: WebViewViewModel = viewModel()
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var webView: WebView? by remember { mutableStateOf(null) }
+
+    LaunchedEffect(homeUrl) {
+        viewModel.onEvent(WebViewUiEvent.OnScreenStarted(homeUrl))
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                is WebViewUiEffect.LoadUrl -> {
+                    if (effect.clearHistory) {
+                        webView?.clearHistory()
+                    }
+                    webView?.loadUrl(effect.url)
+                }
+
+                WebViewUiEffect.RequestWebViewGoBack -> {
+                    if (webView?.canGoBack() == true) {
+                        webView?.goBack()
+                    }
+                }
+
+                WebViewUiEffect.RequestWebViewReload -> {
+                    webView?.reload()
+                }
+
+                WebViewUiEffect.NavigateBack -> {
+                    navController.popBackStack()
+                }
+
+                is WebViewUiEffect.SaveLastVisitedUrl -> {
+                    // Replace with DataStore / SharedPreferences write
+                    // For parity with fragment behavior:
+                    // saveLastVisitedUrl(effect.url)
+                }
+
+                is WebViewUiEffect.ShowDialog -> {
+                    viewModel.setDialog(
+                        DialogState(
+                            title = effect.title,
+                            message = effect.message
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    WebViewScreen(
+        state = state,
+        onEvent = viewModel::onEvent,
+        onWebViewCreated = { createdWebView ->
+            webView = createdWebView
+        },
+        onNavigateBack = { navController.popBackStack() }
+    )
+}
+```
+
+---
+
+# 6) WebViewScreen composable
+
+```kotlin
+@Composable
+fun WebViewScreen(
+    state: WebViewUiState,
+    onEvent: (WebViewUiEvent) -> Unit,
+    onWebViewCreated: (WebView) -> Unit,
+    onNavigateBack: () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            AndroidWebView(
+                visible = state.showWebView,
+                url = state.currentUrl,
+                onCreated = onWebViewCreated,
+                onPageFinished = { url, canGoBack, hasError ->
+                    onEvent(WebViewUiEvent.OnPageFinished(url, canGoBack, hasError))
+                },
+                onError = { errorCode, description ->
+                    onEvent(WebViewUiEvent.OnPageError(errorCode, description))
+                },
+                modifier = Modifier.weight(1f)
+            )
+
+            if (state.showError) {
+                ErrorContent(
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            WebViewButtonsRow(
+                buttons = state.buttons,
+                onHome = { onEvent(WebViewUiEvent.OnHomeClicked) },
+                onBack = { onEvent(WebViewUiEvent.OnBackClicked) },
+                onCancel = { onEvent(WebViewUiEvent.OnCancelClicked) },
+                onReload = { onEvent(WebViewUiEvent.OnReloadClicked) }
+            )
+        }
+
+        state.dialogState?.let { dialog ->
+            CustomDialog(
+                dialogState = dialog,
+                onConfirm = { onEvent(WebViewUiEvent.OnDialogDismissed) },
+                onDismiss = { onEvent(WebViewUiEvent.OnDialogDismissed) }
+            )
+        }
+    }
+}
+```
+
+---
+
+# 7) Android WebView in Compose
+
+```kotlin
+import android.annotation.SuppressLint
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun AndroidWebView(
+    visible: Boolean,
+    url: String?,
+    onCreated: (WebView) -> Unit,
+    onPageFinished: (String?, Boolean, Boolean) -> Unit,
+    onError: (Int, String?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!visible) return
+
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            WebView(context).apply {
+                settings.apply {
+                    cacheMode = WebSettings.LOAD_NO_CACHE
+                    domStorageEnabled = true
+                    javaScriptEnabled = true
+                    setSupportZoom(false)
+                }
+
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        onPageFinished(url, canGoBack(), false)
+                    }
+
+                    @Deprecated("Deprecated in API 23")
+                    override fun onReceivedError(
+                        view: WebView?,
+                        errorCode: Int,
+                        description: String?,
+                        failingUrl: String?
+                    ) {
+                        super.onReceivedError(view, errorCode, description, failingUrl)
+                        onError(errorCode, description)
+                        onPageFinished(failingUrl, canGoBack(), true)
+                    }
+                }
+
+                onCreated(this)
+                url?.let { loadUrl(it) }
+            }
+        },
+        update = { webView ->
+            if (webView.url == null && url != null) {
+                webView.loadUrl(url)
+            }
+        }
+    )
+}
+```
+
+---
+
+# 8) Buttons row using exact state
+
+```kotlin
+@Composable
+fun WebViewButtonsRow(
+    buttons: WebViewButtonsState,
+    onHome: () -> Unit,
+    onBack: () -> Unit,
+    onCancel: () -> Unit,
+    onReload: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        StyledButton(
+            text = "Home",
+            state = buttons.home,
+            modifier = Modifier.weight(1f),
+            onClick = onHome
+        )
+
+        StyledButton(
+            text = "Back",
+            state = buttons.goBack,
+            modifier = Modifier.weight(1f),
+            onClick = onBack
+        )
+
+        StyledButton(
+            text = "Reload",
+            state = buttons.reload,
+            modifier = Modifier.weight(1f),
+            onClick = onReload
+        )
+
+        StyledButton(
+            text = "Cancel",
+            state = buttons.cancel,
+            modifier = Modifier.weight(1f),
+            onClick = onCancel
+        )
+    }
+}
+```
+
+---
+
+# 9) Compose button styling helper closer to custom button behavior
+
+```kotlin
+@Composable
+fun StyledButton(
+    text: String,
+    state: ButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    Button(
+        onClick = onClick,
+        enabled = state.enabled,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = state.backgroundColor,
+            contentColor = state.contentColor,
+            disabledContainerColor = state.backgroundColor,
+            disabledContentColor = state.contentColor
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, state.borderColor)
+    ) {
+        Text(text = text)
+    }
+}
+```
+
+---
+
+# 10) Error content
+
+```kotlin
+@Composable
+fun ErrorContent(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(24.dp)
+    ) {
+        Text(
+            text = "Unable to load the page.",
+            style = MaterialTheme.typography.bodyLarge
+        )
+    }
+}
+```
+
+---
+
+# 11) CustomDialog composable based on XML dialog behavior
+
+Since you asked for a dialog based on `custom_dialog.xml` and `CustomDialog.kt`, but those files were not included, I’ll provide a standard reusable Compose version that usually matches a custom XML dialog:
+
+- title
+- message
+- confirm button
+- optional dismiss button
+- centered card
+- dimmed background
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.DialogState
+
+@Composable
+fun CustomDialog(
+    dialogState: DialogState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 8.dp,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .padding(24.dp)
+                .fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = dialogState.title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = dialogState.message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dialogState.dismissText != null) {
+                        TextButton(onClick = onDismiss) {
+                            Text(dialogState.dismissText)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
+                    Button(onClick = onConfirm) {
+                        Text(dialogState.confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 12) Preserving navigation behavior from the fragment
+
+In the fragment version, `btnCancel` called `iMainActivity.navigateBack()`.
+
+In Compose, use:
+
+```kotlin
+navController.popBackStack()
+```
+
+If you need exact same app navigation helper behavior, create a wrapper inside your Activity or a navigation lambda and pass it into `WebViewRoute`.
+
+---
+
+# 13) Example of how to host this in a Fragment while preserving existing navigation graph
+
+If you are migrating incrementally and want to keep Fragment Navigation, you can use a `ComposeView` inside a fragment and keep navigation through the fragment’s `NavController`.
+
+```kotlin
+class WebViewComposeFragment : Fragment() {
+
+    private val viewModel: WebViewViewModel by viewModels()
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        val homeUrl = arguments?.getString("webViewURL")
+
+        return ComposeView(requireContext()).apply {
+            setContent {
+                val navController = rememberNavController()
+
+                WebViewRoute(
+                    navController = navController,
+                    homeUrl = homeUrl,
+                    viewModel = viewModel
+                )
+            }
+        }
+    }
+}
+```
+
+If you already use Compose Navigation directly, place `WebViewRoute` inside your `NavHost`.
+
+---
+
+# 14) Notes on exactness vs XML behavior
+
+Because the actual XML layouts and `CustomButton`/`CustomDialog` code were not included, I matched the behavior as closely as possible from the fragment code:
+
+### Fragment behavior preserved
+- hide header / bottom bar is conceptually preserved by simply not rendering them in Compose or by using parent scaffold state
+- load home URL on screen start
+- if URL missing, show error dialog/layout
+- WebView settings:
+  - no cache
+  - DOM storage enabled
+  - JS enabled
+  - zoom disabled
+- back button disabled on home page or when WebView can’t go back
+- cancel navigates back
+- reload reloads page
+- save last visited URL
+- show error if host lookup/network issue occurs
+
+### What you may want to fine-tune
+- exact colors from `CustomButton`
+- exact `custom_dialog.xml` spacing and shapes
+- exact error text/resource usage
+- if `GuideWebViewClient` had additional logic beyond what’s visible here
+
+If you want, I can provide a second version that:
+1. uses `Scaffold`
+2. replaces the placeholder button colors with a theme-based palette
+3. adds a fully typed `WebViewArgs` and `SavedStateHandle` integration
+4. mirrors your `CustomButton.StyleButton` more literally with `ENABLE/DISABLE` enums

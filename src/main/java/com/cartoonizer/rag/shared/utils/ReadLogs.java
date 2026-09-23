@@ -15,7 +15,7 @@ public class ReadLogs extends ReadFile {
     public void processLine(String line) {
 //        if (line.contains("OPEN ") || line.contains("OPEN:") || line.contains("CLOSE ") || line.contains("CLOSED ") || line.contains("CLOSED:") ||
 //                line.contains("isEndTag") || line.contains("DEBUG!!!") || line.contains("*** processBlocks call openFile")) {
-        if (line.contains("GenerateComposeFiles addImportForInternalVars ")) {
+        if (line.contains("ERROR: ")) {
             System.out.println(line);
         }
     }

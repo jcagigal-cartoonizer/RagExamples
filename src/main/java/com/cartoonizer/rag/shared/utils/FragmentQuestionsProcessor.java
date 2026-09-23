@@ -69,7 +69,8 @@ public class FragmentQuestionsProcessor {
             String[] questions = {
             "1. provide a jetpack Compose composable that implements the following jetpack views class \n" +
             savedViewClass +
-            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" + savedViewModel +
+            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" + 
+            savedViewModel +
             "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
             "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
             "5. Use state holders/data classes to fully replace the fragment button logic. \n" +

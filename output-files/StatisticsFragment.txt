@@ -1,0 +1,775 @@
+Below is a Compose-first, navigation-preserving rewrite of your `StatisticsFragment` plus a Compose-friendly `StatisticsViewModel` architecture using `UiState + UiEvent + SharedFlow<StatisticsUiEffect>`, lifecycle-aware collection, dialog state, and a Compose custom dialog.
+
+I’ve organized this into:
+
+1. **Compose screen replacing `StatisticsFragment`**
+2. **Compose ViewModel with `UiState`, `UiEvent`, `UiEffect`**
+3. **`StatisticsButtonsState` replacing fragment button logic**
+4. **Compose button styling helpers closer to your custom button**
+5. **Compose `CustomDialog` replacement**
+6. **Usage notes for preserving Jetpack Views navigation**
+7. **A tab + pager Compose implementation matching your 3-page setup**
+
+---
+
+## 1) Compose screen replacing `StatisticsFragment`
+
+This composable keeps the same functional behavior as your Fragment:
+
+- header visibility is still controlled externally via navigation host / activity
+- same 3 tabs: Week / Month / Year
+- collects state with lifecycle awareness
+- collects effects with lifecycle awareness
+- supports dialog state
+- preserves navigation integration
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.screen.components.CustomDialog
+import ifac.td.taxi.ui.screen.components.StatisticsButtons
+import ifac.td.taxi.viewmodel.StatisticsUiEffect
+import ifac.td.taxi.viewmodel.StatisticsUiEvent
+import ifac.td.taxi.viewmodel.StatisticsViewModel
+
+@Composable
+fun StatisticsScreen(
+    navController: NavController,
+    viewModel: StatisticsViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
+
+    var dialogState by rememberSaveable { mutableStateOf<StatisticsDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is StatisticsUiEffect.OpenDialog -> {
+                    dialogState = effect.dialogState
+                }
+                StatisticsUiEffect.CloseDialog -> {
+                    dialogState = null
+                }
+                StatisticsUiEffect.NavigateBack -> {
+                    navController.popBackStack()
+                }
+                StatisticsUiEffect.NavigateToHome -> {
+                    navController.popBackStack()
+                }
+            }
+        }
+    }
+
+    Scaffold(
+        modifier = modifier.fillMaxSize()
+    ) { padding ->
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.padding(padding)) {
+                StatisticsButtons(
+                    state = buttonsState,
+                    onEvent = viewModel::onEvent
+                )
+
+                StatisticsTabsContent(
+                    uiState = uiState,
+                    onEvent = viewModel::onEvent
+                )
+            }
+        }
+    }
+
+    dialogState?.let { dialog ->
+        CustomDialog(
+            state = dialog,
+            onDismiss = {
+                dialogState = null
+                viewModel.onEvent(StatisticsUiEvent.DialogDismissed)
+            },
+            onConfirm = {
+                dialogState = null
+                viewModel.onEvent(StatisticsUiEvent.DialogConfirmed)
+            }
+        )
+    }
+}
+```
+
+---
+
+## 2) Compose ViewModel with `UiState + UiEvent + UiEffect`
+
+This replaces the old Flow-only architecture with a Compose-friendly design.
+
+### UI state model
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.repository.room.dao.ShiftDao.ShiftStatistics
+import ifac.td.taxi.repository.room.dao.TripDao.TotalAmountByDate
+
+data class StatisticsUiState(
+    val selectedTab: StatisticsTab = StatisticsTab.Week,
+    val billingValues: List<TotalAmountByDate> = emptyList(),
+    val timeValues: List<ShiftStatistics> = emptyList(),
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null,
+)
+```
+
+### Tab model
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+enum class StatisticsTab {
+    Week, Month, Year
+}
+```
+
+### Events
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+sealed interface StatisticsUiEvent {
+    data class TabSelected(val tab: StatisticsTab) : StatisticsUiEvent
+
+    data object BillingClicked : StatisticsUiEvent
+    data object TimeClicked : StatisticsUiEvent
+    data object DialogConfirmed : StatisticsUiEvent
+    data object DialogDismissed : StatisticsUiEvent
+
+    data object BackClicked : StatisticsUiEvent
+    data object HomeClicked : StatisticsUiEvent
+}
+```
+
+### Effects
+
+`SharedFlow<StatisticsUiEffect>` is used exactly as requested.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.ui.screen.components.StatisticsDialogState
+
+sealed interface StatisticsUiEffect {
+    data class OpenDialog(val dialogState: StatisticsDialogState) : StatisticsUiEffect
+    data object CloseDialog : StatisticsUiEffect
+    data object NavigateBack : StatisticsUiEffect
+    data object NavigateToHome : StatisticsUiEffect
+}
+```
+
+### Compose-friendly ViewModel
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.ShiftUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.repository.room.dao.ShiftDao.ShiftStatistics
+import ifac.td.taxi.repository.room.dao.TripDao.TotalAmountByDate
+import ifac.td.taxi.ui.screen.components.StatisticsDialogState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class StatisticsViewModel(
+    private val tripUseCase: TripUseCase,
+    private val shiftUseCase: ShiftUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val _uiState = MutableStateFlow(StatisticsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<StatisticsUiEffect>(extraBufferCapacity = 1)
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private val _buttonsState = MutableStateFlow(StatisticsButtonsState())
+    val buttonsState = _buttonsState.asStateFlow()
+
+    init {
+        updateButtonsForTab(StatisticsTab.Week)
+        loadForSelectedTab(StatisticsTab.Week)
+    }
+
+    fun onEvent(event: StatisticsUiEvent) {
+        when (event) {
+            is StatisticsUiEvent.TabSelected -> {
+                _uiState.update { it.copy(selectedTab = event.tab) }
+                updateButtonsForTab(event.tab)
+                loadForSelectedTab(event.tab)
+            }
+
+            StatisticsUiEvent.BillingClicked -> {
+                _uiEffect.tryEmit(
+                    StatisticsUiEffect.OpenDialog(
+                        StatisticsDialogState(
+                            title = "Billing",
+                            message = "Show billing statistics?"
+                        )
+                    )
+                )
+            }
+
+            StatisticsUiEvent.TimeClicked -> {
+                _uiEffect.tryEmit(
+                    StatisticsUiEffect.OpenDialog(
+                        StatisticsDialogState(
+                            title = "Time",
+                            message = "Show time statistics?"
+                        )
+                    )
+                )
+            }
+
+            StatisticsUiEvent.DialogConfirmed -> {
+                _uiEffect.tryEmit(StatisticsUiEffect.CloseDialog)
+            }
+
+            StatisticsUiEvent.DialogDismissed -> {
+                _uiEffect.tryEmit(StatisticsUiEffect.CloseDialog)
+            }
+
+            StatisticsUiEvent.BackClicked -> {
+                _uiEffect.tryEmit(StatisticsUiEffect.NavigateBack)
+            }
+
+            StatisticsUiEvent.HomeClicked -> {
+                _uiEffect.tryEmit(StatisticsUiEffect.NavigateToHome)
+            }
+        }
+    }
+
+    private fun loadForSelectedTab(tab: StatisticsTab) {
+        when (tab) {
+            StatisticsTab.Week -> {
+                get7LastDays()
+                getTimeLast7Days()
+            }
+            StatisticsTab.Month -> {
+                get30LastDays()
+                getTimeLast30Days()
+            }
+            StatisticsTab.Year -> {
+                get12LastMonths()
+                getTimeLast12Months()
+            }
+        }
+    }
+
+    private fun updateButtonsForTab(tab: StatisticsTab) {
+        _buttonsState.value = StatisticsButtonsState.forTab(tab)
+    }
+
+    fun get7LastDays() {
+        viewModelScope.launch {
+            val values = tripUseCase.getTotalAmountPerDayLast7Days()
+            _uiState.update { it.copy(billingValues = values, isLoading = false) }
+        }
+    }
+
+    fun get30LastDays() {
+        viewModelScope.launch {
+            val values = tripUseCase.getTotalAmountPerDayLast30Days()
+            _uiState.update { it.copy(billingValues = values, isLoading = false) }
+        }
+    }
+
+    fun get12LastMonths() {
+        viewModelScope.launch {
+            val values = tripUseCase.getTotalAmountPerMonthLast12Months()
+            _uiState.update { it.copy(billingValues = values, isLoading = false) }
+        }
+    }
+
+    fun getTimeLast7Days() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val values = shiftUseCase.getTimePerMonthLast7Days()
+            _uiState.update { it.copy(timeValues = values, isLoading = false) }
+        }
+    }
+
+    fun getTimeLast30Days() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val values = shiftUseCase.getTimePerMonthLast30Days()
+            _uiState.update { it.copy(timeValues = values, isLoading = false) }
+        }
+    }
+
+    fun getTimeLast12Months() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val values = shiftUseCase.getTimePerMonthLast12Months()
+            _uiState.update { it.copy(timeValues = values, isLoading = false) }
+        }
+    }
+}
+```
+
+---
+
+## 3) Full `StatisticsButtonsState` replacing fragment button logic
+
+This is a state-holder approach that replaces the old button setup logic.
+
+It tracks:
+- visibility
+- enabled state
+- selected states
+- colors
+- text colors
+- border colors
+- optional icon/tint behavior
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.compose.ui.graphics.Color
+
+data class StatisticsButtonsState(
+    val billing: StatisticsButtonState = StatisticsButtonState(),
+    val time: StatisticsButtonState = StatisticsButtonState(),
+    val back: StatisticsButtonState = StatisticsButtonState(),
+) {
+    companion object {
+        fun forTab(tab: StatisticsTab): StatisticsButtonsState {
+            return when (tab) {
+                StatisticsTab.Week -> StatisticsButtonsState(
+                    billing = StatisticsButtonState(
+                        visible = true,
+                        enabled = true,
+                        selected = true,
+                        backgroundColor = Color(0xFF1E88E5),
+                        contentColor = Color.White,
+                        borderColor = Color(0xFF1E88E5),
+                    ),
+                    time = StatisticsButtonState(
+                        visible = true,
+                        enabled = true,
+                        selected = false,
+                        backgroundColor = Color.Transparent,
+                        contentColor = Color(0xFF1E88E5),
+                        borderColor = Color(0xFF1E88E5),
+                    )
+                )
+
+                StatisticsTab.Month -> StatisticsButtonsState(
+                    billing = StatisticsButtonState(
+                        visible = true,
+                        enabled = true,
+                        selected = false,
+                        backgroundColor = Color.Transparent,
+                        contentColor = Color(0xFF1E88E5),
+                        borderColor = Color(0xFF1E88E5),
+                    ),
+                    time = StatisticsButtonState(
+                        visible = true,
+                        enabled = true,
+                        selected = true,
+                        backgroundColor = Color(0xFF1E88E5),
+                        contentColor = Color.White,
+                        borderColor = Color(0xFF1E88E5),
+                    )
+                )
+
+                StatisticsTab.Year -> StatisticsButtonsState(
+                    billing = StatisticsButtonState(
+                        visible = false,
+                        enabled = false
+                    ),
+                    time = StatisticsButtonState(
+                        visible = false,
+                        enabled = false
+                    )
+                )
+            }
+        }
+    }
+}
+
+data class StatisticsButtonState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val selected: Boolean = false,
+    val backgroundColor: Color = Color.Transparent,
+    val contentColor: Color = Color.Black,
+    val borderColor: Color = Color.Gray,
+)
+```
+
+> If you need exact XML matching, you can plug in your project’s actual colors/dimens instead of these defaults.
+
+---
+
+## 4) Compose button styling helpers closer to your custom button component
+
+This is a more “custom button” style helper, designed to imitate a reusable XML custom button more closely.
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
+import ifac.td.taxi.viewmodel.StatisticsButtonState
+
+@Composable
+fun StatisticsStyledButton(
+    text: String,
+    state: StatisticsButtonState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(12.dp),
+) {
+    if (!state.visible) return
+
+    Surface(
+        modifier = modifier
+            .defaultMinSize(minHeight = 48.dp)
+            .wrapContentWidth()
+            .clickable(enabled = state.enabled) { onClick() },
+        color = state.backgroundColor,
+        contentColor = state.contentColor,
+        shape = shape,
+        border = BorderStroke(1.dp, state.borderColor)
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier,
+            color = state.contentColor,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+```
+
+### Buttons row
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.StatisticsButtonsState
+import ifac.td.taxi.viewmodel.StatisticsUiEvent
+
+@Composable
+fun StatisticsButtons(
+    state: StatisticsButtonsState,
+    onEvent: (StatisticsUiEvent) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        StatisticsStyledButton(
+            text = "Billing",
+            state = state.billing,
+            onClick = { onEvent(StatisticsUiEvent.BillingClicked) }
+        )
+
+        StatisticsStyledButton(
+            text = "Time",
+            state = state.time,
+            onClick = { onEvent(StatisticsUiEvent.TimeClicked) }
+        )
+    }
+}
+```
+
+---
+
+## 5) Compose `CustomDialog` based on `custom_dialog.xml` + `CustomDialog.kt`
+
+Because the XML and Kotlin source weren’t included verbatim, below is a clean Compose equivalent that follows the usual custom dialog structure:
+
+- title
+- message
+- cancel/confirm buttons
+- dismissible behavior
+- centered card shape
+- optional icon area if you want to expand it
+
+### Dialog state
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+data class StatisticsDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String = "OK",
+    val dismissText: String = "Cancel",
+)
+```
+
+### Dialog composable
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    state: StatisticsDialogState,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = state.title)
+        },
+        text = {
+            Text(text = state.message)
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(text = state.confirmText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = state.dismissText)
+            }
+        },
+        shape = RoundedCornerShape(16.dp)
+    )
+}
+```
+
+If your XML dialog included more custom styling, replace `AlertDialog` with a `Dialog` + `Surface` and mirror the exact padding/background/elevation.
+
+---
+
+## 6) Tabs + pager in Compose, replacing `TabLayoutMediator + ViewPager2`
+
+This replaces the fragment’s `TabLayout` and `ViewPager2` behavior in Compose.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.StatisticsTab
+import ifac.td.taxi.viewmodel.StatisticsUiEvent
+import ifac.td.taxi.viewmodel.StatisticsUiState
+
+@Composable
+fun StatisticsTabsContent(
+    uiState: StatisticsUiState,
+    onEvent: (StatisticsUiEvent) -> Unit,
+) {
+    val tabs = listOf(
+        stringResource(R.string.week),
+        stringResource(R.string.month),
+        stringResource(R.string.year)
+    )
+
+    val pagerState = rememberPagerState(
+        initialPage = uiState.selectedTab.ordinal,
+        pageCount = { tabs.size }
+    )
+
+    LaunchedEffect(pagerState.currentPage) {
+        val tab = when (pagerState.currentPage) {
+            0 -> StatisticsTab.Week
+            1 -> StatisticsTab.Month
+            else -> StatisticsTab.Year
+        }
+        onEvent(StatisticsUiEvent.TabSelected(tab))
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = uiState.selectedTab.ordinal) {
+            tabs.forEachIndexed { index, title ->
+                Tab(
+                    selected = uiState.selectedTab.ordinal == index,
+                    onClick = { onEvent(StatisticsUiEvent.TabSelected(StatisticsTab.entries[index])) },
+                    text = { Text(title) }
+                )
+            }
+        }
+
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            when (page) {
+                0 -> StatisticsPage(
+                    title = stringResource(R.string.week),
+                    billingValues = uiState.billingValues,
+                    timeValues = uiState.timeValues
+                )
+                1 -> StatisticsPage(
+                    title = stringResource(R.string.month),
+                    billingValues = uiState.billingValues,
+                    timeValues = uiState.timeValues
+                )
+                2 -> StatisticsPage(
+                    title = stringResource(R.string.year),
+                    billingValues = uiState.billingValues,
+                    timeValues = uiState.timeValues
+                )
+            }
+        }
+    }
+}
+```
+
+### Page placeholder
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.repository.room.dao.ShiftDao.ShiftStatistics
+import ifac.td.taxi.repository.room.dao.TripDao.TotalAmountByDate
+
+@Composable
+fun StatisticsPage(
+    title: String,
+    billingValues: List<TotalAmountByDate>,
+    timeValues: List<ShiftStatistics>,
+) {
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text(text = title)
+        Text(text = "Billing items: ${billingValues.size}")
+        Text(text = "Time items: ${timeValues.size}")
+    }
+}
+```
+
+---
+
+## 7) Preserving Jetpack Views navigation
+
+To preserve your existing navigation structure:
+
+- keep your current `NavController`
+- call this composable from a fragment or a Compose destination
+- handle navigation effects in the composable using `LaunchedEffect`
+- use `navController.popBackStack()` for back navigation, or navigate to the same destinations you already use
+
+If you are transitioning gradually, you can host the composable inside a fragment with `ComposeView`:
+
+```kotlin
+class StatisticsComposeFragment : Fragment() {
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ) = ComposeView(requireContext()).apply {
+        setContent {
+            // obtain navController + viewModel here
+        }
+    }
+}
+```
+
+---
+
+## 8) Summary
+
+You now have:
+
+- a Compose replacement for `StatisticsFragment`
+- a Compose-friendly `StatisticsViewModel`
+- `StatisticsUiState + StatisticsUiEvent + StatisticsUiEffect`
+- `SharedFlow<StatisticsUiEffect>` for one-shot effects
+- lifecycle-aware state/effect collection
+- dialog state handling
+- a `StatisticsButtonsState` replacing fragment button setup
+- a Compose `CustomDialog`
+- a Compose tab/pager version of your `TabLayout + ViewPager2`
+
+If you want, I can also provide:
+1. a **drop-in `ComposeView` Fragment wrapper** for incremental migration,
+2. a **more exact XML-matching CustomDialog** if you paste `custom_dialog.xml` and `CustomDialog.kt`,
+3. a **fully typed navigation example using your current NavGraph destinations**.

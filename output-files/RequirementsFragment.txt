@@ -1,0 +1,638 @@
+Below is a Compose-first version that preserves the original Fragment behavior, navigation style, loading/data handling, dialog lifecycle handling, and the “button state holder” approach you asked for.
+
+I’m splitting it into:
+
+1. `RequirementsScreen` composable
+2. `RequirementsViewModel` using `UiState + UiEvent + UiEffect`
+3. `RequirementsButtonsState` with button visibility/color/enabled helpers
+4. `CustomDialog` composable based on a typical `custom_dialog.xml` / `CustomDialog.kt` pattern
+5. A small example of how to keep navigation “Jetpack Views compatible” by using callbacks instead of direct nav logic inside the VM
+
+> Notes:
+> - I only use Android / Jetpack Compose references.
+> - Since your XML layouts and custom button/dialog implementation details are not fully included, I matched the behavior as closely as possible and made styling helpers easy to adjust.
+> - The code assumes your `RequirementsModel` has `driverReqs` and `vehicleReqs`.
+
+---
+
+## 1) UI model: `UiState`, `UiEvent`, `UiEffect`, and buttons state
+
+```kotlin
+package ifac.td.taxi.ui.screen.requirements
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class RequirementsUiState(
+    val isLoading: Boolean = false,
+    val driverRequirements: List<String> = emptyList(),
+    val vehicleRequirements: List<String> = emptyList(),
+    val showDriverNoData: Boolean = false,
+    val showVehicleNoData: Boolean = false,
+    val buttonsState: RequirementsButtonsState = RequirementsButtonsState(),
+    val dialogState: RequirementsDialogState = RequirementsDialogState.Hidden
+)
+
+sealed interface RequirementsUiEvent {
+    data object LoadRequirements : RequirementsUiEvent
+    data object Retry : RequirementsUiEvent
+
+    data object OnDriverPrimaryClicked : RequirementsUiEvent
+    data object OnVehiclePrimaryClicked : RequirementsUiEvent
+    data object OnDialogConfirmClicked : RequirementsUiEvent
+    data object OnDialogDismissClicked : RequirementsUiEvent
+}
+
+sealed interface RequirementsUiEffect {
+    data class ShowToast(val message: String) : RequirementsUiEffect
+    data object NavigateBack : RequirementsUiEffect
+    data class OpenDialog(val dialogState: RequirementsDialogState) : RequirementsUiEffect
+    data object CloseDialog : RequirementsUiEffect
+}
+
+sealed class RequirementsDialogState {
+    data object Hidden : RequirementsDialogState()
+
+    data class Info(
+        val title: String,
+        val message: String,
+        val confirmText: String = "OK",
+        val dismissText: String? = null
+    ) : RequirementsDialogState()
+}
+
+@Immutable
+data class RequirementsButtonsState(
+    val driverPrimary: ButtonVisualState = ButtonVisualState(),
+    val vehiclePrimary: ButtonVisualState = ButtonVisualState()
+) {
+    companion object {
+        fun initial(
+            hasDriverData: Boolean,
+            hasVehicleData: Boolean
+        ): RequirementsButtonsState {
+            return RequirementsButtonsState(
+                driverPrimary = ButtonVisualState.visible(
+                    enabled = hasDriverData,
+                    background = if (hasDriverData) Color(0xFF1E88E5) else Color(0xFFE0E0E0),
+                    contentColor = if (hasDriverData) Color.White else Color(0xFF9E9E9E)
+                ),
+                vehiclePrimary = ButtonVisualState.visible(
+                    enabled = hasVehicleData,
+                    background = if (hasVehicleData) Color(0xFF1E88E5) else Color(0xFFE0E0E0),
+                    contentColor = if (hasVehicleData) Color.White else Color(0xFF9E9E9E)
+                )
+            )
+        }
+    }
+}
+
+@Immutable
+data class ButtonVisualState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val background: Color = Color(0xFF1E88E5),
+    val contentColor: Color = Color.White,
+    val borderColor: Color = Color.Transparent,
+    val elevation: Int = 0
+) {
+    companion object {
+        fun visible(
+            enabled: Boolean = true,
+            background: Color = Color(0xFF1E88E5),
+            contentColor: Color = Color.White
+        ) = ButtonVisualState(
+            visible = true,
+            enabled = enabled,
+            background = background,
+            contentColor = contentColor
+        )
+
+        fun hidden() = ButtonVisualState(visible = false)
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `StateFlow + SharedFlow<RequirementsUiEffect>`
+
+This ViewModel preserves the original API call behavior, but exposes a more Compose-friendly contract.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.BravoRestApiUseCase
+import ifac.td.taxi.repository.connections.rest.bravoRest.RequirementsModel
+import ifac.td.taxi.ui.screen.requirements.RequirementsButtonsState
+import ifac.td.taxi.ui.screen.requirements.RequirementsDialogState
+import ifac.td.taxi.ui.screen.requirements.RequirementsUiEffect
+import ifac.td.taxi.ui.screen.requirements.RequirementsUiEvent
+import ifac.td.taxi.ui.screen.requirements.RequirementsUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class RequirementsComposeViewModel(
+    application: Application,
+    private val bravoRestApiUseCase: BravoRestApiUseCase
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(RequirementsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<RequirementsUiEffect>(extraBufferCapacity = 1)
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    init {
+        onEvent(RequirementsUiEvent.LoadRequirements)
+    }
+
+    fun onEvent(event: RequirementsUiEvent) {
+        when (event) {
+            RequirementsUiEvent.LoadRequirements,
+            RequirementsUiEvent.Retry -> loadRequirements()
+
+            RequirementsUiEvent.OnDriverPrimaryClicked -> {
+                val dialog = RequirementsDialogState.Info(
+                    title = "Driver Requirements",
+                    message = "Open driver requirements action.",
+                    confirmText = "OK"
+                )
+                emitDialog(dialog)
+            }
+
+            RequirementsUiEvent.OnVehiclePrimaryClicked -> {
+                val dialog = RequirementsDialogState.Info(
+                    title = "Vehicle Requirements",
+                    message = "Open vehicle requirements action.",
+                    confirmText = "OK"
+                )
+                emitDialog(dialog)
+            }
+
+            RequirementsUiEvent.OnDialogConfirmClicked -> {
+                hideDialog()
+                emitEffect(RequirementsUiEffect.CloseDialog)
+            }
+
+            RequirementsUiEvent.OnDialogDismissClicked -> {
+                hideDialog()
+                emitEffect(RequirementsUiEffect.CloseDialog)
+            }
+        }
+    }
+
+    private fun loadRequirements() {
+        _uiState.update { it.copy(isLoading = true, dialogState = RequirementsDialogState.Hidden) }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            bravoRestApiUseCase.getCarsAndDriverRequirements { requirements ->
+                val driver = requirements?.driverReqs.orEmpty()
+                val vehicle = requirements?.vehicleReqs.orEmpty()
+
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        driverRequirements = driver,
+                        vehicleRequirements = vehicle,
+                        showDriverNoData = driver.isEmpty(),
+                        showVehicleNoData = vehicle.isEmpty(),
+                        buttonsState = RequirementsButtonsState.initial(
+                            hasDriverData = driver.isNotEmpty(),
+                            hasVehicleData = vehicle.isNotEmpty()
+                        )
+                    )
+                }
+
+                if (requirements == null) {
+                    emitEffect(
+                        RequirementsUiEffect.ShowToast("Failed to load requirements")
+                    )
+                }
+            }
+        }
+    }
+
+    private fun emitDialog(dialogState: RequirementsDialogState.Info) {
+        _uiState.update { it.copy(dialogState = dialogState) }
+        emitEffect(RequirementsUiEffect.OpenDialog(dialogState))
+    }
+
+    private fun hideDialog() {
+        _uiState.update { it.copy(dialogState = RequirementsDialogState.Hidden) }
+    }
+
+    private fun emitEffect(effect: RequirementsUiEffect) {
+        _uiEffect.tryEmit(effect)
+    }
+}
+```
+
+---
+
+## 3) Compose screen that preserves navigation and handles dialog state lifecycle
+
+This screen:
+- collects state via `collectAsStateWithLifecycle`-style pattern using standard `LaunchedEffect`
+- collects `SharedFlow<RequirementsUiEffect>` with lifecycle awareness
+- preserves navigation by accepting callbacks instead of hardcoding nav controller logic
+- keeps a `CustomDialog` state driven by the VM
+
+```kotlin
+package ifac.td.taxi.ui.screen.requirements
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
+import ifac.td.taxi.viewmodel.RequirementsComposeViewModel
+
+@Composable
+fun RequirementsScreen(
+    viewModel: RequirementsComposeViewModel,
+    onNavigateBack: () -> Unit = {},
+    onShowToast: (String) -> Unit = {},
+    onShowHeader: (Boolean) -> Unit = {},
+    onShowBottomBar: (Boolean) -> Unit = {}
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsState(initial = RequirementsUiState())
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        onShowBottomBar(true)
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        is RequirementsUiEffect.ShowToast -> onShowToast(effect.message)
+                        RequirementsUiEffect.NavigateBack -> onNavigateBack()
+                        is RequirementsUiEffect.OpenDialog -> Unit
+                        RequirementsUiEffect.CloseDialog -> Unit
+                    }
+                }
+            }
+        }
+    }
+
+    BackHandler {
+        onNavigateBack()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        when {
+            uiState.isLoading -> {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item {
+                        RequirementsSection(
+                            title = "Driver Requirements",
+                            noDataVisible = uiState.showDriverNoData,
+                            noDataText = "No driver requirements",
+                            items = uiState.driverRequirements,
+                            buttonState = uiState.buttonsState.driverPrimary,
+                            onButtonClick = { viewModel.onEvent(RequirementsUiEvent.OnDriverPrimaryClicked) }
+                        )
+                    }
+
+                    item {
+                        RequirementsSection(
+                            title = "Vehicle Requirements",
+                            noDataVisible = uiState.showVehicleNoData,
+                            noDataText = "No vehicle requirements",
+                            items = uiState.vehicleRequirements,
+                            buttonState = uiState.buttonsState.vehiclePrimary,
+                            onButtonClick = { viewModel.onEvent(RequirementsUiEvent.OnVehiclePrimaryClicked) }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (uiState.dialogState is RequirementsDialogState.Info) {
+            val dialog = uiState.dialogState as RequirementsDialogState.Info
+            CustomDialog(
+                title = dialog.title,
+                message = dialog.message,
+                confirmText = dialog.confirmText,
+                dismissText = dialog.dismissText,
+                onConfirm = { viewModel.onEvent(RequirementsUiEvent.OnDialogConfirmClicked) },
+                onDismiss = { viewModel.onEvent(RequirementsUiEvent.OnDialogDismissClicked) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun RequirementsSection(
+    title: String,
+    noDataVisible: Boolean,
+    noDataText: String,
+    items: List<String>,
+    buttonState: ButtonVisualState,
+    onButtonClick: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(text = title, style = MaterialTheme.typography.titleMedium)
+
+        if (noDataVisible) {
+            Text(text = noDataText, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        if (items.isNotEmpty()) {
+            Column {
+                items.forEachIndexed { index, item ->
+                    Text(text = item, style = MaterialTheme.typography.bodyMedium)
+                    if (index != items.lastIndex) Divider()
+                }
+            }
+        }
+
+        if (buttonState.visible) {
+            RequirementsButton(
+                text = "Open",
+                state = buttonState,
+                onClick = onButtonClick
+            )
+        }
+    }
+}
+```
+
+---
+
+## 4) Custom button and styling helpers matching the XML behavior closely
+
+This is the “state holder/data class to fully replace the fragment button logic” part.
+
+```kotlin
+package ifac.td.taxi.ui.screen.requirements
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
+
+@Composable
+fun RequirementsButton(
+    text: String,
+    state: ButtonVisualState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(12.dp)
+) {
+    if (!state.visible) return
+
+    Button(
+        onClick = onClick,
+        enabled = state.enabled,
+        modifier = modifier.defaultMinSize(minHeight = 48.dp),
+        shape = shape,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = state.background,
+            contentColor = state.contentColor,
+            disabledContainerColor = state.background,
+            disabledContentColor = state.contentColor
+        ),
+        border = if (state.borderColor.value != 0f) BorderStroke(1.dp, state.borderColor) else null,
+        elevation = ButtonDefaults.buttonElevation(
+            defaultElevation = state.elevation.dp,
+            pressedElevation = state.elevation.dp,
+            disabledElevation = 0.dp
+        )
+    ) {
+        Text(text = text, textAlign = TextAlign.Center)
+    }
+}
+```
+
+---
+
+## 5) CustomDialog composable based on the typical `custom_dialog.xml` behavior
+
+This is a Compose replacement for a custom dialog layout:
+- title
+- message
+- confirm / dismiss actions
+- outside cancel disabled by default unless you choose otherwise
+
+```kotlin
+package ifac.td.taxi.ui.screen.requirements
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material3.MaterialTheme
+
+@Composable
+fun CustomDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    dismissText: String? = null,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color.White,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color(0xFF212121)
+                )
+
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF424242),
+                    textAlign = TextAlign.Start
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (dismissText != null) {
+                        Button(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFE0E0E0),
+                                contentColor = Color(0xFF212121)
+                            )
+                        ) {
+                            Text(dismissText)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
+                    Button(
+                        onClick = onConfirm,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF1E88E5),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text(confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) Optional: if you want a closer “button helper” API like a custom XML button component
+
+If your custom XML button had different shades/visibility rules, use helpers like these:
+
+```kotlin
+package ifac.td.taxi.ui.screen.requirements
+
+import androidx.compose.ui.graphics.Color
+
+object RequirementsButtonStyleHelper {
+    val PrimaryEnabledBackground = Color(0xFF1E88E5)
+    val PrimaryDisabledBackground = Color(0xFFE0E0E0)
+    val PrimaryEnabledContent = Color.White
+    val PrimaryDisabledContent = Color(0xFF9E9E9E)
+
+    fun primary(enabled: Boolean): ButtonVisualState {
+        return ButtonVisualState(
+            visible = true,
+            enabled = enabled,
+            background = if (enabled) PrimaryEnabledBackground else PrimaryDisabledBackground,
+            contentColor = if (enabled) PrimaryEnabledContent else PrimaryDisabledContent
+        )
+    }
+}
+```
+
+Then inside your state builder:
+
+```kotlin
+buttonsState = RequirementsButtonsState(
+    driverPrimary = RequirementsButtonStyleHelper.primary(driver.isNotEmpty()),
+    vehiclePrimary = RequirementsButtonStyleHelper.primary(vehicle.isNotEmpty())
+)
+```
+
+---
+
+## 7) How this preserves Jetpack Views navigation
+
+In the Fragment version, navigation/UI actions were likely handled by the hosting activity or fragment manager.
+
+In Compose, to preserve that style:
+- keep navigation outside the ViewModel
+- use callbacks like `onNavigateBack`, `onShowToast`, `onShowHeader`, `onShowBottomBar`
+- collect `SharedFlow<RequirementsUiEffect>` in the composable with lifecycle awareness
+
+That keeps the ViewModel testable and the screen still works with your existing app-level navigation setup.
+
+---
+
+## 8) Example usage from a Fragment host
+
+If you need to embed Compose inside the existing app structure:
+
+```kotlin
+class RequirementsComposeFragment : Fragment() {
+    private val viewModel: RequirementsComposeViewModel by viewModels()
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                RequirementsScreen(
+                    viewModel = viewModel,
+                    onNavigateBack = { requireActivity().onBackPressedDispatcher.onBackPressed() },
+                    onShowToast = { /* Toast.makeText(...) */ },
+                    onShowHeader = { /* iMainActivity.showHeader(it) */ },
+                    onShowBottomBar = { /* iMainActivity.showBottomBar(it) */ }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+If you want, I can also provide:
+
+- a fully typed version using `RequirementsModel` instead of `List<String>`
+- a more exact migration of your `RequirementsAdapter` into `LazyColumn`
+- a version using `collectAsStateWithLifecycle`
+- a complete `Koin` module for the new Compose ViewModel and use case injection

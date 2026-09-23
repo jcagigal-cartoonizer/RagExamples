@@ -1,0 +1,1006 @@
+Below is a Compose-first rewrite pattern for **UserPreferencesFragment + UserPreferencesViewModel** that:
+
+- preserves **Jetpack Navigation** behavior,
+- replaces fragment button logic with **state holders**,
+- uses a single **SharedFlow<UserPreferencesUiEffect>** for one-off events,
+- handles **dialogs via state + lifecycle collection**,
+- includes a Compose version of the **CustomDialog**,
+- and provides a **UserPreferencesButtonsState** that mirrors the XML visibility/color behavior as closely as possible.
+
+I’ll split it into practical pieces:
+
+---
+
+# 1) Compose screen for `UserPreferencesFragment`
+
+This composable is the equivalent of the fragment UI.  
+It assumes:
+- `NavController` is available,
+- permissions, ringtone picker, and overlay settings are handled by the host/activity when effects are emitted,
+- dialog state is driven from `uiEffect`.
+
+## `UserPreferencesScreen.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Activity
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import androidx.navigation.NavDeepLinkRequest
+import androidx.core.net.toUri
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.UserPreferences
+import ifac.td.taxi.ui.screen.components.CustomDialog
+import ifac.td.taxi.ui.screen.components.UserPreferencesButtonsState
+import ifac.td.taxi.ui.screen.components.UserPreferencesUiEffect
+import ifac.td.taxi.ui.screen.components.UserPreferencesUiState
+import ifac.td.taxi.viewmodel.UserPreferencesComposeViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun UserPreferencesScreen(
+    navController: NavController,
+    viewModel: UserPreferencesComposeViewModel,
+    onRequestPhonePermission: () -> Unit = {},
+    onRequestBluetoothPermission: () -> Unit = {},
+    onRequestOverlayPermission: () -> Unit = {},
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var dialogState by remember { mutableStateOf<CustomDialog.CustomDialogModel?>(null) }
+    var ringtoneRequestType by remember { mutableIntStateOf(-1) }
+
+    val ringtoneLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                viewModel.onRingtoneOrNotificationPicked(result.data, ringtoneRequestType)
+            }
+        }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is UserPreferencesUiEffect.NavigateBack -> navController.popBackStack()
+
+                is UserPreferencesUiEffect.NavigateToDeepLink -> {
+                    navController.navigate(
+                        NavDeepLinkRequest.Builder
+                            .fromUri(effect.uri.toUri())
+                            .build()
+                    )
+                }
+
+                is UserPreferencesUiEffect.NavigateToSecurePin -> {
+                    navController.navigate(
+                        NavDeepLinkRequest.Builder
+                            .fromUri("android-app://ifac.td.taxi/changeDriverPinFragment/".toUri())
+                            .build()
+                    )
+                }
+
+                is UserPreferencesUiEffect.NavigateToPortugalSettings -> {
+                    navController.navigate(
+                        NavDeepLinkRequest.Builder
+                            .fromUri("android-app://ifac.td.taxi/portugalSettingsFragment/".toUri())
+                            .build()
+                    )
+                }
+
+                is UserPreferencesUiEffect.ShowToast -> {
+                    // Host-side toast/snackbar handling
+                }
+
+                is UserPreferencesUiEffect.OpenDialog -> {
+                    dialogState = effect.dialog
+                }
+
+                is UserPreferencesUiEffect.CloseDialog -> {
+                    dialogState = null
+                }
+
+                is UserPreferencesUiEffect.RequestPhonePermission -> onRequestPhonePermission()
+                is UserPreferencesUiEffect.RequestBluetoothPermission -> onRequestBluetoothPermission()
+                is UserPreferencesUiEffect.RequestOverlayPermission -> onRequestOverlayPermission()
+
+                is UserPreferencesUiEffect.OpenRingtonePicker -> {
+                    ringtoneRequestType = effect.type
+                    ringtoneLauncher.launch(effect.intent)
+                }
+
+                is UserPreferencesUiEffect.KeepScreenOn -> {
+                    // Optional host action
+                }
+            }
+        }
+    }
+
+    if (dialogState != null) {
+        CustomDialog(
+            dialog = dialogState!!,
+            onDismiss = {
+                viewModel.onDialogAction(
+                    UserPreferencesUiEffect.DialogAction.Cancel
+                )
+                dialogState = null
+            },
+            onAction = { action ->
+                viewModel.onDialogAction(action)
+                if (action is UserPreferencesUiEffect.DialogAction.Accept) {
+                    dialogState = null
+                }
+            }
+        )
+    }
+
+    UserPreferencesContent(
+        state = state,
+        buttonsState = UserPreferencesButtonsState.from(state),
+        onAction = viewModel::onAction
+    )
+}
+
+@Composable
+private fun UserPreferencesContent(
+    state: UserPreferencesUiState,
+    buttonsState: UserPreferencesButtonsState,
+    onAction: (UserPreferencesUiEvent) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "User Preferences",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        // Cards / sections
+        SectionCard(
+            title = "Sound",
+            expanded = state.soundExpanded,
+            onToggle = { onAction(UserPreferencesUiEvent.ToggleSound) }
+        ) {
+            PreferenceCheckRow(
+                text = "Sound disabled on TX",
+                checked = state.model.beepNoBt,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetBeepNoBt(it)) }
+            )
+            PreferenceCheckRow(
+                text = "Vibration and sound",
+                checked = state.model.vibrateNoBT,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetVibrateNoBt(it)) }
+            )
+        }
+
+        SectionCard(
+            title = "Invoices",
+            expanded = state.invoicesExpanded,
+            enabled = state.isLoggedIn,
+            onToggle = { onAction(UserPreferencesUiEvent.ToggleInvoices) }
+        ) {
+            PreferenceCheckRow(
+                text = "Use external app",
+                checked = state.model.useExternalApp,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetUseExternalApp(it)) }
+            )
+
+            if (state.model.useExternalApp) {
+                PreferenceCheckRow(
+                    text = "Use custom payment timer",
+                    checked = state.model.useCustomPaymentTimerWithExternalApp,
+                    onCheckedChange = {
+                        onAction(UserPreferencesUiEvent.SetUseCustomPaymentTimerWithExternalApp(it))
+                    }
+                )
+            }
+
+            if (buttonsState.showRedSysAlways) {
+                PreferenceCheckRow(
+                    text = "Always print RedSys ticket",
+                    checked = state.model.printRedSysCommerceTicketAlways,
+                    onCheckedChange = { onAction(UserPreferencesUiEvent.SetPrintRedSysAlways(it)) }
+                )
+            }
+        }
+
+        SectionCard(
+            title = "Pin Pad",
+            expanded = state.pinPadExpanded,
+            onToggle = { onAction(UserPreferencesUiEvent.TogglePinPad) }
+        ) {
+            // Replace with Compose dropdown/spinner implementation
+            Text("PinPad serial: ${state.model.pinPadSerialNumber}")
+        }
+
+        SectionCard(
+            title = "Shifts",
+            expanded = state.shiftsExpanded,
+            onToggle = { onAction(UserPreferencesUiEvent.ToggleShifts) }
+        ) {
+            PreferenceCheckRow(
+                text = "Time control",
+                checked = state.model.useTimeControl,
+                visible = buttonsState.showControlHorario,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetUseTimeControl(it)) }
+            )
+
+            if (buttonsState.showDeleteShiftsButton) {
+                Button(
+                    onClick = { onAction(UserPreferencesUiEvent.ClickDeleteShifts) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Delete shifts by date")
+                }
+            }
+        }
+
+        SectionCard(
+            title = "System",
+            expanded = state.systemExpanded,
+            onToggle = { onAction(UserPreferencesUiEvent.ToggleSystem) }
+        ) {
+            PreferenceCheckRow(
+                text = "Show confirmation on accept",
+                checked = state.model.showConfAcceptDispatch,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetShowConfAccept(it)) }
+            )
+
+            PreferenceCheckRow(
+                text = "Show confirmation on reject",
+                checked = state.model.showConfRejectDispatch,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetShowConfReject(it)) }
+            )
+
+            PreferenceCheckRow(
+                text = "Floating window on background",
+                checked = state.model.useFloatingWindow,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetUseFloatingWindow(it)) }
+            )
+
+            PreferenceCheckRow(
+                text = "Light off on dispatched",
+                checked = state.model.lightOffOnDispatched,
+                visible = buttonsState.showLightOffOnDispatched,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetLightOffOnDispatched(it)) }
+            )
+
+            if (buttonsState.showSendLogsButton) {
+                Button(
+                    onClick = { onAction(UserPreferencesUiEvent.ClickSendLogs) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Send logs")
+                }
+            }
+        }
+
+        SectionCard(
+            title = "Location",
+            expanded = state.locationExpanded,
+            onToggle = { onAction(UserPreferencesUiEvent.ToggleLocation) }
+        ) {
+            PreferenceCheckRow(
+                text = "Close pending trips if empty",
+                checked = state.model.closePendingTripsIfEmpty,
+                onCheckedChange = { onAction(UserPreferencesUiEvent.SetClosePendingTripsIfEmpty(it)) }
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = { onAction(UserPreferencesUiEvent.ClickCancel) },
+                modifier = Modifier.weight(1f),
+                colors = buttonsState.cancelColors
+            ) { Text("Cancel") }
+
+            Button(
+                onClick = { onAction(UserPreferencesUiEvent.ClickAccept) },
+                modifier = Modifier.weight(1f),
+                colors = buttonsState.acceptColors
+            ) { Text("Accept") }
+        }
+
+        if (buttonsState.showFiscalPortugalButton) {
+            Button(
+                onClick = { onAction(UserPreferencesUiEvent.ClickFiscalPortugal) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = buttonsState.secondaryColors
+            ) { Text("Fiscal Portugal") }
+        }
+
+        if (buttonsState.showSecurePinButton) {
+            Button(
+                onClick = { onAction(UserPreferencesUiEvent.ClickSecurePin) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = buttonsState.secondaryColors
+            ) { Text("Secure Pin") }
+        }
+    }
+}
+
+@Composable
+private fun SectionCard(
+    title: String,
+    expanded: Boolean,
+    enabled: Boolean = true,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = enabled) { onToggle() }
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(title)
+                Text(if (expanded) "▲" else "▼")
+            }
+            if (expanded) {
+                Column(Modifier.padding(16.dp), content = content)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreferenceCheckRow(
+    text: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    visible: Boolean = true,
+) {
+    if (!visible) return
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Text(text)
+    }
+}
+```
+
+---
+
+# 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+
+This replaces multiple LiveData/Flow branches with:
+- one `StateFlow<UserPreferencesUiState>`,
+- one `SharedFlow<UserPreferencesUiEffect>`,
+- one `onAction()` reducer for UI events.
+
+## `UserPreferencesComposeViewModel.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.content.Intent
+import android.media.RingtoneManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.taximeter.Taximeter
+import com.interfacom.sdk.taximeter.taximeter.TaximeterConstants
+import ifac.td.taxi.BuildConfig
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.UserPreferences
+import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
+import ifac.td.taxi.domain.usecase.IngenicoUseCase
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.ShiftUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.ExternalBridgeInterface
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.SendLogsUseCase
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class UserPreferencesComposeViewModel(
+    private val externalBridgeInterface: ExternalBridgeInterface,
+    private val shiftUseCase: ShiftUseCase,
+    private val sessionUseCase: SessionUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val bluetoothLocalUseCase: BluetoothLocalUseCase,
+    private val sendLogsUseCase: SendLogsUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val portugalUseCase: PortugalUseCase,
+    private val ingenicoUseCase: IngenicoUseCase,
+    private val app: Application,
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(UserPreferencesUiState())
+    val uiState: StateFlow<UserPreferencesUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<UserPreferencesUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<UserPreferencesUiEffect> = _uiEffect.asSharedFlow()
+
+    init {
+        load()
+    }
+
+    fun load() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val prefs = userPreferencesUseCase.getUserPreferences() ?: UserPreferences()
+            val isLoggedIn = sessionUseCase.isUserLoggedIn()
+            val hasShifts = !(shiftUseCase.getAll().isNullOrEmpty())
+            val isSkyGlassAvailable = Taximeter.getInstance().isSkyGlass && externalBridgeInterface.isSkyGlassWithTimeControlAvailable
+            val lightOffVisible = computeLightOffVisibility()
+            val fiscal = licensingUseCase.getLicensingParameters()?.isFiscalService ?: false
+            val ingenico = ingenicoUseCase.hasIngenicoInstalled()
+            val driverTurnMode = licensingUseCase.getStartTurnMode()
+
+            _uiState.update {
+                it.copy(
+                    isLoggedIn = isLoggedIn,
+                    hasShifts = hasShifts,
+                    taximeterSkyGlass = isSkyGlassAvailable,
+                    lightOffVisible = lightOffVisible,
+                    fiscalLicensing = fiscal,
+                    ingenicoInstalled = ingenico,
+                    driverTurnMode = driverTurnMode,
+                    model = prefs
+                ).deriveVisibility()
+            }
+        }
+    }
+
+    fun onAction(event: UserPreferencesUiEvent) {
+        when (event) {
+            UserPreferencesUiEvent.ClickCancel -> emitEffect(UserPreferencesUiEffect.NavigateBack)
+
+            UserPreferencesUiEvent.ClickAccept -> saveAndClose()
+
+            UserPreferencesUiEvent.ClickSecurePin -> navigateToSecurePin()
+
+            UserPreferencesUiEvent.ClickFiscalPortugal -> requestPortugalPin()
+
+            UserPreferencesUiEvent.ClickSendLogs -> emitEffect(
+                UserPreferencesUiEffect.OpenDialog(
+                    UserPreferencesDialogModel(
+                        title = app.getString(R.string.dialog_add_comment),
+                        buttons = listOf(UserPreferencesDialogButton.Cancel, UserPreferencesDialogButton.Accept),
+                        isPin = false,
+                        showTextField = true
+                    )
+                )
+            )
+
+            UserPreferencesUiEvent.ClickDeleteShifts -> emitEffect(
+                UserPreferencesUiEffect.OpenDatePickerDialog
+            )
+
+            is UserPreferencesUiEvent.SetBeepNoBt -> updatePrefs { copy(beepNoBt = event.value) }
+            is UserPreferencesUiEvent.SetVibrateNoBt -> updatePrefs { copy(vibrateNoBT = event.value) }
+            is UserPreferencesUiEvent.SetUseExternalApp -> updatePrefs { copy(useExternalApp = event.value) }
+            is UserPreferencesUiEvent.SetUseCustomPaymentTimerWithExternalApp -> updatePrefs { copy(useCustomPaymentTimerWithExternalApp = event.value) }
+            is UserPreferencesUiEvent.SetPrintRedSysAlways -> updatePrefs { copy(printRedSysCommerceTicketAlways = event.value) }
+            is UserPreferencesUiEvent.SetUseTimeControl -> updatePrefs { copy(useTimeControl = event.value) }
+            is UserPreferencesUiEvent.SetShowConfAccept -> updatePrefs { copy(showConfAcceptDispatch = event.value) }
+            is UserPreferencesUiEvent.SetShowConfReject -> updatePrefs { copy(showConfRejectDispatch = event.value) }
+            is UserPreferencesUiEvent.SetUseFloatingWindow -> updatePrefs { copy(useFloatingWindow = event.value) }
+            is UserPreferencesUiEvent.SetLightOffOnDispatched -> updatePrefs { copy(lightOffOnDispatched = event.value) }
+            is UserPreferencesUiEvent.SetClosePendingTripsIfEmpty -> updatePrefs { copy(closePendingTripsIfEmpty = event.value) }
+
+            UserPreferencesUiEvent.RequestPhoneCall -> emitEffect(UserPreferencesUiEffect.RequestPhonePermission)
+            UserPreferencesUiEvent.RequestBluetooth -> emitEffect(UserPreferencesUiEffect.RequestBluetoothPermission)
+            UserPreferencesUiEvent.RequestOverlay -> emitEffect(UserPreferencesUiEffect.RequestOverlayPermission)
+
+            UserPreferencesUiEvent.ToggleSound -> toggleSection { copy(soundExpanded = !soundExpanded) }
+            UserPreferencesUiEvent.ToggleInvoices -> toggleSection { copy(invoicesExpanded = !invoicesExpanded) }
+            UserPreferencesUiEvent.TogglePinPad -> toggleSection { copy(pinPadExpanded = !pinPadExpanded) }
+            UserPreferencesUiEvent.ToggleShifts -> toggleSection { copy(shiftsExpanded = !shiftsExpanded) }
+            UserPreferencesUiEvent.ToggleSystem -> toggleSection { copy(systemExpanded = !systemExpanded) }
+            UserPreferencesUiEvent.ToggleLocation -> toggleSection { copy(locationExpanded = !locationExpanded) }
+        }
+    }
+
+    fun onDialogAction(action: UserPreferencesUiEffect.DialogAction) {
+        when (action) {
+            is UserPreferencesUiEffect.DialogAction.Accept -> {
+                val dialog = uiState.value.activeDialog ?: return
+                if (dialog.title == app.getString(R.string.dialog_add_comment)) {
+                    sendLogsUseCase.prepareLogSending(action.text)
+                }
+                clearDialog()
+            }
+            UserPreferencesUiEffect.DialogAction.Cancel -> clearDialog()
+        }
+    }
+
+    fun onRingtoneOrNotificationPicked(data: Intent?, lastSelectedType: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+                } ?: return@launch
+
+            val title = RingtoneManager.getRingtone(app, uri)?.getTitle(app).orEmpty()
+
+            _uiState.update {
+                val model = it.model
+                if (lastSelectedType == RingtoneManager.TYPE_RINGTONE) {
+                    model.copy(ringtoneUri = uri, ringtoneTitle = title)
+                } else {
+                    model.copy(notificationUri = uri, notificationTitle = title)
+                }
+                it.copy(model = model).deriveVisibility()
+            }
+        }
+    }
+
+    private fun saveAndClose() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = uiState.value.model
+            userPreferencesUseCase.insertUserPreferences(current)
+            emitEffect(UserPreferencesUiEffect.KeepScreenOn)
+            emitEffect(UserPreferencesUiEffect.NavigateBack)
+        }
+    }
+
+    private fun navigateToSecurePin() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val actualPin = userPreferencesUseCase.getSecurePin()
+            if (actualPin.isNullOrEmpty()) {
+                emitEffect(UserPreferencesUiEffect.NavigateToSecurePin)
+            } else {
+                emitEffect(
+                    UserPreferencesUiEffect.OpenDialog(
+                        UserPreferencesDialogModel(
+                            title = app.getString(R.string.user_preferences_btn_secure_pin),
+                            hint = app.getString(R.string.pin_actual_hint),
+                            buttons = listOf(UserPreferencesDialogButton.Cancel, UserPreferencesDialogButton.Accept),
+                            isPin = true,
+                            showTextField = true
+                        )
+                    )
+                )
+            }
+        }
+    }
+
+    private fun requestPortugalPin() {
+        emitEffect(
+            UserPreferencesUiEffect.OpenDialog(
+                UserPreferencesDialogModel(
+                    title = app.getString(R.string.btn_portugal_password),
+                    hint = "PIN Portugal",
+                    buttons = listOf(UserPreferencesDialogButton.Cancel, UserPreferencesDialogButton.Accept),
+                    isPin = true,
+                    showTextField = true
+                )
+            )
+        )
+    }
+
+    fun onPortugalPinEntered(pin: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val portugalCode = BuildConfig.portugal_p
+            val portugalPassword = portugalUseCase.getPortugalData()
+            if (pin == portugalCode || (portugalPassword != null && portugalPassword.portugalPassword == portugalPassword.encryptPortugalPassword(pin))) {
+                emitEffect(UserPreferencesUiEffect.NavigateToPortugalSettings)
+            }
+        }
+    }
+
+    fun onCurrentSecurePinEntered(currentPin: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val actualPin = userPreferencesUseCase.getSecurePin()
+            if (currentPin == actualPin) emitEffect(UserPreferencesUiEffect.NavigateToSecurePin)
+            else emitEffect(UserPreferencesUiEffect.ShowToast(R.string.pin_incorrecto))
+        }
+    }
+
+    private fun updatePrefs(block: UserPreferences.() -> UserPreferences) {
+        _uiState.update { state ->
+            val updated = state.model.block()
+            state.copy(model = updated).deriveVisibility()
+        }
+    }
+
+    private fun toggleSection(block: UserPreferencesUiState.() -> UserPreferencesUiState) {
+        _uiState.update(block)
+    }
+
+    private fun clearDialog() {
+        _uiState.update { it.copy(activeDialog = null) }
+        emitEffect(UserPreferencesUiEffect.CloseDialog)
+    }
+
+    private fun computeLightOffVisibility(): Boolean {
+        val txm = Taximeter.getInstance()
+        return if (txm.isConnected && txm.isRoofLightAvailable) {
+            if (txm.internalMeterType == TaximeterConstants.METER_SOFTWARE ||
+                txm.internalMeterType == TaximeterConstants.METER_DUAL_SOFTWARE &&
+                Taximeter.getExternalInterface().isUseTaxitronicPrinter
+            ) {
+                true
+            } else {
+                licensingUseCase.getLicensingParameters()?.isDisableLuminous ?: false
+            }
+        } else false
+    }
+
+    private fun emitEffect(effect: UserPreferencesUiEffect) {
+        viewModelScope.launch { _uiEffect.emit(effect) }
+    }
+}
+```
+
+---
+
+# 3) UiState / UiEvent / UiEffect + button state
+
+This is where the XML behavior is replicated.
+
+## `UserPreferencesUiModels.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+import android.net.Uri
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.domain.model.UserPreferences
+
+@Immutable
+data class UserPreferencesUiState(
+    val model: UserPreferences = UserPreferences(),
+    val isLoggedIn: Boolean = false,
+    val hasShifts: Boolean = false,
+    val taximeterSkyGlass: Boolean = false,
+    val lightOffVisible: Boolean = false,
+    val fiscalLicensing: Boolean = false,
+    val ingenicoInstalled: Boolean = false,
+    val driverTurnMode: Int? = null,
+
+    // section states
+    val soundExpanded: Boolean = true,
+    val invoicesExpanded: Boolean = true,
+    val pinPadExpanded: Boolean = true,
+    val shiftsExpanded: Boolean = true,
+    val systemExpanded: Boolean = true,
+    val locationExpanded: Boolean = true,
+
+    val activeDialog: UserPreferencesDialogModel? = null,
+) {
+    fun deriveVisibility(): UserPreferencesUiState = copy()
+}
+
+sealed interface UserPreferencesUiEvent {
+    data object ClickCancel : UserPreferencesUiEvent
+    data object ClickAccept : UserPreferencesUiEvent
+    data object ClickSecurePin : UserPreferencesUiEvent
+    data object ClickFiscalPortugal : UserPreferencesUiEvent
+    data object ClickSendLogs : UserPreferencesUiEvent
+    data object ClickDeleteShifts : UserPreferencesUiEvent
+
+    data object ToggleSound : UserPreferencesUiEvent
+    data object ToggleInvoices : UserPreferencesUiEvent
+    data object TogglePinPad : UserPreferencesUiEvent
+    data object ToggleShifts : UserPreferencesUiEvent
+    data object ToggleSystem : UserPreferencesUiEvent
+    data object ToggleLocation : UserPreferencesUiEvent
+
+    data class SetBeepNoBt(val value: Boolean) : UserPreferencesUiEvent
+    data class SetVibrateNoBt(val value: Boolean) : UserPreferencesUiEvent
+    data class SetUseExternalApp(val value: Boolean) : UserPreferencesUiEvent
+    data class SetUseCustomPaymentTimerWithExternalApp(val value: Boolean) : UserPreferencesUiEvent
+    data class SetPrintRedSysAlways(val value: Boolean) : UserPreferencesUiEvent
+    data class SetUseTimeControl(val value: Boolean) : UserPreferencesUiEvent
+    data class SetShowConfAccept(val value: Boolean) : UserPreferencesUiEvent
+    data class SetShowConfReject(val value: Boolean) : UserPreferencesUiEvent
+    data class SetUseFloatingWindow(val value: Boolean) : UserPreferencesUiEvent
+    data class SetLightOffOnDispatched(val value: Boolean) : UserPreferencesUiEvent
+    data class SetClosePendingTripsIfEmpty(val value: Boolean) : UserPreferencesUiEvent
+
+    data object RequestPhoneCall : UserPreferencesUiEvent
+    data object RequestBluetooth : UserPreferencesUiEvent
+    data object RequestOverlay : UserPreferencesUiEvent
+}
+
+sealed interface UserPreferencesUiEffect {
+    data object NavigateBack : UserPreferencesUiEffect
+    data object NavigateToSecurePin : UserPreferencesUiEffect
+    data object NavigateToPortugalSettings : UserPreferencesUiEffect
+    data class NavigateToDeepLink(val uri: String) : UserPreferencesUiEffect
+
+    data class ShowToast(val resId: Int) : UserPreferencesUiEffect
+    data class OpenDialog(val dialog: UserPreferencesDialogModel) : UserPreferencesUiEffect
+    data object CloseDialog : UserPreferencesUiEffect
+    data object RequestPhonePermission : UserPreferencesUiEffect
+    data object RequestBluetoothPermission : UserPreferencesUiEffect
+    data object RequestOverlayPermission : UserPreferencesUiEffect
+    data class OpenRingtonePicker(val intent: android.content.Intent, val type: Int) : UserPreferencesUiEffect
+    data object OpenDatePickerDialog : UserPreferencesUiEffect
+    data object KeepScreenOn : UserPreferencesUiEffect
+
+    sealed interface DialogAction {
+        data class Accept(val text: String? = null) : DialogAction
+        data object Cancel : DialogAction
+    }
+}
+
+@Immutable
+data class UserPreferencesDialogModel(
+    val title: String,
+    val description: String? = null,
+    val hint: String? = null,
+    val text: String = "",
+    val buttons: List<UserPreferencesDialogButton> = emptyList(),
+    val isPin: Boolean = false,
+    val showTextField: Boolean = false,
+)
+
+enum class UserPreferencesDialogButton { Cancel, Accept }
+
+@Immutable
+data class UserPreferencesButtonsState(
+    val showControlHorario: Boolean,
+    val showDeleteShiftsButton: Boolean,
+    val showLightOffOnDispatched: Boolean,
+    val showFiscalPortugalButton: Boolean,
+    val showSecurePinButton: Boolean,
+    val showSendLogsButton: Boolean,
+    val showRedSysAlways: Boolean,
+    val showPrintDriverSubscriber: Boolean,
+    val cancelColors: ButtonColors,
+    val acceptColors: ButtonColors,
+    val secondaryColors: ButtonColors,
+) {
+    companion object {
+        @androidx.compose.runtime.Composable
+        fun from(state: UserPreferencesUiState): UserPreferencesButtonsState {
+            return UserPreferencesButtonsState(
+                showControlHorario = state.taximeterSkyGlass,
+                showDeleteShiftsButton = state.hasShifts,
+                showLightOffOnDispatched = state.lightOffVisible,
+                showFiscalPortugalButton = state.fiscalLicensing,
+                showSecurePinButton = true,
+                showSendLogsButton = true,
+                showRedSysAlways = state.model.pinPadSerialNumber.isNotBlank() || state.model.pinPadTypeId == 2,
+                showPrintDriverSubscriber = true,
+                cancelColors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF6C757D),
+                    contentColor = Color.White
+                ),
+                acceptColors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF0D6EFD),
+                    contentColor = Color.White
+                ),
+                secondaryColors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF198754),
+                    contentColor = Color.White
+                ),
+            )
+        }
+    }
+}
+```
+
+---
+
+# 4) Compose CustomDialog matching the XML dialog behavior
+
+This is a Compose implementation of the custom dialog concept used in `CustomDialog.kt`.
+
+## `CustomDialog.kt` for Compose
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    dialog: UserPreferencesDialogModel,
+    onDismiss: () -> Unit,
+    onAction: (UserPreferencesUiEffect.DialogAction) -> Unit,
+) {
+    var text by remember(dialog.text) { mutableStateOf(dialog.text) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = dialog.title)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                dialog.description?.let { Text(it) }
+
+                if (dialog.showTextField) {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(dialog.hint ?: "") },
+                        visualTransformation = if (dialog.isPin) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (dialog.buttons.contains(UserPreferencesDialogButton.Accept)) {
+                TextButton(onClick = {
+                    onAction(UserPreferencesUiEffect.DialogAction.Accept(text))
+                }) {
+                    Text("Accept")
+                }
+            }
+        },
+        dismissButton = {
+            if (dialog.buttons.contains(UserPreferencesDialogButton.Cancel)) {
+                TextButton(onClick = {
+                    onAction(UserPreferencesUiEffect.DialogAction.Cancel)
+                }) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
+}
+```
+
+---
+
+# 5) Button styling helpers matching the custom button component more closely
+
+This is a better reusable helper when you want styles closer to your custom XML button.
+
+## `UserPreferencesButtonStyles.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.components
+
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+object UserPreferencesButtonStyles {
+
+    @Composable
+    fun primary(): ButtonColors = ButtonDefaults.buttonColors(
+        containerColor = Color(0xFF2D6CDF),
+        contentColor = Color.White,
+        disabledContainerColor = Color(0xFFB0B0B0),
+        disabledContentColor = Color(0xFFFFFFFF)
+    )
+
+    @Composable
+    fun cancel(): ButtonColors = ButtonDefaults.buttonColors(
+        containerColor = Color(0xFF757575),
+        contentColor = Color.White,
+        disabledContainerColor = Color(0xFFB0B0B0),
+        disabledContentColor = Color.White
+    )
+
+    @Composable
+    fun warning(): ButtonColors = ButtonDefaults.buttonColors(
+        containerColor = Color(0xFFE67E22),
+        contentColor = Color.White
+    )
+
+    @Composable
+    fun success(): ButtonColors = ButtonDefaults.buttonColors(
+        containerColor = Color(0xFF1E8E3E),
+        contentColor = Color.White
+    )
+
+    val shape = RoundedCornerShape(12.dp)
+}
+```
+
+If you want the buttons to look like your existing custom button, use:
+
+```kotlin
+Button(
+    onClick = ...,
+    shape = UserPreferencesButtonStyles.shape,
+    colors = UserPreferencesButtonStyles.primary()
+) { ... }
+```
+
+---
+
+# 6) Notes on preserving navigation and dialog behavior
+
+## Navigation
+I preserved the behavior using:
+- `NavController.navigate(...)`
+- `NavController.popBackStack()`
+- deep links where the fragment originally used `NavDeepLinkRequest`
+
+Examples:
+- `NavigateToSecurePin`
+- `NavigateToPortugalSettings`
+- `NavigateBack`
+
+## Dialog handling
+Your request said:
+> Use dialog state, lifecycle collection of state/events for dialog handling
+
+That’s why the screen uses:
+- `var dialogState by remember { mutableStateOf(...) }`
+- `LaunchedEffect(Unit) { viewModel.uiEffect.collectLatest { ... } }`
+
+So the dialog is driven from `UiEffect.OpenDialog` and dismissed via state reset.
+
+---
+
+# 7) Important caveats
+
+This answer is a **Compose architecture translation** of the fragment logic, but a few things still need project-specific wiring:
+
+1. **Spinners/dropdowns**
+   - I left spinner-like fields as placeholders because your original screen uses many XML adapters and custom items.
+   - In Compose you’d typically use `DropdownMenu` or `ExposedDropdownMenuBox`.
+
+2. **Permissions**
+   - The ViewModel emits permission effects.
+   - The host activity/composable should launch the actual permission request.
+
+3. **Ringtone picker**
+   - The screen uses `rememberLauncherForActivityResult(...)`.
+   - The ViewModel stores the selected title/uri after the picker returns.
+
+4. **Button visibility**
+   - I mirrored the key XML logic in `UserPreferencesButtonsState`, but if there are more exact rules in XML styles/drawables, those should be copied into the helper.
+
+---
+
+# 8) If you want, I can also provide:
+- a **full Compose version of every checkbox/spinner field** from the fragment,
+- a **DropdownMenu replacement** for each spinner in the XML,
+- a **fully wired permissions host** for notification/phone/bluetooth/overlay,
+- or a **Hilt/Koin-ready version** of the Compose ViewModel factory.
+
+If you want the next step, I can generate the **complete drop-in Compose screen with all fields and all actions**, not just the architecture skeleton.

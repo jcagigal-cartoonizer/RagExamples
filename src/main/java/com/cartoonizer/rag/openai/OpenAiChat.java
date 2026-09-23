@@ -91,10 +91,10 @@ public class OpenAiChat {
 //        AiMessage aiMessage = chatModel.chat(prompt.toUserMessage()).aiMessage();
 //        String answer = aiMessage.text();
         
-        System.out.println("===============================");
-        System.out.println("INFO:");
-        System.out.println(information);
-        System.out.println("===============================");
+//        System.out.println("===============================");
+//        System.out.println("INFO:");
+//        System.out.println(information);
+//        System.out.println("===============================");
 //        String answer = assistant.answerWithInfo(prompt.toUserMessage().singleText(), information);
         String answer = prompter.getPrompt(question);
         return answer;
@@ -158,13 +158,6 @@ public class OpenAiChat {
         Metadata docMetadata = document.metadata();
         String docFileName = docMetadata.getString("file_name");
         String docPath = docMetadata.getString("absolute_directory_path") + "/" + docFileName;
-        if (!docPath.contains("strings.xml")) {
-            System.out.println("========================================================================");
-            System.out.println("Doc metadata " + docPath + " " + docMetadata);
-            for (TextSegment segment : segments) {
-                System.out.println("    segment metadata " + segment.metadata() + " text " + segment.text());
-            }
-        }
 
         // Embed segments (convert them into vectors that represent the meaning) using embedding model        
         List<Embedding> embeddings = embeddingModel.embedAll(segments).content();

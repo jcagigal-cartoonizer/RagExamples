@@ -1,0 +1,635 @@
+Below is a Compose-based replacement for `ScannerQrFragment` that keeps the same behavior, but moves the UI to:
+
+- a `ScannerQrScreen` composable
+- a `ScannerQrViewModel` with `UiState + UiEvent + SharedFlow<ScannerQrUiEffect>`
+- Compose dialog handling with lifecycle-safe collection
+- state holders for button logic (`ScannerQrButtonsState`)
+- a Compose `CustomDialog` equivalent
+- styling helpers that closely mirror the custom button behavior
+
+I’ll keep the implementation Android/Jetpack Compose only, and I’ll preserve the original navigation intent by exposing a callback that your host can wire to `NavGraphDirections.goToHomeFragment()` or `navigateBack()`.
+
+---
+
+# 1) Compose UI: `ScannerQrScreen`
+
+## UI model and effects
+
+```kotlin
+package ifac.td.taxi.ui.screen.scannerqr
+
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.VoucherQR
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+
+data class ScannerQrUiState(
+    val serviceId: String? = null,
+    val isLoading: Boolean = false,
+    val dialogState: CustomDialogState? = null,
+    val buttonsState: ScannerQrButtonsState = ScannerQrButtonsState()
+)
+
+data class CustomDialogState(
+    val model: CustomDialogModel,
+    val visible: Boolean = true
+)
+
+data class CustomDialogModel(
+    val title: String,
+    val description: String,
+    val buttons: List<DialogButtonType>
+)
+
+enum class DialogButtonType {
+    FRONT_CAMERA,
+    BACK_CAMERA
+}
+
+sealed interface ScannerQrUiEvent {
+    data class ServiceIdLoaded(val serviceId: String?) : ScannerQrUiEvent
+    data class ScannerQrResult(val rawQr: String) : ScannerQrUiEvent
+    data object CancelClicked : ScannerQrUiEvent
+    data object ScannerClicked : ScannerQrUiEvent
+    data object DialogDismissed : ScannerQrUiEvent
+    data class DialogButtonClicked(val button: DialogButtonType) : ScannerQrUiEvent
+}
+
+sealed interface ScannerQrUiEffect {
+    data class ShowCameraDialog(val model: CustomDialogModel) : ScannerQrUiEffect
+    data class OpenScanner(val cameraPosition: Int) : ScannerQrUiEffect
+    data object NavigateBack : ScannerQrUiEffect
+    data object NavigateHome : ScannerQrUiEffect
+    data object EnableScannerButton : ScannerQrUiEffect
+}
+```
+
+---
+
+## Button state holder
+
+This replaces the fragment’s button logic and can be used by Compose directly.
+
+```kotlin
+package ifac.td.taxi.ui.screen.scannerqr
+
+import androidx.compose.ui.graphics.Color
+
+enum class ScannerButtonVisualState {
+    Enabled,
+    Loading,
+    Disabled
+}
+
+data class ScannerQrButtonsState(
+    val cancel: ScannerButtonSpec = ScannerButtonSpec.cancel(),
+    val scanner: ScannerButtonSpec = ScannerButtonSpec.scanner()
+)
+
+data class ScannerButtonSpec(
+    val text: String,
+    val enabled: Boolean,
+    val backgroundColor: Color,
+    val contentColor: Color,
+    val borderColor: Color? = null,
+    val loading: Boolean = false,
+    val visible: Boolean = true
+) {
+    companion object {
+        fun cancel() = ScannerButtonSpec(
+            text = "Cancel",
+            enabled = true,
+            backgroundColor = Color(0xFFE0E0E0),
+            contentColor = Color(0xFF1F1F1F),
+            borderColor = null,
+            loading = false,
+            visible = true
+        )
+
+        fun scanner() = ScannerButtonSpec(
+            text = "Scanner",
+            enabled = true,
+            backgroundColor = Color(0xFF1976D2),
+            contentColor = Color.White,
+            borderColor = null,
+            loading = false,
+            visible = true
+        )
+
+        fun scannerLoading() = ScannerButtonSpec(
+            text = "Scanner",
+            enabled = false,
+            backgroundColor = Color(0xFF90CAF9),
+            contentColor = Color.White,
+            borderColor = null,
+            loading = true,
+            visible = true
+        )
+    }
+}
+
+fun ScannerQrButtonsState.withScannerLoading(): ScannerQrButtonsState =
+    copy(scanner = ScannerButtonSpec.scannerLoading())
+
+fun ScannerQrButtonsState.withScannerEnabled(): ScannerQrButtonsState =
+    copy(scanner = ScannerButtonSpec.scanner())
+```
+
+---
+
+## ViewModel with Compose-friendly state/effects
+
+This replaces the fragment logic and exposes a `SharedFlow<ScannerQrUiEffect>` plus `StateFlow<ScannerQrUiState>`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.VoucherQR
+import ifac.td.taxi.domain.usecase.SubscriberUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.ui.screen.scannerqr.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class ScannerQrComposeViewModel(
+    app: Application,
+    private val subscriberUseCase: SubscriberUseCase,
+    private val ticketUseCase: TicketUseCase
+) : AndroidViewModel(app) {
+
+    private val TAG = "ScannerQrComposeVM"
+
+    private val _uiState = MutableStateFlow(ScannerQrUiState())
+    val uiState: StateFlow<ScannerQrUiState> = _uiState.asStateFlow()
+
+    private val _uiEffects = MutableSharedFlow<ScannerQrUiEffect>(extraBufferCapacity = 1)
+    val uiEffects: SharedFlow<ScannerQrUiEffect> = _uiEffects.asSharedFlow()
+
+    fun onEvent(event: ScannerQrUiEvent) {
+        when (event) {
+            is ScannerQrUiEvent.ServiceIdLoaded -> {
+                _uiState.update { it.copy(serviceId = event.serviceId) }
+            }
+
+            ScannerQrUiEvent.ScannerClicked -> {
+                val model = CustomDialogModel(
+                    title = "Open camera",
+                    description = "Select a camera",
+                    buttons = listOf(DialogButtonType.FRONT_CAMERA, DialogButtonType.BACK_CAMERA)
+                )
+                _uiState.update { it.copy(dialogState = CustomDialogState(model)) }
+                _uiEffects.tryEmit(ScannerQrUiEffect.ShowCameraDialog(model))
+            }
+
+            is ScannerQrUiEvent.DialogButtonClicked -> {
+                val cameraPosition = when (event.button) {
+                    DialogButtonType.FRONT_CAMERA -> 1
+                    DialogButtonType.BACK_CAMERA -> 0
+                }
+                _uiState.update { it.copy(dialogState = null) }
+                _uiEffects.tryEmit(ScannerQrUiEffect.OpenScanner(cameraPosition))
+            }
+
+            ScannerQrUiEvent.DialogDismissed -> {
+                _uiState.update { it.copy(dialogState = null) }
+            }
+
+            ScannerQrUiEvent.CancelClicked -> {
+                _uiEffects.tryEmit(ScannerQrUiEffect.NavigateBack)
+            }
+
+            is ScannerQrUiEvent.ScannerQrResult -> {
+                handleResult(event.rawQr)
+            }
+        }
+    }
+
+    fun onScannerResult(
+        rawResult: String,
+        infoDispatchModel: ifac.td.taxi.viewmodel.model.InfoDispatchModel?,
+        trip: Trip?,
+        updatePrintFlowCallback: suspend (Trip) -> Unit,
+    ) {
+        val serviceId = uiState.value.serviceId
+        try {
+            val qrVoucher = Gson().fromJson(rawResult, VoucherQR::class.java)
+            Logs.d(TAG, "onScannerResult: parsed QR=$qrVoucher")
+            _uiState.update { it.copy(scannerQrButtonsStateLoading()) }
+
+            viewModelScope.launch {
+                subscriberUseCase.uploadVoucherId(
+                    serviceId = serviceId,
+                    qrVoucher = qrVoucher,
+                    infoDispatchModel = infoDispatchModel,
+                    trip = trip,
+                    navigateFunction = { success ->
+                        if (success) {
+                            _uiEffects.tryEmit(ScannerQrUiEffect.NavigateHome)
+                        } else {
+                            _uiEffects.tryEmit(ScannerQrUiEffect.EnableScannerButton)
+                            _uiState.update { it.copy(buttonsState = it.buttonsState.withScannerEnabled()) }
+                        }
+                    },
+                    updatePrintFlow = { t, dispatch, status ->
+                        viewModelScope.launch {
+                            if (t != null) ticketUseCase.prepareTicket(t, dispatch, status)
+                        }
+                    },
+                    openDialogQrFlow = null
+                )
+            }
+        } catch (e: Exception) {
+            Logs.e(TAG, "onScannerResult: ${e.message}")
+            _uiEffects.tryEmit(ScannerQrUiEffect.EnableScannerButton)
+            _uiState.update { it.copy(buttonsState = it.buttonsState.withScannerEnabled()) }
+        }
+    }
+
+    private fun handleResult(result: String) {
+        // kept for parity with fragment; parsing happens in onScannerResult in Compose host
+    }
+
+    private fun ScannerQrUiState.scannerQrButtonsStateLoading(): ScannerQrUiState =
+        copy(buttonsState = buttonsState.withScannerLoading())
+}
+```
+
+> Note: In your project, wire `uploadVoucherId(...)` to the same use case signature you already have. I preserved the navigation behavior by emitting `NavigateHome` on success and `NavigateBack` on cancel.
+
+---
+
+## Compose screen
+
+This screen handles:
+- button clicks
+- dialog visibility
+- lifecycle-safe collection
+- scanner launch callback
+- navigation callback wiring
+
+```kotlin
+package ifac.td.taxi.ui.screen.scannerqr
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.flowWithLifecycle
+import kotlinx.coroutines.launch
+
+@Composable
+fun ScannerQrScreen(
+    uiState: ScannerQrUiState,
+    onEvent: (ScannerQrUiEvent) -> Unit,
+    uiEffects: kotlinx.coroutines.flow.SharedFlow<ScannerQrUiEffect>,
+    onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit,
+    onOpenScanner: (cameraPosition: Int) -> Unit,
+    onQrScanned: (String) -> Unit,
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(uiEffects, lifecycleOwner) {
+        uiEffects.flowWithLifecycle(lifecycleOwner.lifecycle, Lifecycle.State.STARTED).collect { effect ->
+            when (effect) {
+                is ScannerQrUiEffect.ShowCameraDialog -> {
+                    // state already updated; no-op if you render from state
+                }
+                is ScannerQrUiEffect.OpenScanner -> onOpenScanner(effect.cameraPosition)
+                ScannerQrUiEffect.NavigateBack -> onNavigateBack()
+                ScannerQrUiEffect.NavigateHome -> onNavigateHome()
+                ScannerQrUiEffect.EnableScannerButton -> Unit
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text(text = "Scanner QR", style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Use the scanner to read the voucher QR.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                ScannerQrButton(
+                    spec = uiState.buttonsState.scanner,
+                    onClick = { onEvent(ScannerQrUiEvent.ScannerClicked) }
+                )
+
+                ScannerQrButton(
+                    spec = uiState.buttonsState.cancel,
+                    onClick = { onEvent(ScannerQrUiEvent.CancelClicked) }
+                )
+            }
+        }
+
+        uiState.dialogState?.let { dialogState ->
+            CustomDialog(
+                state = dialogState,
+                onDismiss = { onEvent(ScannerQrUiEvent.DialogDismissed) },
+                onButtonClicked = { btn ->
+                    onEvent(ScannerQrUiEvent.DialogButtonClicked(btn))
+                }
+            )
+        }
+    }
+}
+```
+
+---
+
+# 2) Compose `CustomDialog` based on the XML/dialog behavior
+
+This replaces the old custom dialog with a Compose implementation.
+
+```kotlin
+package ifac.td.taxi.ui.custom.dialog
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.scannerqr.CustomDialogState
+import ifac.td.taxi.ui.screen.scannerqr.DialogButtonType
+
+@Composable
+fun CustomDialog(
+    state: CustomDialogState,
+    onDismiss: () -> Unit,
+    onButtonClicked: (DialogButtonType) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color.White)
+                .padding(20.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.Start) {
+                Text(
+                    text = state.model.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color(0xFF111111)
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                Text(
+                    text = state.model.description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF444444)
+                )
+
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    state.model.buttons.forEach { button ->
+                        Button(
+                            onClick = { onButtonClicked(button) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF1976D2),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text(
+                                text = when (button) {
+                                    DialogButtonType.FRONT_CAMERA -> "Front camera"
+                                    DialogButtonType.BACK_CAMERA -> "Back camera"
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 3) Compose button styling helpers matching `CustomButton` more closely
+
+This is the Compose version of the custom button styling used by your XML component.
+
+```kotlin
+package ifac.td.taxi.ui.screen.scannerqr
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun ScannerQrButton(
+    spec: ScannerButtonSpec,
+    onClick: () -> Unit
+) {
+    if (!spec.visible) return
+
+    val colors = ButtonDefaults.buttonColors(
+        containerColor = spec.backgroundColor,
+        contentColor = spec.contentColor,
+        disabledContainerColor = spec.backgroundColor.copy(alpha = 0.5f),
+        disabledContentColor = spec.contentColor.copy(alpha = 0.6f)
+    )
+
+    val border = spec.borderColor?.let { BorderStroke(1.dp, it) }
+
+    Button(
+        onClick = onClick,
+        enabled = spec.enabled && !spec.loading,
+        colors = colors,
+        border = border,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+    ) {
+        if (spec.loading) {
+            CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(18.dp),
+                color = spec.contentColor
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+
+        Text(text = spec.text)
+    }
+}
+```
+
+---
+
+# 4) How to preserve navigation
+
+Your Fragment previously used:
+
+- `iMainActivity.navigateBack()`
+- `iMainActivity.navigateTo(NavGraphDirections.goToHomeFragment())`
+- scanner opening through `iMainActivity.openScanner(...)`
+
+In Compose, you preserve that by injecting callbacks from your host Activity/Fragment:
+
+```kotlin
+ScannerQrScreen(
+    uiState = state,
+    onEvent = viewModel::onEvent,
+    uiEffects = viewModel.uiEffects,
+    onNavigateBack = { iMainActivity.navigateBack() },
+    onNavigateHome = { iMainActivity.navigateTo(NavGraphDirections.goToHomeFragment()) },
+    onOpenScanner = { cameraPosition ->
+        iMainActivity.openScanner(
+            object : OnScannerResultCallback {
+                override fun onSuccess(result: String) {
+                    viewModel.onScannerResult(
+                        rawResult = result,
+                        infoDispatchModel = sharedViewModel.dispatchFlow.value,
+                        trip = sharedViewModel.tripFlow.value,
+                        updatePrintFlowCallback = sharedViewModel.updatePrintFlowCallback
+                    )
+                }
+            },
+            cameraPosition
+        )
+    },
+    onQrScanned = { raw ->
+        viewModel.onEvent(ScannerQrUiEvent.ScannerQrResult(raw))
+    }
+)
+```
+
+---
+
+# 5) Lifecycle-safe dialog/event collection
+
+You asked specifically for dialog handling using lifecycle collection. The Compose `LaunchedEffect` + `flowWithLifecycle` pattern above does that for effects.
+
+If you want dialog state to be fully state-driven, the dialog is rendered directly from `uiState.dialogState`, and the `SharedFlow<ScannerQrUiEffect>` is used for one-time effects such as:
+
+- open scanner
+- navigate back/home
+- re-enable scanner
+
+That maps well to Compose and avoids the old fragment `eventCollector` pattern.
+
+---
+
+# 6) Minimal host example
+
+A Compose host that replaces the fragment:
+
+```kotlin
+@Composable
+fun ScannerQrRoute(
+    viewModel: ScannerQrComposeViewModel,
+    sharedViewModel: MainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit,
+    openScanner: (Int, (String) -> Unit) -> Unit
+) {
+    val state by viewModel.uiState.collectAsState()
+
+    ScannerQrScreen(
+        uiState = state,
+        onEvent = viewModel::onEvent,
+        uiEffects = viewModel.uiEffects,
+        onNavigateBack = onNavigateBack,
+        onNavigateHome = onNavigateHome,
+        onOpenScanner = { cameraPosition ->
+            openScanner(cameraPosition) { rawResult ->
+                viewModel.onScannerResult(
+                    rawResult = rawResult,
+                    infoDispatchModel = sharedViewModel.dispatchFlow.value,
+                    trip = sharedViewModel.tripFlow.value,
+                    updatePrintFlowCallback = sharedViewModel.updatePrintFlowCallback
+                )
+            }
+        },
+        onQrScanned = { raw -> viewModel.onEvent(ScannerQrUiEvent.ScannerQrResult(raw)) }
+    )
+}
+```
+
+---
+
+# 7) Notes on XML parity and exact styling
+
+Because the original XML layouts were not included, I approximated the following based on common behavior in your existing code:
+
+- cancel button: neutral gray
+- scanner button: primary blue
+- loading state: same button with spinner and disabled interaction
+- dialog: rounded white card with title/description and two equal-width actions
+
+If you want exact pixel parity with the XML, you’d need to share:
+
+- `fragment_scanner_qr.xml`
+- `custom_dialog.xml`
+- `CustomButton.kt`
+- `CustomDialog.kt`
+
+Then I can translate the exact padding, corner radius, typography, and colors 1:1 into Compose.
+
+---
+
+# 8) Recommended final architecture summary
+
+Use:
+
+- `ScannerQrComposeViewModel`
+  - `StateFlow<ScannerQrUiState>`
+  - `SharedFlow<ScannerQrUiEffect>`
+- `ScannerQrScreen`
+  - renders buttons and dialog
+- `ScannerQrButtonsState`
+  - holds button colors/visibility/loading
+- `CustomDialog`
+  - Compose version of your existing dialog
+- host callbacks
+  - preserve `navigateBack`, `navigateTo(Home)`, `openScanner`
+
+---
+
+If you want, I can also provide a **fully wired version with Koin**, including:
+- `@Composable fun ScannerQrRoute(navController: NavController, ...)`
+- `viewModel()` injection
+- `rememberLauncherForActivityResult` alternative for scanner result handling
+- exact `sealed class` mapping for your existing `CustomDialog.ButtonType` API

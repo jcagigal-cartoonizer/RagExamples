@@ -4,37 +4,43 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
-// # Block 485-4: import androidx.compose.foundation.BorderStroke
+// # Block 365-4: import androidx.compose.foundation.background
 @Composable
 fun ComposeCustomButton(
-    text: String,
-    style: ComposeButtonStyle,
+    state: ButtonUiState,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier
 ) {
-    val enabled = style !is ComposeButtonStyle.LoadingGreen && style !is ComposeButtonStyle.DisabledGreen
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.height(52.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = style.backgroundColor(),
-            contentColor = style.contentColor(),
-            disabledContainerColor = style.backgroundColor(),
-            disabledContentColor = style.contentColor()
-        ),
-        border = if (style is ComposeButtonStyle.Outline) {
-            BorderStroke(1.dp, style.borderColor())
-        } else null
+    if (!state.visible) return
+    val bg = if (state.enabled) state.backgroundColor else state.disabledBackgroundColor.takeOrElse {
+        state.backgroundColor.copy(alpha = 0.4f)
+    }
+    val fg = if (state.enabled) state.contentColor else state.disabledContentColor.takeOrElse {
+        state.contentColor.copy(alpha = 0.6f)
+    }
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .widthIn(min = 120.dp)
+            .background(bg, RoundedCornerShape(12.dp))
+            .clickable(enabled = state.enabled && !state.loading) { onClick() }
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center
     ) {
-        if (style is ComposeButtonStyle.LoadingGreen) {
+        if (state.loading) {
             CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
+                color = fg,
                 strokeWidth = 2.dp,
-                color = style.contentColor()
+                modifier = Modifier.size(20.dp)
             )
-            Spacer(Modifier.width(8.dp))
+        } else {
+            Text(
+                text = state.text,
+                color = fg,
+                fontWeight = FontWeight.SemiBold
+            )
         }
-        Text(text)
     }
 }
+fun Color.takeOrElse(default: () -> Color): Color =
+    if (this == Color.Unspecified) default() else this

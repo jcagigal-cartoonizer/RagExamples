@@ -1,0 +1,656 @@
+Below is a Compose-first version of the refund screen that:
+
+- preserves the original fragment navigation pattern
+- replaces fragment button logic with Compose state holders
+- uses `UiState + UiEvent + UiEffect`
+- uses a single `SharedFlow<RefundMoneiUiEffect>`
+- includes lifecycle-aware collection
+- includes a Compose custom dialog
+- includes button state/styling helpers close to your XML/custom button behavior
+
+I’m keeping this aligned with Android + Jetpack Compose only.
+
+---
+
+## 1) Compose UI state / event / effect models
+
+```kotlin
+package ifac.td.taxi.ui.screen.refund
+
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+
+data class RefundMoneiUiState(
+    val isLoading: Boolean = false,
+    val amountText: String = "",
+    val status: PaymentMoneiViewModel.StatusPayments = PaymentMoneiViewModel.StatusPayments.SUCCEEDED,
+    val showConfirmDialog: Boolean = false,
+    val showErrorDialog: Boolean = false,
+    val errorMessage: String? = null,
+    val canRefund: Boolean = true,
+    val canCancel: Boolean = true,
+)
+
+sealed interface RefundMoneiUiEvent {
+    data object OnCancelClicked : RefundMoneiUiEvent
+    data object OnRefundClicked : RefundMoneiUiEvent
+    data object OnDismissDialog : RefundMoneiUiEvent
+    data object OnConfirmRefund : RefundMoneiUiEvent
+}
+
+sealed interface RefundMoneiUiEffect {
+    data object NavigateBack : RefundMoneiUiEffect
+    data object StartPolling : RefundMoneiUiEffect
+    data object StopPolling : RefundMoneiUiEffect
+    data class ShowSnackbar(val message: String) : RefundMoneiUiEffect
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel
+
+This ViewModel mirrors your old logic, but exposes a Compose-ready state and a single `SharedFlow<RefundMoneiUiEffect>`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.monei.InfoPayment
+import ifac.td.taxi.domain.usecase.MoneiUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.model.SmartTDUIException
+import ifac.td.taxi.ui.screen.refund.RefundMoneiUiEffect
+import ifac.td.taxi.ui.screen.refund.RefundMoneiUiEvent
+import ifac.td.taxi.ui.screen.refund.RefundMoneiUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class RefundMoneiComposeViewModel(
+    private val moneiUseCase: MoneiUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var pollingRunnable: Runnable? = null
+    private var pollingJob: Job? = null
+
+    private val _uiState = MutableStateFlow(RefundMoneiUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<RefundMoneiUiEffect>(extraBufferCapacity = 1)
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private var currentTrip: Trip? = null
+    private var currentPaymentId: String? = null
+
+    fun onEvent(event: RefundMoneiUiEvent) {
+        when (event) {
+            RefundMoneiUiEvent.OnCancelClicked -> {
+                viewModelScope.launch { _uiEffect.emit(RefundMoneiUiEffect.NavigateBack) }
+            }
+
+            RefundMoneiUiEvent.OnRefundClicked -> {
+                _uiState.update { it.copy(showConfirmDialog = true) }
+            }
+
+            RefundMoneiUiEvent.OnDismissDialog -> {
+                _uiState.update { it.copy(showConfirmDialog = false, showErrorDialog = false) }
+            }
+
+            RefundMoneiUiEvent.OnConfirmRefund -> {
+                _uiState.update { it.copy(showConfirmDialog = false, isLoading = true) }
+                refund()
+            }
+        }
+    }
+
+    fun start(tripId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trip = tripUseCase.getTripById(tripId)
+            currentTrip = trip
+            currentPaymentId = trip?.moneiPaymentId
+
+            _uiState.update {
+                it.copy(
+                    amountText = trip?.totalAmount?.toString().orEmpty(),
+                    canRefund = trip?.moneiPaymentId != null,
+                )
+            }
+
+            trip?.moneiPaymentId?.let { paymentId ->
+                startPolling(paymentId)
+            }
+        }
+    }
+
+    private fun startPolling(paymentId: String) {
+        stopPolling()
+
+        pollingRunnable = object : Runnable {
+            override fun run() {
+                pollingJob = viewModelScope.launch(Dispatchers.IO) {
+                    when (val response = moneiUseCase.getInfoPayment(paymentId)) {
+                        is Resource.Success -> {
+                            response.data?.let { info ->
+                                handlePaymentInfo(info)
+                            }
+                        }
+
+                        is Resource.Error -> {
+                            response.exception?.let { ex ->
+                                val uiEx = SmartTDUIException.fromException(ex)
+                                _uiState.update {
+                                    it.copy(
+                                        isLoading = false,
+                                        showErrorDialog = true,
+                                        errorMessage = uiEx.message ?: ex.message
+                                    )
+                                }
+                                _uiEffect.emit(RefundMoneiUiEffect.ShowSnackbar(uiEx.message ?: "Error"))
+                            }
+                        }
+                    }
+                }
+                handler.postDelayed(this, 3000)
+            }
+        }
+
+        handler.post(pollingRunnable!!)
+    }
+
+    private fun handlePaymentInfo(info: InfoPayment) {
+        _uiState.update { state ->
+            state.copy(
+                isLoading = false,
+                status = runCatching {
+                    PaymentMoneiViewModel.StatusPayments.valueOf(info.status)
+                }.getOrElse { PaymentMoneiViewModel.StatusPayments.SUCCEEDED },
+                canRefund = info.status != PaymentMoneiViewModel.StatusPayments.REFUNDED.name,
+            )
+        }
+
+        if (info.status == PaymentMoneiViewModel.StatusPayments.REFUNDED.name) {
+            stopPolling()
+        }
+    }
+
+    private fun refund() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trip = currentTrip
+            val paymentId = currentPaymentId
+            if (trip == null || paymentId == null) {
+                _uiState.update { it.copy(isLoading = false, showErrorDialog = true, errorMessage = "Missing trip/payment") }
+                return@launch
+            }
+
+            when (val response = moneiUseCase.refundPayment(paymentId, trip.totalAmount)) {
+                is Resource.Success -> {
+                    response.data?.let { info ->
+                        handlePaymentInfo(info)
+                        stopPolling()
+                    }
+                }
+
+                is Resource.Error -> {
+                    response.exception?.let { ex ->
+                        val uiEx = SmartTDUIException.fromException(ex)
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                showErrorDialog = true,
+                                errorMessage = uiEx.message ?: ex.message
+                            )
+                        }
+                        _uiEffect.emit(RefundMoneiUiEffect.ShowSnackbar(uiEx.message ?: "Error"))
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopPolling() {
+        pollingRunnable?.let { handler.removeCallbacks(it) }
+        pollingRunnable = null
+        pollingJob?.cancel()
+        pollingJob = null
+    }
+
+    override fun onCleared() {
+        stopPolling()
+        super.onCleared()
+    }
+}
+```
+
+---
+
+## 3) Button state + styling helpers
+
+This replaces the fragment button setup logic and aims to match the custom button behavior closely.
+
+```kotlin
+package ifac.td.taxi.ui.screen.refund
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+data class RefundMoneiButtonsState(
+    val showCancel: Boolean = true,
+    val showRefund: Boolean = true,
+    val cancelEnabled: Boolean = true,
+    val refundEnabled: Boolean = true,
+    val cancelText: String = "Cancel",
+    val refundText: String = "Refund",
+)
+
+object RefundMoneiButtonStyle {
+    val shape = RoundedCornerShape(10.dp)
+    val primary = Color(0xFF1E88E5)
+    val secondary = Color(0xFFE53935)
+    val textOnPrimary = Color.White
+    val textOnSecondary = Color.White
+    val disabled = Color(0xFFBDBDBD)
+
+    val contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+}
+
+@Composable
+fun RefundMoneiButton(
+    text: String,
+    enabled: Boolean,
+    background: Color,
+    textColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Text(
+        text = text,
+        color = if (enabled) textColor else Color.White,
+        fontSize = 16.sp,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .background(if (enabled) background else RefundMoneiButtonStyle.disabled, RefundMoneiButtonStyle.shape)
+            .border(1.dp, background, RefundMoneiButtonStyle.shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .then(Modifier)
+            .paddingCompat()
+    )
+}
+
+private fun Modifier.paddingCompat(): Modifier = this
+```
+
+> If your XML custom button had a stronger “button” look, you can swap the `Text` with a `Box`/`Surface`; I kept it minimal and Compose-native.
+
+---
+
+## 4) Custom dialog in Compose
+
+This matches the idea of a reusable `custom_dialog.xml` + `CustomDialog.kt`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.refund
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Dialog
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    title: String,
+    message: String,
+    confirmText: String = "OK",
+    dismissText: String = "Cancel",
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White, RoundedCornerShape(16.dp))
+                .padding(20.dp)
+        ) {
+            Text(text = title, style = MaterialTheme.typography.titleLarge, color = Color.Black)
+            Spacer(Modifier.height(12.dp))
+            Text(text = message, style = MaterialTheme.typography.bodyMedium, color = Color(0xFF444444))
+            Spacer(Modifier.height(20.dp))
+            Divider()
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = dismissText,
+                    color = Color(0xFF666666),
+                    modifier = Modifier.clickable(onClick = onDismiss).padding(8.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    onClick = onConfirm,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E88E5))
+                ) {
+                    Text(confirmText, color = Color.White)
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 5) Compose screen
+
+This is the actual composable screen that replaces `RefundMoneiFragment`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.refund
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+import ifac.td.taxi.viewmodel.RefundMoneiComposeViewModel
+
+@Composable
+fun RefundMoneiRoute(
+    tripId: Long,
+    viewModel: RefundMoneiComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onShowSnackbar: (String) -> Unit = {}
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(tripId) {
+        viewModel.start(tripId)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                RefundMoneiUiEffect.NavigateBack -> onNavigateBack()
+                is RefundMoneiUiEffect.ShowSnackbar -> onShowSnackbar(effect.message)
+                RefundMoneiUiEffect.StartPolling -> Unit
+                RefundMoneiUiEffect.StopPolling -> Unit
+            }
+        }
+    }
+
+    RefundMoneiScreen(
+        state = uiState,
+        onEvent = viewModel::onEvent
+    )
+}
+
+@Composable
+fun RefundMoneiScreen(
+    state: RefundMoneiUiState,
+    onEvent: (RefundMoneiUiEvent) -> Unit
+) {
+    val buttonsState = remember(state) {
+        RefundMoneiButtonsState(
+            showCancel = true,
+            showRefund = state.status != PaymentMoneiViewModel.StatusPayments.REFUNDED,
+            cancelEnabled = true,
+            refundEnabled = state.canRefund && state.status != PaymentMoneiViewModel.StatusPayments.REFUNDED,
+            cancelText = "Cancel",
+            refundText = "Refund",
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Text(text = "Amount")
+        Spacer(Modifier.height(8.dp))
+        Text(text = state.amountText.toCurrency())
+
+        Spacer(Modifier.height(12.dp))
+        Text(text = state.status.name)
+
+        if (state.isLoading) {
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            if (buttonsState.showCancel) {
+                RefundMoneiButton(
+                    text = buttonsState.cancelText,
+                    enabled = buttonsState.cancelEnabled,
+                    background = RefundMoneiButtonStyle.secondary,
+                    textColor = RefundMoneiButtonStyle.textOnSecondary,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onEvent(RefundMoneiUiEvent.OnCancelClicked) }
+                )
+            }
+
+            if (buttonsState.showRefund) {
+                RefundMoneiButton(
+                    text = buttonsState.refundText,
+                    enabled = buttonsState.refundEnabled,
+                    background = RefundMoneiButtonStyle.primary,
+                    textColor = RefundMoneiButtonStyle.textOnPrimary,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onEvent(RefundMoneiUiEvent.OnRefundClicked) }
+                )
+            }
+        }
+
+        if (state.showConfirmDialog) {
+            CustomDialog(
+                title = "Refund",
+                message = "Do you want to refund this payment?",
+                confirmText = "Refund",
+                dismissText = "Cancel",
+                onConfirm = { onEvent(RefundMoneiUiEvent.OnConfirmRefund) },
+                onDismiss = { onEvent(RefundMoneiUiEvent.OnDismissDialog) }
+            )
+        }
+
+        if (state.showErrorDialog) {
+            CustomDialog(
+                title = "Error",
+                message = state.errorMessage ?: "Something went wrong",
+                confirmText = "OK",
+                dismissText = "Close",
+                onConfirm = { onEvent(RefundMoneiUiEvent.OnDismissDialog) },
+                onDismiss = { onEvent(RefundMoneiUiEvent.OnDismissDialog) }
+            )
+        }
+    }
+}
+```
+
+---
+
+## 6) Preserving Jetpack Views navigation
+
+To preserve your existing Navigation component flow, create a fragment that hosts the Compose screen and reads `navArgs()` exactly like before.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.compose.material3.Scaffold
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
+import androidx.navigation.fragment.navArgs
+import ifac.td.taxi.ui.screen.refund.RefundMoneiRoute
+import ifac.td.taxi.viewmodel.RefundMoneiComposeViewModel
+import org.koin.androidx.viewmodel.ext.android.viewModel
+
+class RefundMoneiComposeFragment : Fragment() {
+
+    private val args: RefundMoneiFragmentArgs by navArgs()
+    private val viewModel: RefundMoneiComposeViewModel by viewModel()
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent {
+                Scaffold {
+                    RefundMoneiRoute(
+                        tripId = args.tripId,
+                        viewModel = viewModel,
+                        onNavigateBack = { findNavController().navigateUp() },
+                        onShowSnackbar = { /* hook into your snackbar host if needed */ }
+                    )
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 7) Notes on XML parity / behavior mapping
+
+Your original fragment logic effectively did:
+
+- on start: load trip by `tripId`
+- poll payment info every 3 seconds
+- update status from `InfoPayment.status`
+- stop polling when refunded
+- refund button calls refund API
+- cancel button navigates back
+- status text changes and colors based on status
+
+The Compose version above preserves that behavior with:
+
+- `RefundMoneiUiState`
+- `RefundMoneiUiEvent`
+- `RefundMoneiUiEffect`
+- `SharedFlow<RefundMoneiUiEffect>`
+- lifecycle-aware collection via `collectAsStateWithLifecycle()`
+- a dialog state in the UI state
+- a reusable dialog composable
+- button visibility/enabled logic moved into `RefundMoneiButtonsState`
+
+---
+
+## 8) If you want a closer match to `CustomButton`
+
+If your custom XML button had:
+- full width
+- fixed height
+- rounded corners
+- icon support
+- loading state
+- different disabled alpha/colors
+
+then the `RefundMoneiButton` can be upgraded to a `Surface`-based implementation. Example pattern:
+
+```kotlin
+@Composable
+fun RefundMoneiButton(
+    text: String,
+    enabled: Boolean,
+    background: Color,
+    textColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    androidx.compose.material3.Surface(
+        color = if (enabled) background else RefundMoneiButtonStyle.disabled,
+        shape = RefundMoneiButtonStyle.shape,
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .fillMaxWidth()
+            .clickable(enabled = enabled) { onClick() }
+    ) {
+        androidx.compose.foundation.layout.Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(text = text, color = textColor)
+        }
+    }
+}
+```
+
+---
+
+If you want, I can also provide:
+1. a **full Koin module setup** for the Compose ViewModel  
+2. a **Compose version of the status badge** matching your `tvStatus` behavior exactly  
+3. a **more exact translation of `custom_dialog.xml`** if you share that XML or `CustomDialog.kt` source

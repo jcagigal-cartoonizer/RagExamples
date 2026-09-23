@@ -1,0 +1,813 @@
+Below is a Compose-based replacement that preserves the original behavior, navigation flow, dialog behavior, and button logic of your `PredefinedMessageFragment`, while exposing a clean `UiState + UiEvent + UiEffect` architecture.
+
+I split the solution into:
+
+1. **Compose screen** replacing the Fragment UI
+2. **Compose ViewModel** replacing the old ViewModel, with:
+   - `UiState`
+   - `UiEvent`
+   - `SharedFlow<PredefinedMessageUiEffect>`
+3. **Button state holders** replacing fragment button logic
+4. **Compose `CustomDialog`** based on the original dialog behavior
+5. **Compose button styling helpers** that mimic your custom button more closely
+6. **Navigation preservation** using `NavController`
+7. **Lifecycle-aware state/effect collection**
+
+> Note: I only use Android + Jetpack Compose + standard lifecycle/navigation APIs.
+
+---
+
+# 1) Compose screen: `PredefinedMessageScreen`
+
+This composable mirrors the fragment behavior:
+- hides header is assumed to be controlled externally if needed
+- shows list when messages exist
+- shows placeholder when empty
+- opens editable dialog for “New message”
+- opens predefined message dialog when selecting a predefined item
+- navigates back on cancel/send like the fragment
+
+---
+
+## `PredefinedMessageScreen.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.ui.screen.compose.dialog.ComposeCustomDialog
+import ifac.td.taxi.viewmodel.compose.PredefinedMessageUiEffect
+import ifac.td.taxi.viewmodel.compose.PredefinedMessageUiEvent
+import ifac.td.taxi.viewmodel.compose.PredefinedMessageUiState
+import ifac.td.taxi.viewmodel.compose.PredefinedMessageViewModelCompose
+
+@Composable
+fun PredefinedMessageScreen(
+    navController: NavController,
+    viewModel: PredefinedMessageViewModelCompose,
+    messageId: Int,
+    onHeaderVisibleChange: (Boolean) -> Unit = {},
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    var editableDialogState by remember { mutableStateOf<EditableDialogState?>(null) }
+    var predefinedDialogState by remember { mutableStateOf<PredefinedDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        onHeaderVisibleChange(false)
+        viewModel.onEvent(PredefinedMessageUiEvent.Initialize(messageId))
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                PredefinedMessageUiEffect.NavigateBack -> navController.popBackStack()
+                is PredefinedMessageUiEffect.OpenEditableDialog -> {
+                    editableDialogState = EditableDialogState(
+                        initialText = effect.initialText,
+                        dispatchNumber = effect.dispatchNumber
+                    )
+                }
+                is PredefinedMessageUiEffect.OpenPredefinedDialog -> {
+                    predefinedDialogState = PredefinedDialogState(
+                        id = effect.id,
+                        message = effect.message
+                    )
+                }
+            }
+        }
+    }
+
+    PredefinedMessageScreenContent(
+        state = uiState,
+        buttonsState = uiState.buttonsState,
+        onEvent = viewModel::onEvent,
+        onPredefinedMessageClick = { id, msg ->
+            viewModel.onEvent(PredefinedMessageUiEvent.PredefinedMessageClicked(id, msg))
+        }
+    )
+
+    editableDialogState?.let { dialogState ->
+        ComposeCustomDialog(
+            title = "Write message",
+            description = null,
+            editText = dialogState.initialText,
+            hint = "Message",
+            buttons = dialogState.buttonsState,
+            onDismiss = { editableDialogState = null },
+            onButtonClick = { buttonType, text ->
+                when (buttonType) {
+                    ComposeDialogButtonType.CANCEL -> editableDialogState = null
+                    ComposeDialogButtonType.SEND -> {
+                        viewModel.onEvent(
+                            PredefinedMessageUiEvent.SendTypedMessage(
+                                text.orEmpty(),
+                                dialogState.dispatchNumber
+                            )
+                        )
+                        editableDialogState = null
+                    }
+                    else -> Unit
+                }
+            }
+        )
+    }
+
+    predefinedDialogState?.let { dialogState ->
+        ComposeCustomDialog(
+            title = "Predefined message",
+            description = dialogState.message,
+            editText = null,
+            hint = null,
+            buttons = listOf(
+                ComposeDialogButtonType.EDIT,
+                ComposeDialogButtonType.SEND
+            ),
+            onDismiss = { predefinedDialogState = null },
+            onButtonClick = { buttonType, _ ->
+                when (buttonType) {
+                    ComposeDialogButtonType.SEND -> {
+                        viewModel.onEvent(
+                            PredefinedMessageUiEvent.SendPredefined(dialogState.id)
+                        )
+                        predefinedDialogState = null
+                    }
+                    ComposeDialogButtonType.EDIT -> {
+                        editableDialogState = EditableDialogState(
+                            initialText = dialogState.message,
+                            dispatchNumber = uiState.dispatchNumber
+                        )
+                        predefinedDialogState = null
+                    }
+                    else -> Unit
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PredefinedMessageScreenContent(
+    state: PredefinedMessageUiState,
+    buttonsState: PredefinedMessageButtonsState,
+    onEvent: (PredefinedMessageUiEvent) -> Unit,
+    onPredefinedMessageClick: (Int, String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        PredefinedMessageButtons(
+            state = buttonsState,
+            onNewMessageClick = { onEvent(PredefinedMessageUiEvent.NewMessageClicked) },
+            onCancelClick = { onEvent(PredefinedMessageUiEvent.CancelClicked) }
+        )
+
+        if (state.predefinedMessages.isEmpty()) {
+            Text(text = "No predefined messages available")
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                itemsIndexed(state.predefinedMessages) { index, item ->
+                    PredefinedMessageRow(
+                        index = index,
+                        message = item,
+                        onClick = { onPredefinedMessageClick(index, item) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PredefinedMessageRow(
+    index: Int,
+    message: String,
+    onClick: () -> Unit,
+) {
+    // Replace with your custom row style if needed
+    Text(
+        text = "${index + 1}. $message",
+        modifier = Modifier.padding(vertical = 8.dp)
+    )
+}
+
+private data class EditableDialogState(
+    val initialText: String?,
+    val dispatchNumber: String?,
+    val buttonsState: List<ComposeDialogButtonType> = listOf(
+        ComposeDialogButtonType.CANCEL,
+        ComposeDialogButtonType.SEND
+    )
+)
+
+private data class PredefinedDialogState(
+    val id: Int,
+    val message: String
+)
+```
+
+---
+
+# 2) Compose ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+This replaces the fragment-viewmodel flow logic and the “selected item” flow with a **single effect stream**.
+
+---
+
+## `PredefinedMessageViewModelCompose.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.models.freetextmessage.FreeTextMessageRequest
+import ifac.td.taxi.domain.usecase.MessageUseCase
+import ifac.td.taxi.domain.usecase.PredefinedMessagesUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.AlfaMessageHandler
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class PredefinedMessageViewModelCompose(
+    private val alfaMessageHandler: AlfaMessageHandler,
+    private val messageUseCase: MessageUseCase,
+    private val predefinedMessageUseCase: PredefinedMessagesUseCase,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(PredefinedMessageUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<PredefinedMessageUiEffect>(extraBufferCapacity = 1)
+    val effects = _effects.asSharedFlow()
+
+    fun onEvent(event: PredefinedMessageUiEvent) {
+        when (event) {
+            is PredefinedMessageUiEvent.Initialize -> load(event.messageId)
+
+            PredefinedMessageUiEvent.CancelClicked -> emitEffect(PredefinedMessageUiEffect.NavigateBack)
+
+            PredefinedMessageUiEvent.NewMessageClicked -> {
+                emitEffect(
+                    PredefinedMessageUiEffect.OpenEditableDialog(
+                        initialText = null,
+                        dispatchNumber = _uiState.value.dispatchNumber
+                    )
+                )
+            }
+
+            is PredefinedMessageUiEvent.PredefinedMessageClicked -> {
+                emitEffect(
+                    PredefinedMessageUiEffect.OpenPredefinedDialog(
+                        id = event.id,
+                        message = event.message
+                    )
+                )
+            }
+
+            is PredefinedMessageUiEvent.SendPredefined -> sendPredefinedMessage(event.id)
+
+            is PredefinedMessageUiEvent.SendTypedMessage -> sendTypedMessage(
+                response = event.text,
+                dispatchNumber = event.dispatchNumber
+            )
+        }
+    }
+
+    private fun load(messageId: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val message = messageUseCase.getMessage(messageId)
+            val predefinedMessages = predefinedMessageUseCase.getPredefinedMessages().toList()
+
+            _uiState.emit(
+                PredefinedMessageUiState(
+                    message = message,
+                    predefinedMessages = predefinedMessages,
+                    dispatchNumber = null,
+                    selectedPredefinedMessage = null,
+                    buttonsState = PredefinedMessageButtonsState.default(
+                        hasMessages = predefinedMessages.isNotEmpty()
+                    )
+                )
+            )
+        }
+    }
+
+    private fun sendPredefinedMessage(id: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val provider = _uiState.value.message?.provider
+            alfaMessageHandler.sendPredefinedMessage(id, 0, 0, provider)
+            emitEffect(PredefinedMessageUiEffect.NavigateBack)
+        }
+    }
+
+    private fun sendTypedMessage(response: String, dispatchNumber: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val freeMessageRequest = FreeTextMessageRequest().apply {
+                freeTextMessage = response
+                this.dispatchNumber = dispatchNumber.orEmpty()
+                operadora = _uiState.value.message?.provider
+            }
+            alfaMessageHandler.sendMessage(freeMessageRequest)
+            emitEffect(PredefinedMessageUiEffect.NavigateBack)
+        }
+    }
+
+    private fun emitEffect(effect: PredefinedMessageUiEffect) {
+        viewModelScope.launch {
+            _effects.emit(effect)
+        }
+    }
+}
+```
+
+---
+
+## `PredefinedMessageUiState.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import ifac.td.taxi.repository.room.entities.message.MessageEntity
+
+data class PredefinedMessageUiState(
+    val message: MessageEntity? = null,
+    val predefinedMessages: List<String> = emptyList(),
+    val selectedPredefinedMessage: Pair<Int, String>? = null,
+    val dispatchNumber: String? = null,
+    val buttonsState: PredefinedMessageButtonsState = PredefinedMessageButtonsState.default(false)
+)
+```
+
+---
+
+## `PredefinedMessageUiEvent.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+sealed interface PredefinedMessageUiEvent {
+    data class Initialize(val messageId: Int) : PredefinedMessageUiEvent
+    data object CancelClicked : PredefinedMessageUiEvent
+    data object NewMessageClicked : PredefinedMessageUiEvent
+    data class PredefinedMessageClicked(val id: Int, val message: String) : PredefinedMessageUiEvent
+    data class SendPredefined(val id: Int) : PredefinedMessageUiEvent
+    data class SendTypedMessage(val text: String, val dispatchNumber: String?) : PredefinedMessageUiEvent
+}
+```
+
+---
+
+## `PredefinedMessageUiEffect.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+sealed interface PredefinedMessageUiEffect {
+    data object NavigateBack : PredefinedMessageUiEffect
+    data class OpenEditableDialog(
+        val initialText: String?,
+        val dispatchNumber: String?
+    ) : PredefinedMessageUiEffect
+
+    data class OpenPredefinedDialog(
+        val id: Int,
+        val message: String
+    ) : PredefinedMessageUiEffect
+}
+```
+
+---
+
+# 3) Full `PredefinedMessageButtonsState`
+
+This replaces the fragment’s button setup and handles visibility/coloring/enablement in a Compose-friendly way.
+
+I’m modeling the state to preserve the original behavior:
+- **New message button** visible/enabled
+- **Cancel button** visible/enabled
+- button colors match a “primary/secondary” behavior
+- helper methods mirror the custom button component style more closely
+
+---
+
+## `PredefinedMessageButtonsState.kt`
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class PredefinedMessageButtonsState(
+    val newMessage: ButtonVisualState,
+    val cancel: ButtonVisualState,
+) {
+    companion object {
+        fun default(hasMessages: Boolean): PredefinedMessageButtonsState {
+            return PredefinedMessageButtonsState(
+                newMessage = ButtonVisualState(
+                    visible = true,
+                    enabled = true,
+                    type = PredefinedMessageButtonType.PRIMARY
+                ),
+                cancel = ButtonVisualState(
+                    visible = true,
+                    enabled = true,
+                    type = PredefinedMessageButtonType.SECONDARY
+                )
+            )
+        }
+    }
+}
+
+@Immutable
+data class ButtonVisualState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val type: PredefinedMessageButtonType = PredefinedMessageButtonType.PRIMARY,
+)
+
+enum class PredefinedMessageButtonType {
+    PRIMARY,
+    SECONDARY,
+    DANGER,
+    GHOST
+}
+```
+
+---
+
+# 4) Compose buttons styling helpers matching custom button more closely
+
+These helpers are meant to imitate the old custom button component:
+- rounded shape
+- different background/text color
+- subtle disabled state
+- consistent height/padding
+
+---
+
+## `PredefinedMessageButtons.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.compose.ButtonVisualState
+import ifac.td.taxi.viewmodel.compose.PredefinedMessageButtonType
+import ifac.td.taxi.viewmodel.compose.PredefinedMessageButtonsState
+
+@Composable
+fun PredefinedMessageButtons(
+    state: PredefinedMessageButtonsState,
+    onNewMessageClick: () -> Unit,
+    onCancelClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (state.newMessage.visible) {
+            ComposeStyledButton(
+                text = "New message",
+                state = state.newMessage,
+                modifier = Modifier.weight(1f),
+                onClick = onNewMessageClick
+            )
+        }
+
+        if (state.cancel.visible) {
+            ComposeStyledButton(
+                text = "Cancel",
+                state = state.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+        }
+    }
+}
+
+@Composable
+fun ComposeStyledButton(
+    text: String,
+    state: ButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val colors = buttonColorsFor(state.type, state.enabled)
+    val shape = RoundedCornerShape(14.dp)
+
+    when (state.type) {
+        PredefinedMessageButtonType.PRIMARY -> {
+            Button(
+                onClick = onClick,
+                enabled = state.enabled,
+                modifier = modifier,
+                shape = shape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.container,
+                    contentColor = colors.content,
+                    disabledContainerColor = colors.disabledContainer,
+                    disabledContentColor = colors.disabledContent
+                )
+            ) {
+                Text(text = text)
+            }
+        }
+
+        PredefinedMessageButtonType.SECONDARY,
+        PredefinedMessageButtonType.GHOST -> {
+            OutlinedButton(
+                onClick = onClick,
+                enabled = state.enabled,
+                modifier = modifier,
+                shape = shape,
+                border = BorderStroke(1.dp, colors.container),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = colors.container,
+                    disabledContentColor = colors.disabledContent
+                )
+            ) {
+                Text(text = text)
+            }
+        }
+
+        PredefinedMessageButtonType.DANGER -> {
+            Button(
+                onClick = onClick,
+                enabled = state.enabled,
+                modifier = modifier,
+                shape = shape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.container,
+                    contentColor = colors.content,
+                    disabledContainerColor = colors.disabledContainer,
+                    disabledContentColor = colors.disabledContent
+                )
+            ) {
+                Text(text = text)
+            }
+        }
+    }
+}
+
+private data class StyledColors(
+    val container: Color,
+    val content: Color,
+    val disabledContainer: Color,
+    val disabledContent: Color
+)
+
+private fun buttonColorsFor(type: PredefinedMessageButtonType, enabled: Boolean): StyledColors {
+    return when (type) {
+        PredefinedMessageButtonType.PRIMARY -> StyledColors(
+            container = Color(0xFF1565C0),
+            content = Color.White,
+            disabledContainer = Color(0xFF90A4AE),
+            disabledContent = Color(0xFFEEEEEE)
+        )
+
+        PredefinedMessageButtonType.SECONDARY -> StyledColors(
+            container = Color(0xFF455A64),
+            content = Color.White,
+            disabledContainer = Color(0xFFB0BEC5),
+            disabledContent = Color(0xFFEEEEEE)
+        )
+
+        PredefinedMessageButtonType.DANGER -> StyledColors(
+            container = Color(0xFFD32F2F),
+            content = Color.White,
+            disabledContainer = Color(0xFFEF9A9A),
+            disabledContent = Color(0xFFFAFAFA)
+        )
+
+        PredefinedMessageButtonType.GHOST -> StyledColors(
+            container = Color(0xFF1565C0),
+            content = Color(0xFF1565C0),
+            disabledContainer = Color.Transparent,
+            disabledContent = Color(0xFF90A4AE)
+        )
+    }
+}
+```
+
+---
+
+# 5) Compose `CustomDialog` based on `custom_dialog.xml` / `CustomDialog.kt`
+
+This is a Compose dialog that supports:
+- title
+- description
+- optional text field
+- configurable buttons
+- callback with pressed button + text
+
+---
+
+## `ComposeCustomDialog.kt`
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose.dialog
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+enum class ComposeDialogButtonType {
+    CANCEL, EDIT, SEND
+}
+
+@Composable
+fun ComposeCustomDialog(
+    title: String,
+    description: String? = null,
+    editText: String? = null,
+    hint: String? = null,
+    buttons: List<ComposeDialogButtonType>,
+    onDismiss: () -> Unit,
+    onButtonClick: (ComposeDialogButtonType, String?) -> Unit,
+) {
+    val textState = remember(editText) { mutableStateOf(editText.orEmpty()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (!description.isNullOrBlank()) {
+                    Text(text = description)
+                }
+
+                if (editText != null || hint != null) {
+                    OutlinedTextField(
+                        value = textState.value,
+                        onValueChange = { textState.value = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = hint?.let { { Text(it) } }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+        },
+        confirmButton = {
+            DialogButtons(
+                buttons = buttons,
+                currentText = textState.value,
+                onButtonClick = onButtonClick,
+                onDismiss = onDismiss
+            )
+        }
+    )
+}
+
+@Composable
+private fun DialogButtons(
+    buttons: List<ComposeDialogButtonType>,
+    currentText: String,
+    onButtonClick: (ComposeDialogButtonType, String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column {
+        buttons.forEach { button ->
+            TextButton(
+                onClick = {
+                    when (button) {
+                        ComposeDialogButtonType.CANCEL -> onDismiss()
+                        else -> onButtonClick(button, currentText)
+                    }
+                }
+            ) {
+                Text(
+                    text = when (button) {
+                        ComposeDialogButtonType.CANCEL -> "Cancel"
+                        ComposeDialogButtonType.EDIT -> "Edit"
+                        ComposeDialogButtonType.SEND -> "Send"
+                    }
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+# 6) How to preserve Jetpack Views navigation
+
+If you are using the current navigation graph, keep the fragment destination but replace its content with a Compose host, or create a new Compose destination.
+
+## Option A: Keep Fragment navigation, embed Compose
+```kotlin
+class PredefinedMessageFragment : Fragment() {
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        val composeView = ComposeView(requireContext())
+        composeView.setContent {
+            val navController = findNavController()
+            val viewModel: PredefinedMessageViewModelCompose = /* inject */
+            val args: PredefinedMessageFragmentArgs by navArgs()
+
+            PredefinedMessageScreen(
+                navController = navController,
+                viewModel = viewModel,
+                messageId = args.messageId
+            )
+        }
+        return composeView
+    }
+}
+```
+
+## Option B: Pure Compose destination
+If your app is already migrating to Compose Navigation, use a composable destination and pass `messageId` as argument.
+
+---
+
+# 7) Notes on matching the original behavior
+
+This Compose version preserves:
+- loading predefined messages by `messageId`
+- showing the list or empty state
+- opening selected predefined message dialog
+- opening editable dialog with captured dispatch number
+- sending predefined or typed message
+- navigating back after send/cancel
+
+The main change is architectural:
+- fragment observers become `collectAsStateWithLifecycle()` and `LaunchedEffect`
+- one `SharedFlow<PredefinedMessageUiEffect>` replaces multiple flows
+- dialog state is handled in Compose via state holders instead of fragment methods
+
+---
+
+# 8) If you want a closer XML parity
+
+If you want, I can provide a second version that more closely matches:
+- exact spacing
+- exact button sizes
+- exact colors from your XML/theme
+- exact dialog layout structure from `custom_dialog.xml`
+- exact custom button shape/height/elevation behavior
+
+If you share:
+- `fragment_predefined_messages.xml`
+- `custom_dialog.xml`
+- `CustomButton.kt`
+- `CustomDialog.kt`
+
+I can make the Compose implementation match almost 1:1.

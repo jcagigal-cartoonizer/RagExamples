@@ -1,0 +1,838 @@
+1. `PermissionsRoute` / `PermissionsScreen` composable
+2. A Compose `PermissionsViewModel` using `UiState + UiEvent + SharedFlow<PermissionsUiEffect>`
+3. A full `PermissionsButtonsState` + button styling helpers
+4. A Compose `PermissionsCustomDialog` equivalent of `custom_dialog.xml` / `PermissionsCustomDialog.kt`
+5. Notes on navigation preservation and lifecycle collection
+---
+## 1) Compose screen: `PermissionsRoute` + `PermissionsScreen`
+```kotlin
+package ifac.td.taxi.ui.screen.permissions
+// # Block 9-1: import android.Manifest
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import androidx.navigation.NavHostController
+import androidx.navigation.fragment.NavHostFragment
+import androidx.navigation.fragment.findNavController
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.unit.round
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.ui.platform.BringIntoViewRequester
+import androidx.compose.ui.platform.bringIntoViewRequester
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import ifac.td.taxi.R
+import ifac.td.taxi.framework.PermissionRequest.PermissionTypeList
+import ifac.td.taxi.framework.PermissionRequest.PermissionTypeList.*
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.domain.model.RedSysLoginResponse
+@Composable
+fun PermissionsRoute(
+    navController: NavController,
+    viewModel: PermissionsComposeViewModel,
+    safePermissionType: String? = null, // equivalent to navArgs()
+    onRequestPermission: (String) -> Unit,
+    onLaunchOverlayPermission: () -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    // Lifecycle-aware effect collector
+    LaunchedEffect(Unit) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.effects.collectLatest { effect ->
+                when (effect) {
+                    is PermissionsUiEffect.RequestPermission ->
+                        onRequestPermission(effect.permission)
+                    PermissionsUiEffect.RequestManageWriteSettings ->
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                        )
+                    PermissionsUiEffect.RequestIgnoreBatteryOptimization ->
+                        context.startActivity(
+                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        )
+                    PermissionsUiEffect.LaunchOverlayPermission ->
+                        onLaunchOverlayPermission()
+                    PermissionsUiEffect.ShowToastNotifDefault ->
+                        onShowToast(R.string.toast_notif_activadas_por_defecto)
+                    PermissionsUiEffect.ShowToastOldBackgroundLocation ->
+                        onShowToast(R.string.toast_android_antiguo_ubicacion_seg_plano)
+                    PermissionsUiEffect.NavigateToChangePassword ->
+                        navController.navigate(R.id.action_permissionsFragment_to_changePasswordRedSysFragment3)
+                    is PermissionsUiEffect.Navigate ->
+                        navController.navigate(effect.resId)
+                    is PermissionsUiEffect.ShowToast ->
+                        onShowToast(effect.messageRes)
+                    is PermissionsUiEffect.OpenRedSysDialog -> Unit // handled by Compose dialog state
+                }
+            }
+        }
+    }
+    PermissionsScreen(
+        uiState = uiState,
+        safePermissionType = safePermissionType,
+        onEvent = viewModel::onEvent
+    )
+}
+@Composable
+fun PermissionsScreen(
+    uiState: PermissionsUiState,
+    safePermissionType: String? = null,
+    onEvent: (PermissionsUiEvent) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(Unit) {
+        onEvent(PermissionsUiEvent.OnScreenStarted)
+        safePermissionType?.let { onEvent(PermissionsUiEvent.HighlightPermission(it)) }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Text(
+                    text = "Permissions",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Bluetooth",
+                    checked = uiState.buttons.bluetooth.checked,
+                    enabled = uiState.buttons.bluetooth.enabled,
+                    visible = uiState.buttons.bluetooth.visible,
+                    highlighted = uiState.buttons.bluetooth.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickBluetooth) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Camera",
+                    checked = uiState.buttons.camera.checked,
+                    enabled = uiState.buttons.camera.enabled,
+                    visible = uiState.buttons.camera.visible,
+                    highlighted = uiState.buttons.camera.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickCamera) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Phone calls",
+                    checked = uiState.buttons.phoneCalls.checked,
+                    enabled = uiState.buttons.phoneCalls.enabled,
+                    visible = uiState.buttons.phoneCalls.visible,
+                    highlighted = uiState.buttons.phoneCalls.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickPhoneCalls) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Notifications",
+                    checked = uiState.buttons.notifications.checked,
+                    enabled = uiState.buttons.notifications.enabled,
+                    visible = uiState.buttons.notifications.visible,
+                    highlighted = uiState.buttons.notifications.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickNotifications) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Location",
+                    checked = uiState.buttons.location.checked,
+                    enabled = uiState.buttons.location.enabled,
+                    visible = uiState.buttons.location.visible,
+                    highlighted = uiState.buttons.location.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickLocation) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Background location",
+                    checked = uiState.buttons.backgroundLocation.checked,
+                    enabled = uiState.buttons.backgroundLocation.enabled,
+                    visible = uiState.buttons.backgroundLocation.visible,
+                    highlighted = uiState.buttons.backgroundLocation.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickBackgroundLocation) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Ignore battery optimizations",
+                    checked = uiState.buttons.battery.checked,
+                    enabled = uiState.buttons.battery.enabled,
+                    visible = uiState.buttons.battery.visible,
+                    highlighted = uiState.buttons.battery.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickBattery) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Microphone",
+                    checked = uiState.buttons.microphone.checked,
+                    enabled = uiState.buttons.microphone.enabled,
+                    visible = uiState.buttons.microphone.visible,
+                    highlighted = uiState.buttons.microphone.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickMicrophone) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "Overlay system",
+                    checked = uiState.buttons.overlay.checked,
+                    enabled = uiState.buttons.overlay.enabled,
+                    visible = uiState.buttons.overlay.visible,
+                    highlighted = uiState.buttons.overlay.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickOverlay) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "System settings",
+                    checked = uiState.buttons.settings.checked,
+                    enabled = uiState.buttons.settings.enabled,
+                    visible = uiState.buttons.settings.visible,
+                    highlighted = uiState.buttons.settings.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickSystemSettings) }
+                )
+            }
+            item {
+                PermissionSwitchRow(
+                    title = "RedSys password",
+                    checked = uiState.buttons.redSysPassword.checked,
+                    enabled = uiState.buttons.redSysPassword.enabled,
+                    visible = uiState.buttons.redSysPassword.visible,
+                    highlighted = uiState.buttons.redSysPassword.highlighted,
+                    onCheckedChange = { onEvent(PermissionsUiEvent.ClickRedSysPassword) }
+                )
+            }
+        }
+        if (uiState.dialogState.visible) {
+            PermissionsCustomDialog(
+                state = uiState.dialogState,
+                onDismiss = { onEvent(PermissionsUiEvent.DialogDismiss) },
+                onUsernameChanged = { onEvent(PermissionsUiEvent.DialogUsernameChanged(it)) },
+                onPasswordChanged = { onEvent(PermissionsUiEvent.DialogPasswordChanged(it)) },
+                onAccept = { onEvent(PermissionsUiEvent.DialogAccept) },
+                onChangePassword = { onEvent(PermissionsUiEvent.DialogChangePassword) }
+            )
+        }
+    }
+}
+```
+---
+## 2) Compose ViewModel with `UiState + UiEvent + UiEffect`
+```kotlin
+package ifac.td.taxi.ui.screen.permissions
+// # Block 281-2: import android.app.Application
+import android.app.Application
+import android.content.Context
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import es.redsys.paysys.Utils.RedCLSErrorCodes
+import ifac.td.taxi.domain.model.RedSysLoginResponse
+import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.PermissionRequest
+import ifac.td.taxi.framework.PermissionRequest.PermissionTypeList
+import ifac.td.taxi.framework.PermissionRequest.PermissionTypeList.*
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class PermissionsComposeViewModel(
+    application: Application,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val redSysUseCase: RedSysUseCase,
+) : AndroidViewModel(application) {
+    private val context: Context get() = getApplication<Application>()
+    private val _uiState = MutableStateFlow(PermissionsUiState())
+    val uiState: StateFlow<PermissionsUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<PermissionsUiEffect>()
+    val effects: SharedFlow<PermissionsUiEffect> = _effects.asSharedFlow()
+    fun onEvent(event: PermissionsUiEvent) {
+        when (event) {
+            PermissionsUiEvent.OnScreenStarted -> {
+                checkRedSysInstalled()
+                checkPhoneNumberConfigured()
+                refreshAllPermissions()
+            }
+            is PermissionsUiEvent.HighlightPermission -> {
+                _uiState.update {
+                    it.copy(
+                        buttons = it.buttons.highlight(event.permissionString)
+                    )
+                }
+            }
+            PermissionsUiEvent.ClickBluetooth -> handlePermissionClick(PERMISSION_BLUETOOTH)
+            PermissionsUiEvent.ClickCamera -> handlePermissionClick(PERMISSION_CAMERA)
+            PermissionsUiEvent.ClickPhoneCalls -> handlePermissionClick(PERMISSION_PHONE_CALL)
+            PermissionsUiEvent.ClickNotifications -> handleNotificationClick()
+            PermissionsUiEvent.ClickLocation -> handlePermissionClick(PERMISSION_LOCATION)
+            PermissionsUiEvent.ClickBackgroundLocation -> handleBackgroundLocationClick()
+            PermissionsUiEvent.ClickBattery -> handleBatteryClick()
+            PermissionsUiEvent.ClickMicrophone -> handlePermissionClick(PERMISSION_MICROPHONE)
+            PermissionsUiEvent.ClickOverlay -> handleOverlayClick()
+            PermissionsUiEvent.ClickSystemSettings -> handleSystemSettingsClick()
+            PermissionsUiEvent.ClickRedSysPassword -> handleRedSysPasswordClick()
+            PermissionsUiEvent.DialogDismiss -> {
+                _uiState.update { it.copy(dialogState = PermissionsDialogState.hidden()) }
+            }
+            is PermissionsUiEvent.DialogUsernameChanged -> {
+                _uiState.update { st -> st.copy(dialogState = st.dialogState.copy(username = event.value)) }
+            }
+            is PermissionsUiEvent.DialogPasswordChanged -> {
+                _uiState.update { st -> st.copy(dialogState = st.dialogState.copy(password = event.value)) }
+            }
+            PermissionsUiEvent.DialogAccept -> acceptRedSysDialog()
+            PermissionsUiEvent.DialogChangePassword -> {
+                viewModelScope.launch {
+                    _effects.emit(PermissionsUiEffect.Navigate(R.id.action_permissionsFragment_to_changePasswordRedSysFragment3))
+                }
+            }
+        }
+    }
+    fun refreshAllPermissions() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val updated = PermissionsButtonsState.fromSystem(context, showPhoneCalls = havePhoneNumberConfigured(), showRedSys = haveRedSysConfigured())
+            _uiState.update { it.copy(buttons = updated) }
+        }
+    }
+    fun checkRedSysInstalled() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val configured = haveRedSysConfigured()
+            _uiState.update { it.copy(showRedSysSection = configured) }
+            if (configured) {
+                getUsernameRedSys()
+            }
+        }
+    }
+    fun checkPhoneNumberConfigured() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(showPhoneCallsSection = havePhoneNumberConfigured()) }
+        }
+    }
+    private suspend fun haveRedSysConfigured(): Boolean {
+        val userPreferences = userPreferencesUseCase.getUserPreferences()
+        return userPreferences?.pinPadSerialNumber?.isNotBlank() == true
+    }
+    private suspend fun havePhoneNumberConfigured(): Boolean {
+        val userPreferences = userPreferencesUseCase.getUserPreferences()
+        return userPreferences?.phoneCall?.isNotBlank() == true
+    }
+    fun isBatteryOptimizationDisabled(): Boolean {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        return powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+    }
+    fun handlePermissionClick(permission: String) {
+        viewModelScope.launch {
+            _effects.emit(PermissionsUiEffect.RequestPermission(permission))
+        }
+    }
+    fun handleNotificationClick() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            handlePermissionClick(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModelScope.launch {
+                _effects.emit(PermissionsUiEffect.ShowToast(R.string.toast_notif_activadas_por_defecto))
+            }
+            _uiState.update { it.copy(buttons = it.buttons.disable(NotificationButton)) }
+        }
+    }
+    fun handleBackgroundLocationClick() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            handlePermissionClick(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        } else {
+            viewModelScope.launch {
+                _effects.emit(PermissionsUiEffect.ShowToast(R.string.toast_android_antiguo_ubicacion_seg_plano))
+            }
+        }
+    }
+    fun handleBatteryClick() {
+        viewModelScope.launch {
+            _effects.emit(PermissionsUiEffect.RequestIgnoreBatteryOptimization)
+        }
+    }
+    fun handleOverlayClick() {
+        viewModelScope.launch {
+            _effects.emit(PermissionsUiEffect.LaunchOverlayPermission)
+        }
+    }
+    fun handleSystemSettingsClick() {
+        viewModelScope.launch {
+            _effects.emit(PermissionsUiEffect.RequestManageWriteSettings)
+        }
+    }
+    fun handleRedSysPasswordClick() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (TemporalData.passwordRedSys.isBlank()) {
+                val username = redSysUseCase.getUsernameRedSys().orEmpty()
+                _uiState.update {
+                    it.copy(
+                        dialogState = PermissionsDialogState.visible(
+                            username = it.redSysUsername ?: username,
+                            password = ""
+                        )
+                    )
+                }
+            } else {
+                _effects.emit(PermissionsUiEffect.ShowToast(R.string.toast_contrasena_ya_guardada))
+            }
+        }
+    }
+    fun acceptRedSysDialog() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val dialog = uiState.value.dialogState
+            val user = dialog.username.orEmpty()
+            val pwd = dialog.password.orEmpty()
+            if (user.isNotBlank()) {
+                saveUsernameRedSys(user)
+            }
+            if (pwd.isNotBlank()) {
+                TemporalData.passwordRedSys = pwd
+            }
+            if (user.isNotBlank() && pwd.isNotBlank()) {
+                checkLoginRedsys(user) { result ->
+                    when (result) {
+                        is RedSysLoginResponse.Error -> {
+                            viewModelScope.launch {
+                                if (result.errorCode == RedCLSErrorCodes.STATUS_KO_FORMATO_RESP_LOGIN_PWD_CAD) {
+                                    _effects.emit(PermissionsUiEffect.ShowToast(R.string.red_sys_pwd_expired))
+                                    _effects.emit(PermissionsUiEffect.Navigate(R.id.action_permissionsFragment_to_changePasswordRedSysFragment3))
+                                } else {
+                                    _effects.emit(PermissionsUiEffect.ShowToast(R.string.incorrect_login))
+                                }
+                                _uiState.update { st -> st.copy(dialogState = st.dialogState.copy(show = false)) }
+                            }
+                        }
+                        is RedSysLoginResponse.Success -> {
+                            viewModelScope.launch {
+                                _effects.emit(PermissionsUiEffect.ShowToast(R.string.toast_guardada_contrasena))
+                                _uiState.update { st -> st.copy(dialogState = st.dialogState.copy(show = false)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fun onPermissionResult(permissionString: String, granted: Boolean) {
+        _uiState.update {
+            it.copy(buttons = it.buttons.updatePermission(permissionString, granted))
+        }
+    }
+    private suspend fun checkLoginRedsys(username: String, callback: (RedSysLoginResponse) -> Unit) {
+        redSysUseCase.configureRedSys()
+        redSysUseCase.getUsernameRedSys()?.let {
+            val response = redSysUseCase.loginRedSys(username, TemporalData.passwordRedSys)
+            callback(response)
+        }
+    }
+    fun saveUsernameRedSys(user: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            redSysUseCase.saveUsernameRedSys(user)
+        }
+    }
+    fun getUsernameRedSys() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update {
+                it.copy(redSysUsername = redSysUseCase.getUsernameRedSys())
+            }
+        }
+    }
+}
+```
+---
+## 3) `UiState`, `UiEvent`, `UiEffect`, and `PermissionsButtonsState`
+```kotlin
+package ifac.td.taxi.ui.screen.permissions
+// # Block 507-3: import android.content.Context
+import android.content.Context
+import android.os.Build
+import android.provider.Settings
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.framework.PermissionRequest
+import ifac.td.taxi.framework.PermissionRequest.PermissionTypeList
+import ifac.td.taxi.framework.PermissionRequest.PermissionTypeList.*
+@Immutable
+data class PermissionsUiState(
+    val buttons: PermissionsButtonsState = PermissionsButtonsState(),
+    val showPhoneCallsSection: Boolean = false,
+    val showRedSysSection: Boolean = false,
+    val redSysUsername: String? = null,
+    val dialogState: PermissionsDialogState = PermissionsDialogState.hidden(),
+)
+sealed interface PermissionsUiEvent {
+    data object OnScreenStarted : PermissionsUiEvent
+    data class HighlightPermission(val permissionString: String) : PermissionsUiEvent
+    data object ClickBluetooth : PermissionsUiEvent
+    data object ClickCamera : PermissionsUiEvent
+    data object ClickPhoneCalls : PermissionsUiEvent
+    data object ClickNotifications : PermissionsUiEvent
+    data object ClickLocation : PermissionsUiEvent
+    data object ClickBackgroundLocation : PermissionsUiEvent
+    data object ClickBattery : PermissionsUiEvent
+    data object ClickMicrophone : PermissionsUiEvent
+    data object ClickOverlay : PermissionsUiEvent
+    data object ClickSystemSettings : PermissionsUiEvent
+    data object ClickRedSysPassword : PermissionsUiEvent
+    data object DialogDismiss : PermissionsUiEvent
+    data class DialogUsernameChanged(val value: String) : PermissionsUiEvent
+    data class DialogPasswordChanged(val value: String) : PermissionsUiEvent
+    data object DialogAccept : PermissionsUiEvent
+    data object DialogChangePassword : PermissionsUiEvent
+}
+sealed interface PermissionsUiEffect {
+    data class RequestPermission(val permission: String) : PermissionsUiEffect
+    data object RequestManageWriteSettings : PermissionsUiEffect
+    data object RequestIgnoreBatteryOptimization : PermissionsUiEffect
+    data object LaunchOverlayPermission : PermissionsUiEffect
+    data class ShowToast(val messageRes: Int) : PermissionsUiEffect
+    data object ShowToastNotifDefault : PermissionsUiEffect
+    data object ShowToastOldBackgroundLocation : PermissionsUiEffect
+    data class Navigate(val resId: Int) : PermissionsUiEffect
+}
+@Immutable
+data class PermissionsDialogState(
+    val show: Boolean,
+    val title: String = "",
+    val description: String = "",
+    val usernameHint: String = "",
+    val passwordHint: String = "",
+    val username: String? = null,
+    val password: String? = null,
+) {
+    companion object {
+        fun hidden() = PermissionsDialogState(show = false)
+        fun visible(username: String?, password: String?) = PermissionsDialogState(
+            show = true,
+            title = "Guardar contraseña",
+            description = "Guarda tus credenciales de RedSys",
+            usernameHint = "Usuario",
+            passwordHint = "Contraseña",
+            username = username,
+            password = password
+        )
+    }
+}
+@Immutable
+data class PermissionsButtonsState(
+    val bluetooth: PermissionButtonState = PermissionButtonState(),
+    val camera: PermissionButtonState = PermissionButtonState(),
+    val phoneCalls: PermissionButtonState = PermissionButtonState(visible = true),
+    val notifications: PermissionButtonState = PermissionButtonState(),
+    val location: PermissionButtonState = PermissionButtonState(),
+    val backgroundLocation: PermissionButtonState = PermissionButtonState(),
+    val battery: PermissionButtonState = PermissionButtonState(),
+    val microphone: PermissionButtonState = PermissionButtonState(),
+    val overlay: PermissionButtonState = PermissionButtonState(),
+    val settings: PermissionButtonState = PermissionButtonState(),
+    val redSysPassword: PermissionButtonState = PermissionButtonState(visible = true),
+) {
+    companion object {
+        fun fromSystem(context: Context, showPhoneCalls: Boolean, showRedSys: Boolean): PermissionsButtonsState {
+            fun perm(permission: String) = PermissionButtonState(
+                checked = PermissionRequest.checkHavePermission(permission, context),
+                enabled = !PermissionRequest.checkHavePermission(permission, context),
+                visible = true
+            )
+            val batteryGranted = run {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                pm.isIgnoringBatteryOptimizations(context.packageName)
+            }
+            val overlayGranted = if (Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else true
+            return PermissionsButtonsState(
+                bluetooth = perm(PERMISSION_BLUETOOTH),
+                camera = perm(PERMISSION_CAMERA),
+                phoneCalls = PermissionButtonState(
+                    checked = PermissionRequest.checkHavePermission(PERMISSION_PHONE_CALL, context),
+                    enabled = !PermissionRequest.checkHavePermission(PERMISSION_PHONE_CALL, context),
+                    visible = showPhoneCalls
+                ),
+                notifications = PermissionButtonState(
+                    checked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                        PermissionRequest.checkHavePermission(android.Manifest.permission.POST_NOTIFICATIONS, context)
+                    else true,
+                    enabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                        !PermissionRequest.checkHavePermission(android.Manifest.permission.POST_NOTIFICATIONS, context)
+                    else false,
+                    visible = true
+                ),
+                location = perm(PERMISSION_LOCATION),
+                backgroundLocation = PermissionButtonState(
+                    checked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                        PermissionRequest.checkHavePermission(PERMISSION_BACKGROUND_LOCATION, context)
+                    else false,
+                    enabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                        !PermissionRequest.checkHavePermission(PERMISSION_BACKGROUND_LOCATION, context)
+                    else false,
+                    visible = true
+                ),
+                battery = PermissionButtonState(
+                    checked = batteryGranted,
+                    enabled = !batteryGranted,
+                    visible = true
+                ),
+                microphone = perm(PERMISSION_MICROPHONE),
+                overlay = PermissionButtonState(
+                    checked = overlayGranted,
+                    enabled = !overlayGranted,
+                    visible = true
+                ),
+                settings = PermissionButtonState(
+                    checked = Settings.System.canWrite(context),
+                    enabled = !Settings.System.canWrite(context),
+                    visible = true
+                ),
+                redSysPassword = PermissionButtonState(
+                    checked = showRedSys,
+                    enabled = true,
+                    visible = showRedSys
+                )
+            )
+        }
+    }
+    fun updatePermission(permission: String, granted: Boolean): PermissionsButtonsState {
+        return when (permission) {
+            android.Manifest.permission.BLUETOOTH -> copy(bluetooth = bluetooth.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.CAMERA -> copy(camera = camera.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.CALL_PHONE -> copy(phoneCalls = phoneCalls.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.POST_NOTIFICATIONS -> copy(notifications = notifications.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.ACCESS_FINE_LOCATION -> copy(location = location.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.ACCESS_BACKGROUND_LOCATION -> copy(backgroundLocation = backgroundLocation.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.RECORD_AUDIO -> copy(microphone = microphone.copy(checked = granted, enabled = !granted))
+            android.Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS -> copy(battery = battery.copy(checked = granted, enabled = !granted))
+            else -> this
+        }
+    }
+    fun disable(which: PermissionButtonRef): PermissionsButtonsState = when (which) {
+        NotificationButton -> copy(notifications = notifications.copy(enabled = false))
+    }
+    fun highlight(permissionString: String): PermissionsButtonsState = when (permissionString) {
+        android.Manifest.permission.BLUETOOTH -> copy(bluetooth = bluetooth.copy(highlighted = true))
+        android.Manifest.permission.CAMERA -> copy(camera = camera.copy(highlighted = true))
+        android.Manifest.permission.CALL_PHONE -> copy(phoneCalls = phoneCalls.copy(highlighted = true))
+        android.Manifest.permission.POST_NOTIFICATIONS -> copy(notifications = notifications.copy(highlighted = true))
+        android.Manifest.permission.ACCESS_FINE_LOCATION -> copy(location = location.copy(highlighted = true))
+        android.Manifest.permission.ACCESS_BACKGROUND_LOCATION -> copy(backgroundLocation = backgroundLocation.copy(highlighted = true))
+        android.Manifest.permission.RECORD_AUDIO -> copy(microphone = microphone.copy(highlighted = true))
+        android.Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS -> copy(battery = battery.copy(highlighted = true))
+        else -> this
+    }
+}
+enum class PermissionButtonRef { NotificationButton }
+@Immutable
+data class PermissionButtonState(
+    val checked: Boolean = false,
+    val enabled: Boolean = true,
+    val visible: Boolean = true,
+    val highlighted: Boolean = false,
+)
+```
+---
+## 4) Compose button styling helpers + switch row
+```kotlin
+package ifac.td.taxi.ui.screen.permissions
+// # Block 696-4: import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+@Composable
+fun PermissionSwitchRow(
+    title: String,
+    checked: Boolean,
+    enabled: Boolean,
+    visible: Boolean,
+    highlighted: Boolean,
+    onCheckedChange: () -> Unit,
+) {
+    if (!visible) return
+    val containerColor by animateColorAsState(
+        targetValue = when {
+            highlighted -> Color(0xFFFFF3CD)
+            checked -> Color(0xFFE8F5E9)
+            else -> Color(0xFFFFFFFF)
+        },
+        label = "permissionRowColor"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            highlighted -> Color(0xFFFFB300)
+            checked -> Color(0xFF2E7D32)
+            else -> Color(0xFFE0E0E0)
+        },
+        label = "permissionRowBorder"
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(containerColor, RoundedCornerShape(12.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            fontWeight = FontWeight.Medium
+        )
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = { onCheckedChange() },
+            colors = SwitchDefaults.colors()
+        )
+    }
+}
+```
+---
+## 5) Compose `PermissionsCustomDialog` based on the XML / `PermissionsCustomDialog.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.permissions
+// # Block 764-5: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+@Composable
+fun PermissionsCustomDialog(
+    state: PermissionsDialogState,
+    onDismiss: () -> Unit,
+    onUsernameChanged: (String) -> Unit,
+    onPasswordChanged: (String) -> Unit,
+    onAccept: () -> Unit,
+    onChangePassword: () -> Unit,
+) {
+    if (!state.show) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(text = state.title.ifBlank { "Dialog" })
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(text = state.description)
+                OutlinedTextField(
+                    value = state.username.orEmpty(),
+                    onValueChange = onUsernameChanged,
+                    label = { Text(state.usernameHint.ifBlank { "Username" }) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = state.password.orEmpty(),
+                    onValueChange = onPasswordChanged,
+                    label = { Text(state.passwordHint.ifBlank { "Password" }) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = onChangePassword) {
+                    Text("Change password")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onAccept) {
+                Text("ACCEPT")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL")
+            }
+        }
+    )
+}
+```
+---
+## 7) How permission results should be fed back into Compose ViewModel
+When permission launcher returns:
+```kotlin
+viewModel.onPermissionResult(permissionString, granted)
+```
+That updates the `PermissionsButtonsState`, replacing the old `permissionGrantedFlow` collector logic.
+---
+## 8) What still needs to be wired in your project
+These can all remain in the host and be triggered by `PermissionsUiEffect`.
+---
+1. a **full `PermissionsFragment` wrapper using `ComposeView`**,  
+2. a **complete Koin module for the Compose ViewModel**, and  
+3. a **permission launcher bridge that exactly replaces `iMainActivity.requestPermission(...)`**.

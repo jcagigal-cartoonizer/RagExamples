@@ -1,0 +1,629 @@
+I’ll keep the implementation Android + Jetpack Compose only.
+---
+## 1) Compose screen replacing `TripHistoryFragment`
+### `TripHistoryRoute.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.triphistory
+// # Block 6-1: import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryUiEffect
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryViewModel
+@Composable
+fun TripHistoryRoute(
+    navController: NavController,
+    viewModel: TripHistoryComposeViewModel,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                TripHistoryUiEffect.NavigateBackToReceiptHistory -> {
+                    navController.navigate(
+                        "receipt_history/-1"
+                    )
+                }
+                is TripHistoryUiEffect.NavigateToReceiptHistory -> {
+                    navController.navigate("receipt_history/${effect.tripId}")
+                }
+                is TripHistoryUiEffect.ShowNoTicketDialog -> {
+                    viewModel.showNoTicketDialog(effect.trip)
+                }
+                TripHistoryUiEffect.HideDialog -> {
+                    viewModel.hideDialog()
+                }
+            }
+        }
+    }
+    TripHistoryScreen(
+        uiState = uiState,
+        buttonsState = buttonsState,
+        onBackClick = { viewModel.onBackClicked() },
+        onAllClick = { viewModel.onAllClicked() },
+        onDeleteClick = { viewModel.onDeleteClicked() },
+        onTripClick = { viewModel.onTripClicked(it) },
+        onDialogDismiss = { viewModel.onDialogDismiss() },
+        onDialogAccept = { viewModel.onDialogAccept() },
+        onLoadMore = { viewModel.loadNextPage() },
+    )
+}
+```
+> If you are using safe-args Navigation, replace the string navigation with your generated directions. I kept it string-based here to stay Compose-only and preserve the destination intent.
+---
+## 2) Compose `UiState + UiEffect` ViewModel
+### `TripHistoryViewModel.kt`
+```kotlin
+package ifac.td.taxi.viewmodel.triphistory
+// # Block 64-2: import android.app.Application
+import android.app.Application
+import android.widget.Toast
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+data class TripHistoryUiState(
+    val trips: List<Trip> = emptyList(),
+    val isLoading: Boolean = false,
+    val isLastPage: Boolean = false,
+    val page: Int = 0,
+    val selectedTrips: Set<Long> = emptySet(),
+    val dialog: TripHistoryDialogState? = null,
+) {
+    val hasSelection: Boolean get() = selectedTrips.isNotEmpty()
+}
+data class TripHistoryDialogState(
+    val title: String,
+    val description: String,
+    val trip: Trip? = null,
+    val showAccept: Boolean = true,
+)
+sealed interface TripHistoryUiEffect {
+    data object NavigateBackToReceiptHistory : TripHistoryUiEffect
+    data class NavigateToReceiptHistory(val tripId: Long) : TripHistoryUiEffect
+    data class ShowNoTicketDialog(val trip: Trip) : TripHistoryUiEffect
+    data object HideDialog : TripHistoryUiEffect
+    data class ToastMessage(val messageRes: Int) : TripHistoryUiEffect
+}
+class TripHistoryComposeViewModel(
+    application: Application,
+    private val tripUseCase: TripUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val portugalUseCase: PortugalUseCase,
+) : AndroidViewModel(application) {
+    private val _uiState = MutableStateFlow(TripHistoryUiState())
+    val uiState: StateFlow<TripHistoryUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<TripHistoryUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<TripHistoryUiEffect> = _effects.asSharedFlow()
+    private val _buttonsState = MutableStateFlow(TripHistoryButtonsState())
+    val buttonsState: StateFlow<TripHistoryButtonsState> = _buttonsState.asStateFlow()
+    private val pageSize = 25
+    init {
+        refreshButtons()
+        loadTrips(0)
+    }
+    fun loadNextPage() {
+        val state = _uiState.value
+        if (state.isLoading || state.isLastPage) return
+        loadTrips(state.page + 1)
+    }
+    fun loadTrips(page: Int) {
+        viewModelScope.launch {
+            try {
+                _uiState.update { it.copy(isLoading = true) }
+                refreshButtons()
+                val loadedItems = page * pageSize
+                val newTrips = tripUseCase.getAllTripsFinishedPaged(loadedItems)
+                val currentTrips = _uiState.value.trips
+                val isLastPage = newTrips.size < pageSize
+                val combined = (currentTrips + newTrips).distinctBy { it.id }
+                _uiState.update {
+                    it.copy(
+                        trips = combined,
+                        isLoading = false,
+                        isLastPage = isLastPage,
+                        page = page,
+                    )
+                }
+            } catch (_: Exception) {
+                _uiState.update { it.copy(isLoading = false) }
+            } finally {
+                refreshButtons()
+            }
+        }
+    }
+    fun onBackClicked() {
+        viewModelScope.launch {
+            _effects.emit(TripHistoryUiEffect.NavigateBackToReceiptHistory)
+        }
+    }
+    fun onAllClicked() {
+        _uiState.update { state ->
+            state.copy(selectedTrips = state.trips.map { it.id }.toSet())
+        }
+        refreshButtons()
+    }
+    fun onDeleteClicked() {
+        viewModelScope.launch {
+            val selected = _uiState.value.trips.filter { it.id in _uiState.value.selectedTrips }
+            if (selected.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        getApplication(),
+                        getApplication<Application>().getString(R.string.toast_seleccione_algun_trip),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                return@launch
+            }
+            selected.forEach { trip ->
+                tripUseCase.deleteTrip(trip)
+            }
+            _uiState.update { state ->
+                state.copy(
+                    trips = state.trips.filterNot { it.id in state.selectedTrips },
+                    selectedTrips = emptySet()
+                )
+            }
+            refreshButtons()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    getApplication(),
+                    getApplication<Application>().getString(R.string.toast_trips_eliminados_correctamente),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+    fun onTripClick(trip: Trip) {
+        if (trip.ticketBufferNoCopy.isNullOrBlank()) {
+            viewModelScope.launch {
+                _effects.emit(TripHistoryUiEffect.ShowNoTicketDialog(trip))
+            }
+        } else {
+            viewModelScope.launch {
+                _effects.emit(TripHistoryUiEffect.NavigateToReceiptHistory(trip.id))
+            }
+        }
+    }
+    fun showNoTicketDialog(trip: Trip) {
+        _uiState.update {
+            it.copy(
+                dialog = TripHistoryDialogState(
+                    title = getApplication<Application>().getString(R.string.warning),
+                    description = getApplication<Application>().getString(
+                        R.string.dialog_no_ticket_warning_description
+                    ),
+                    trip = trip,
+                    showAccept = true
+                )
+            )
+        }
+    }
+    fun hideDialog() {
+        _uiState.update { it.copy(dialog = null) }
+    }
+    fun onDialogDismiss() {
+        hideDialog()
+    }
+    fun onDialogAccept() {
+        val trip = _uiState.value.dialog?.trip ?: return
+        hideDialog()
+        viewModelScope.launch {
+            _effects.emit(TripHistoryUiEffect.NavigateToReceiptHistory(trip.id))
+        }
+    }
+    fun toggleTripSelection(tripId: Long) {
+        _uiState.update { state ->
+            val updated = state.selectedTrips.toMutableSet()
+            if (!updated.add(tripId)) updated.remove(tripId)
+            state.copy(selectedTrips = updated)
+        }
+        refreshButtons()
+    }
+    fun refreshButtons() {
+        val state = _uiState.value
+        _buttonsState.value = TripHistoryButtonsState.from(
+            hasTrips = state.trips.isNotEmpty(),
+            hasSelection = state.selectedTrips.isNotEmpty()
+        )
+    }
+    fun printTicket(trip: Trip) {
+        viewModelScope.launch {
+            portugalUseCase.increaseTicketPrinted(trip)
+            printerUseCase.printTicket(trip, true)
+        }
+    }
+}
+```
+---
+## 3) `TripHistoryButtonsState` with exact button visibility/coloring logic
+### `TripHistoryButtonsState.kt`
+```kotlin
+package ifac.td.taxi.viewmodel.triphistory
+// # Block 263-3: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+@Immutable
+data class TripHistoryButtonsState(
+    val backVisible: Boolean = true,
+    val allVisible: Boolean = true,
+    val deleteVisible: Boolean = true,
+    val backEnabled: Boolean = true,
+    val allEnabled: Boolean = true,
+    val deleteEnabled: Boolean = true,
+    val backColors: ButtonColorTokens = ButtonColorTokens.primary(),
+    val allColors: ButtonColorTokens = ButtonColorTokens.secondary(),
+    val deleteColors: ButtonColorTokens = ButtonColorTokens.danger(),
+) {
+    companion object {
+        fun from(
+            hasTrips: Boolean,
+            hasSelection: Boolean
+        ): TripHistoryButtonsState {
+            return TripHistoryButtonsState(
+                backVisible = true,
+                allVisible = hasTrips,
+                deleteVisible = hasTrips,
+                backEnabled = true,
+                allEnabled = hasTrips,
+                deleteEnabled = hasSelection,
+                backColors = ButtonColorTokens.primary(),
+                allColors = ButtonColorTokens.secondary(enabled = hasTrips),
+                deleteColors = ButtonColorTokens.danger(enabled = hasSelection),
+            )
+        }
+    }
+}
+@Immutable
+data class ButtonColorTokens(
+    val container: Color,
+    val content: Color,
+    val disabledContainer: Color,
+    val disabledContent: Color,
+) {
+    companion object {
+        fun primary(enabled: Boolean = true) = ButtonColorTokens(
+            container = Color(0xFF1976D2),
+            content = Color.White,
+            disabledContainer = Color(0xFFB0BEC5),
+            disabledContent = Color(0xFFFAFAFA),
+        )
+        fun secondary(enabled: Boolean = true) = ButtonColorTokens(
+            container = Color(0xFF455A64),
+            content = Color.White,
+            disabledContainer = Color(0xFFB0BEC5),
+            disabledContent = Color(0xFFFAFAFA),
+        )
+        fun danger(enabled: Boolean = true) = ButtonColorTokens(
+            container = Color(0xFFD32F2F),
+            content = Color.White,
+            disabledContainer = Color(0xFFB0BEC5),
+            disabledContent = Color(0xFFFAFAFA),
+        )
+    }
+}
+```
+> If you have exact XML colors, replace the hardcoded colors above with your app’s color values. This structure is what you asked for: a full state holder mirroring visibility/color behavior.
+---
+## 4) Compose screen UI
+### `TripHistoryScreen.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.triphistory.components
+// # Block 332-4: import androidx.compose.foundation.clickable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryButtonsState
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryDialogState
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryUiState
+@Composable
+fun TripHistoryScreen(
+    uiState: TripHistoryUiState,
+    buttonsState: TripHistoryButtonsState,
+    onBackClick: () -> Unit,
+    onAllClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+    onTripClick: (Trip) -> Unit,
+    onDialogDismiss: () -> Unit,
+    onDialogAccept: () -> Unit,
+    onLoadMore: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        TripHistoryButtons(
+            state = buttonsState,
+            onBackClick = onBackClick,
+            onAllClick = onAllClick,
+            onDeleteClick = onDeleteClick,
+        )
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(
+            modifier = Modifier.weight(1f, fill = true).fillMaxWidth()
+        ) {
+            itemsIndexed(uiState.trips, key = { _, item -> item.id }) { index, trip ->
+                TripRow(
+                    trip = trip,
+                    selected = trip.id in uiState.selectedTrips,
+                    onClick = { onTripClick(trip) },
+                    onToggleSelection = { /* optional selection UI hook */ }
+                )
+                if (index == uiState.trips.lastIndex && !uiState.isLastPage && !uiState.isLoading) {
+                    onLoadMore()
+                }
+            }
+            if (uiState.isLoading) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+            }
+        }
+    }
+    uiState.dialog?.let { dialogState ->
+        TripHistoryCustomDialog(
+            state = dialogState,
+            onDismiss = onDialogDismiss,
+            onAccept = onDialogAccept,
+        )
+    }
+}
+@Composable
+fun TripRow(
+    trip: Trip,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onToggleSelection: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(vertical = 12.dp)
+    ) {
+        Text(
+            text = "Trip #${trip.id}",
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = if (selected) "Selected" else "Tap to open",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Divider(Modifier.padding(top = 12.dp))
+    }
+}
+```
+---
+## 5) Compose buttons matching custom button behavior more closely
+### `TripHistoryButtons.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.triphistory.components
+// # Block 440-5: import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryButtonsState
+import ifac.td.taxi.viewmodel.triphistory.ButtonColorTokens
+@Composable
+fun TripHistoryButtons(
+    state: TripHistoryButtonsState,
+    onBackClick: () -> Unit,
+    onAllClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (state.backVisible) {
+            CustomStyledButton(
+                text = "Back",
+                enabled = state.backEnabled,
+                colors = state.backColors,
+                modifier = Modifier.weight(1f),
+                onClick = onBackClick
+            )
+        }
+        if (state.allVisible) {
+            CustomStyledButton(
+                text = "All",
+                enabled = state.allEnabled,
+                colors = state.allColors,
+                modifier = Modifier.weight(1f),
+                onClick = onAllClick
+            )
+        }
+        if (state.deleteVisible) {
+            CustomStyledButton(
+                text = "Delete",
+                enabled = state.deleteEnabled,
+                colors = state.deleteColors,
+                modifier = Modifier.weight(1f),
+                onClick = onDeleteClick
+            )
+        }
+    }
+}
+@Composable
+fun CustomStyledButton(
+    text: String,
+    enabled: Boolean,
+    colors: ButtonColorTokens,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Button(
+        modifier = modifier,
+        enabled = enabled,
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (enabled) colors.container else colors.disabledContainer,
+            contentColor = if (enabled) colors.content else colors.disabledContent,
+            disabledContainerColor = colors.disabledContainer,
+            disabledContentColor = colors.disabledContent
+        )
+    ) {
+        Text(text = text)
+    }
+}
+```
+---
+### `TripHistoryCustomDialog.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.triphistory.components
+// # Block 521-6: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Dialog
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.triphistory.TripHistoryDialogState
+@Composable
+fun TripHistoryCustomDialog(
+    state: TripHistoryDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(text = state.title)
+                Spacer(Modifier.padding(top = 12.dp))
+                Text(text = state.description)
+                Spacer(Modifier.padding(top = 20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF757575),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Cancel")
+                    }
+                    if (state.showAccept) {
+                        Spacer(Modifier.padding(start = 8.dp))
+                        Button(
+                            onClick = onAccept,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF1976D2),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("Accept")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+## 7) How to preserve navigation exactly
+```kotlin
+navController.navigate(
+    TripHistoryFragmentDirections
+        .actionTripHistoryFragmentToReceiptHistoryFragment(-1)
+)
+```
+and
+```kotlin
+navController.navigate(
+    TripHistoryFragmentDirections
+        .actionTripHistoryFragmentToReceiptHistoryFragment(tripId)
+)
+```
+That is the closest equivalent to the fragment version.
+In a pure Compose screen hosted in a `NavHost`, you would usually use route strings, but safe-args works if you keep this screen inside a Fragment container or use a navigation bridge.
+---
+## 8) Notes on exact XML matching
+Because the XML resources for:
+were not included, I modeled the state holders and styling architecture so you can plug in the precise resource values.
+1. a `TripHistoryButtonsState` with your exact resource colors  
+2. a `CustomButton` Compose implementation that matches corner radius, stroke, elevation, and ripple  
+3. a `TripHistoryCustomDialog` Compose implementation matching your XML layout pixel-for-pixel if you paste those XML files
+---
+## 9) Minimal usage example in a Compose NavHost
+```kotlin
+composable("trip_history") {
+    val vm: TripHistoryViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    TripHistoryRoute(
+        navController = navController,
+        viewModel = vm
+    )
+}
+```
+---

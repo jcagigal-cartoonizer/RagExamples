@@ -294,25 +294,29 @@ public class GenerateComposeFiles {
             if (iface == null) {
                 iface = getIface();
             }
-            for (int i = 0; i < answerProcessor.blocksList.length; i++) {
-//                if (shouldIgnore(line)) {
-//                    line = "// " + line;
-//                }
-                if (answerProcessor.blocksList[i].trim().equals(line.trim())) {
-//                    line = "// " + line;
-                    if (answerProcessor.blockFilesList[i] != null && openFiles.get(answerProcessor.blockFilesList[i]) != null) {
-                        continue;
+            if (answerProcessor.blockFilesList.length == answerProcessor.blocksList.length) {
+                for (int i = 0; i < answerProcessor.blocksList.length; i++) {
+    //                if (shouldIgnore(line)) {
+    //                    line = "// " + line;
+    //                }
+                    if (answerProcessor.blocksList[i].trim().equals(line.trim())) {
+    //                    line = "// " + line;
+                        if (answerProcessor.blockFilesList[i] != null && openFiles.get(answerProcessor.blockFilesList[i]) != null) {
+                            continue;
+                        }
+                        if (outputPath != null && !outputPath.isEmpty() && !answerProcessor.blockFilesList[i].equals(outputPath)) {
+                            closeFile();
+                        }
+                        printAlways = true;
+                        doPrint = true;
+                        outputPath = answerProcessor.blockFilesList[i];
+                        System.out.println("*** processBlocks line = " + numLines + " call openFile " + outputPath + " block = " + answerProcessor.blocksList[i] + " line = " + line);
+                        openFile(outputPath, answerProcessor.packagesArray[i]);
+                        break;
                     }
-                    if (outputPath != null && !outputPath.isEmpty() && !answerProcessor.blockFilesList[i].equals(outputPath)) {
-                        closeFile();
-                    }
-                    printAlways = true;
-                    doPrint = true;
-                    outputPath = answerProcessor.blockFilesList[i];
-                    System.out.println("*** processBlocks line = " + numLines + " call openFile " + outputPath + " block = " + answerProcessor.blocksList[i] + " line = " + line);
-                    openFile(outputPath, answerProcessor.packagesArray[i]);
-                    break;
                 }
+            } else {
+                System.out.println("ERROR: GenerateComposeFiles processBlocks " + answerProcessor.origen.getName() + " -> blocksList.length " + answerProcessor.blocksList.length + " != " + answerProcessor.blockFilesList.length);
             }
             return line;
         }

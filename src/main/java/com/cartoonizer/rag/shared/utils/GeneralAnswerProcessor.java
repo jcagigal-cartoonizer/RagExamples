@@ -26,85 +26,153 @@ public class GeneralAnswerProcessor extends ReadFile {
     public static String SUFFIX = "Fragment";
     public static String LAYOUT = "fragment_contact_central.xml";
     public static String[] PREFIXES = {
-            "Dashboard",
-            "ContactCentral",
-            "Home",
-            "InfoDispatch",
-            "DispatchReceived",
-            "LoginUser",
-            "About",
-            "AddAmount",
-            "BluetoothDiscovery",
-            "ChangeDriverPin",
-            "ChangePasswordRedSys",
-            "ChangeUserPassword",
-        
-                "ChooseOption",
-                "ClosedPartial",
-                "CropImage",
-                "DestinationMap",
-                "DeviceSettings",                
-                "FixedPrice",
-                "GPSTest",
-                "InformationMessage",
-                "LegalText",
-                "LightsTest",
-                "LoginDriver",
-                "LoginUserRedSys",
-                "LoginUser",
-                "MacroZoning",
-        
-                "MeetingSign",
-                "MessageDetail",
-                "Messages",
-                "OfflineInvoice",
-                "OnlineInvoice",
-                "OnTrip",
-                "OpenPartial",
-                "PaymentMonei",
-                "Payment",
-                "PendingTrips",
-                
+//            "Dashboard",
+//            "ContactCentral",
+//            "Home",
+//            "InfoDispatch",
+//            "DispatchReceived",
+//            "LoginUser",
+//            "About",
+//            "AddAmount",
+//            "BluetoothDiscovery",
+//            "ChangeDriverPin",
+//            "ChangePasswordRedSys",
+//            "ChangeUserPassword",        
+//                "ChooseOption",
+//                "ClosedPartial",
+//                "CropImage",
+//                "DestinationMap",
+//                "DeviceSettings",                
+//                "FixedPrice",
+//                "GPSTest",
+//                "InformationMessage",
+//                "LegalText",
+//                "LightsTest",
+//                "LoginDriver",
+//                "LoginUserRedSys",
+//                "LoginUser",
+//                "MacroZoning",        
+//                "MeetingSign",
+//                "MessageDetail",
+//                "Messages",
+//                "OfflineInvoice",
+//                "OnlineInvoice",
+//                "OnTrip",
+//                "OpenPartial",
+//                "PaymentMonei",
+//                "Payment",
+//                "PendingTrips",
+"Permissions",
+"PointsOfInterest",
+"PortugalInvoice",
+"PortugalSettings",
+"PredefinedMessage",
+"PreReservationTrips",
+"ReceiptHistory",
+"ReceiptRedSys",
+"RefundMonei",
+"RequestStandReinforcement",
+"Requirements",
+"ScannerQr",
+"SecurePin",
+"Settings",
+"ShiftDetail",
+"Shifts",
+"Signature",
+"SplashScreen",
+"Statistics",
+
+//"StatisticsMonthly",
+//"StatisticsWeekly",
+//"StatisticsYearly",
+
+"SubscriberPayment",
+"Tcc",
+"Tools",
+"Totalizers",
+"TripHistory",
+"UserPreferences",
+"WebView",
+"Welcome",
+"ZoningCars",
+"Zoning",
+"ZoningServices",
+            
         };
         public static String[] LAYOUTS = {
-            "fragment_dashboard.xml",
-            "fragment_contact_central.xml",
-            "fragment_home.xml",
-            "fragment_info_dispatch.xml",
-            "fragment_dispatch_received.xml",
-            "fragment_login_user.xml",
-            "fragment_about.xml",
-            "fragment_add_amount.xml",
-            "fragment_bluetooth_discovery.xml",
-            "fragment_change_driver_pin.xml",
-            "fragment_change_password_red_sys.xml",
-            "fragment_change_user_password.xml",
+//            "fragment_dashboard.xml",
+//            "fragment_contact_central.xml",
+//            "fragment_home.xml",
+//            "fragment_info_dispatch.xml",
+//            "fragment_dispatch_received.xml",
+//            "fragment_login_user.xml",
+//            "fragment_about.xml",
+//            "fragment_add_amount.xml",
+//            "fragment_bluetooth_discovery.xml",
+//            "fragment_change_driver_pin.xml",
+//            "fragment_change_password_red_sys.xml",
+//            "fragment_change_user_password.xml",            
+//                "fragment_choose_option.xml",
+//                "fragment_closed_partial.xml",
+//                "fragment_crop_image_view.xml",
+//                "fragment_destination_map.xml",
+//                "fragment_device_settings.xml",                
+//                "fragment_fixed_price_map.xml",
+//                "fragment_gps_test.xml",
+//                "fragment_information_messages.xml",
+//                "fragment_legal_text.xml",
+//                "fragment_lights_test.xml",
+//                "fragment_login_driver.xml",
+//                "fragment_login_user_red_sys.xml",
+//                "fragment_login_user.xml",
+//                "fragment_macro_zoning.xml",            
+//                "fragment_meeting_sign.xml",
+//                "fragment_message_detail.xml",
+//                "fragment_message.xml",
+//                "fragment_offline_invoice.xml",
+//                "fragment_online_invoice.xml",
+//                "fragment_on_trip.xml",
+//                "fragment_open_partial.xml",
+//                "fragment_payment_monei.xml",
+//                "fragment_payment.xml",
+//                "fragment_pending_trips.xml",
             
-                "fragment_choose_option.xml",
-                "fragment_closed_partial.xml",
-                "fragment_crop_image_view.xml",
-                "fragment_destination_map.xml",
-                "fragment_device_settings.xml",                
-                "fragment_fixed_price_map.xml",
-                "fragment_gps_test.xml",
-                "fragment_information_messages.xml",
-                "fragment_legal_text.xml",
-                "fragment_lights_test.xml",
-                "fragment_login_driver.xml",
-                "fragment_login_user_red_sys.xml",
-                "fragment_login_user.xml",
-                "fragment_macro_zoning.xml",
+"fragment_permissions.xml",
+"fragment_points_of_interest.xml",
+"fragment_portugal_invoice.xml",
+"fragment_portugal_settings.xml",
+"fragment_predefined_messages.xml",
+"fragment_pre_reservation_trips.xml",
+"fragment_receipt_history.xml",
+"fragment_receipt_red_sys.xml",
+"fragment_refund_monei.xml",
+"fragment_request_stand_reinforcement.xml",
+"fragment_requirements.xml",
+"fragment_scanner_qr.xml",
+"fragment_secure_pin.xml",
+"fragment_settings.xml",
+"fragment_shift_detail.xml",
+"fragment_shifts.xml",
+"fragment_signature.xml",
+"fragment_splash_screen.xml",
+"fragment_statistics.xml",
+
+//"fragment_statistics_monthly.xml",
+//"fragment_statistics_weekly.xml",
+//"fragment_statistics_yearly.xml",
+
+"fragment_subscriber_payment.xml",
+"fragment_tcc.xml",
+"fragment_tools.xml",
+"fragment_totalizers.xml",
+"fragment_trip_history.xml",
+"fragment_user_preferences.xml",
+"fragment_web_view.xml",
+"fragment_welcome.xml",
+"fragment_zoning.xml",
+"fragment_zoning_cars.xml",
+"fragment_zoning_services.xml",
             
-                "fragment_meeting_sign.xml",
-                "fragment_message_detail.xml",
-                "fragment_message.xml",
-                "fragment_offline_invoice.xml",
-                "fragment_online_invoice.xml",
-                "fragment_on_trip.xml",
-                "fragment_open_partial.xml",
-                "fragment_payment_monei.xml",
-                "fragment_payment.xml",
-                "fragment_pending_trips.xml",
         };
     public static String ONLY_THIS = "";
     public static String FILE_NAME = PREFIX + "Fragment.txt";
@@ -115,6 +183,7 @@ public class GeneralAnswerProcessor extends ReadFile {
     public HashMap<String, String> blockFiles = new HashMap<>();
     public HashMap<String, String> blocks = new HashMap<>();
     public String[] blockFilesList = new String[0];
+    public String[] blockFileNamesList = new String[0];
     public String[] packagesArray = new String[0];
     public String[] blocksList = new String[0];
     public String[] packagesList = new String[0];
@@ -242,6 +311,8 @@ public class GeneralAnswerProcessor extends ReadFile {
                         fileNameToUse = extractFileNameFromObject(line);
     //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                     blockFiles.put(blockLine, fileNameToUse);
+                    } else {
+//                        System.out.println("*** fileNameToUse isEmpty but no name found line = " + line);
                     }
                 }
             firstImport = false;
@@ -371,6 +442,12 @@ public class GeneralAnswerProcessor extends ReadFile {
             blocksList[idx] = entry.getKey();
             idx++;
         }
+        blockFileNamesList = new String[blocks.size()];
+        idx = 0;
+        for (Map.Entry<String, String> entry : blocks.entrySet()) {
+            blockFileNamesList[idx] = entry.getValue();
+            idx++;
+        }
         blockFilesList = new String[blockFiles.size()];
         idx = 0;
         for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
@@ -399,6 +476,11 @@ public class GeneralAnswerProcessor extends ReadFile {
             packagesArray[idx] = thePackage;
             idx++;
         }
+        for (int i = 0; i < blocksList.length; i++) {
+            String block = blocksList[i];
+            String fileName = blockFileNamesList[i];
+            
+        }
     }
 
     private String extractFileNameFromClass(String line) {
@@ -421,7 +503,7 @@ public class GeneralAnswerProcessor extends ReadFile {
         if (idx > 0) {
             funName = funName.substring(0, 1).toUpperCase() + funName.substring(1, idx);
         }
-        System.out.println("extractFileNameFromFun AFTER " + funName);
+//        System.out.println("extractFileNameFromFun AFTER " + funName);
         return funName + ".kt";
     }
     private String extractFileNameFromObject(String line) {
@@ -431,7 +513,7 @@ public class GeneralAnswerProcessor extends ReadFile {
 
     private String normalizeFileName(String original) {
         String fileName = original.replace(':', '_').replace('(', '_').replace(')', '_').replace('{', '_').replace('}', '_');
-        System.out.println("=== fileName = " + fileName);
+//        System.out.println("=== fileName = " + fileName);
         fileName = fileName.replaceAll("__", "_");
         int idx = fileName.indexOf("_");
         if (idx > 0) {
@@ -440,7 +522,7 @@ public class GeneralAnswerProcessor extends ReadFile {
         if (fileName.equals(".kt")) {
             fileName = original;
         }
-        System.out.println("=== fileName normalized = " + fileName);
+//        System.out.println("=== fileName normalized = " + fileName);
         return fileName;
     }
 }

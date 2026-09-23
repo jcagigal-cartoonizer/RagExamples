@@ -1,0 +1,921 @@
+Below is a Compose-first rewrite of the `SubscriberPaymentFragment` and a Compose-friendly `SubscriberPaymentViewModel` using:
+
+- `UiState`
+- `UiEvent`
+- `UiEffect` via `SharedFlow`
+- lifecycle-aware collection
+- dialog state handling
+- navigation preserved via `NavController`
+- button state holders that replace the fragment button logic
+- a Compose `CustomDialog` equivalent based on the behavior of your XML/dialog code
+- Compose button styling helpers that mirror your custom button behavior more closely
+
+I’m keeping this aligned with your current Android/Jetpack architecture and using only Android + Jetpack Compose references.
+
+---
+
+# 1) Compose `SubscriberPaymentScreen`
+
+This composable replaces the fragment UI logic and delegates all state changes to the ViewModel.
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import android.text.InputFilter
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiEffect
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiEvent
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiState
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentViewModelCompose
+import kotlinx.coroutines.launch
+
+@Composable
+fun SubscriberPaymentScreen(
+    navController: NavController,
+    viewModel: SubscriberPaymentViewModelCompose,
+    onOpenScanner: (cameraPosition: Int, onResult: (String) -> Unit) -> Unit,
+    onShowToast: (Int) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+
+    var dialogState by remember { mutableStateOf<SubscriberPaymentDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        is SubscriberPaymentUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                        is SubscriberPaymentUiEffect.ShowErrorDialog -> {
+                            dialogState = SubscriberPaymentDialogState(
+                                title = context.getString(R.string.dialog_error_title),
+                                description = effect.description,
+                                buttons = listOf(SubscriberPaymentDialogButton.Accept)
+                            )
+                        }
+                        is SubscriberPaymentUiEffect.ShowOperationAuthorizedDialog -> {
+                            dialogState = SubscriberPaymentDialogState(
+                                title = context.getString(R.string.operation_authorized),
+                                description = null,
+                                buttons = listOf(SubscriberPaymentDialogButton.Accept),
+                                cancellable = false
+                            )
+                        }
+                        is SubscriberPaymentUiEffect.NavigateBack -> navController.popBackStack()
+                        is SubscriberPaymentUiEffect.NavigateHome -> {
+                            navController.navigate("home") {
+                                popUpTo(0)
+                            }
+                        }
+                        is SubscriberPaymentUiEffect.NavigateToSignature -> {
+                            navController.navigate("signature/${effect.dispatchId}")
+                        }
+                        is SubscriberPaymentUiEffect.NavigateToVoucher -> {
+                            navController.navigate("voucher/${effect.dispatchId}")
+                        }
+                        is SubscriberPaymentUiEffect.NavigateToQr -> {
+                            navController.navigate("scannerQr/${effect.dispatchId}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    SubscriberPaymentDialog(
+        state = dialogState,
+        onDismiss = { dialogState = null },
+        onButtonClick = {
+            dialogState = null
+        }
+    )
+
+    SubscriberPaymentContent(
+        state = uiState,
+        onEvent = viewModel::onEvent,
+        onOpenScanner = onOpenScanner,
+        modifier = modifier
+    )
+}
+```
+
+---
+
+# 2) Compose content with button logic fully replaced by state holders
+
+This is the part that replaces the fragment button logic.
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiEvent
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiState
+
+@Composable
+fun SubscriberPaymentContent(
+    state: SubscriberPaymentUiState,
+    onEvent: (SubscriberPaymentUiEvent) -> Unit,
+    onOpenScanner: (cameraPosition: Int, onResult: (String) -> Unit) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        SubscriberTextFields(
+            state = state,
+            onEvent = onEvent,
+            onOpenScanner = onOpenScanner
+        )
+
+        SubscriberPaymentButtons(
+            buttonsState = state.buttonsState,
+            onAccept = { onEvent(SubscriberPaymentUiEvent.AcceptClicked) },
+            onCancel = { onEvent(SubscriberPaymentUiEvent.CancelClicked) },
+            onQrClick = { onEvent(SubscriberPaymentUiEvent.QrClicked) }
+        )
+    }
+}
+```
+
+---
+
+# 3) Text fields with scanner entry point
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiEvent
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentUiState
+
+@Composable
+fun SubscriberTextFields(
+    state: SubscriberPaymentUiState,
+    onEvent: (SubscriberPaymentUiEvent) -> Unit,
+    onOpenScanner: (cameraPosition: Int, onResult: (String) -> Unit) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = state.subscriber,
+            onValueChange = { onEvent(SubscriberPaymentUiEvent.SubscriberChanged(it)) },
+            label = { Text("Subscriber") },
+            enabled = state.fieldsEnabled.subscriberEnabled,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = state.user,
+            onValueChange = { onEvent(SubscriberPaymentUiEvent.UserChanged(it)) },
+            label = { Text("User") },
+            enabled = state.fieldsEnabled.userEnabled,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = state.authorization,
+            onValueChange = { onEvent(SubscriberPaymentUiEvent.AuthorizationChanged(it)) },
+            label = { Text("Authorization") },
+            enabled = state.fieldsEnabled.authorizationEnabled,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = state.pin,
+            onValueChange = { onEvent(SubscriberPaymentUiEvent.PinChanged(it)) },
+            label = { Text("PIN") },
+            enabled = state.fieldsEnabled.pinEnabled,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+```
+
+---
+
+# 4) Compose buttons state holder with exact visibility/color logic
+
+This fully replaces the fragment’s `setButtons()` logic.
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class SubscriberPaymentButtonsState(
+    val showQrButton: Boolean = true,
+    val accept: ComposeButtonState = ComposeButtonState(),
+    val cancel: ComposeButtonState = ComposeButtonState(),
+) {
+    companion object {
+        fun default() = SubscriberPaymentButtonsState()
+    }
+}
+
+@Immutable
+data class ComposeButtonState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val backgroundColor: Color = Color(0xFF4CAF50), // green
+    val textColor: Color = Color.White,
+    val borderColor: Color? = null,
+)
+```
+
+## Exact state mapping helper
+
+This is the important part: it mirrors the fragment behavior:
+
+- If `actualTrip?.fromDispatch == true && actualDispatch?.subscriber?.isNotEmpty() == true`
+  - QR button hidden
+  - Accept button executes dispatch logic
+  - if authorization is already present, fields are locked
+- Otherwise:
+  - QR visible
+  - Accept button executes street logic
+- Cancel always available
+- Accept button state changes to loading while request is in progress
+- Accept button returns to enabled after completion/error
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import androidx.compose.ui.graphics.Color
+
+fun buildSubscriberPaymentButtonsState(
+    fromDispatch: Boolean,
+    dispatchSubscriberExists: Boolean,
+    authPresent: Boolean,
+    loading: Boolean
+): SubscriberPaymentButtonsState {
+    val accept = if (loading) {
+        ComposeButtonState(
+            visible = true,
+            enabled = false,
+            loading = true,
+            backgroundColor = Color(0xFF4CAF50),
+            textColor = Color.White
+        )
+    } else {
+        ComposeButtonState(
+            visible = true,
+            enabled = true,
+            loading = false,
+            backgroundColor = Color(0xFF4CAF50),
+            textColor = Color.White
+        )
+    }
+
+    val cancel = ComposeButtonState(
+        visible = true,
+        enabled = true,
+        loading = false,
+        backgroundColor = Color(0xFF9E9E9E),
+        textColor = Color.White
+    )
+
+    return SubscriberPaymentButtonsState(
+        showQrButton = !(fromDispatch && dispatchSubscriberExists),
+        accept = accept,
+        cancel = cancel
+    )
+}
+```
+
+---
+
+# 5) Compose button implementation matching your custom button better
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import ifac.td.taxi.viewmodel.compose.ComposeButtonState
+import ifac.td.taxi.viewmodel.compose.SubscriberPaymentButtonsState
+
+@Composable
+fun SubscriberPaymentButtons(
+    buttonsState: SubscriberPaymentButtonsState,
+    onAccept: () -> Unit,
+    onCancel: () -> Unit,
+    onQrClick: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (buttonsState.showQrButton) {
+            ComposeCustomButton(
+                text = "Scan QR",
+                state = ComposeButtonState(
+                    visible = true,
+                    enabled = true,
+                    backgroundColor = Color(0xFF2196F3)
+                ),
+                onClick = onQrClick
+            )
+        }
+
+        ComposeCustomButton(
+            text = if (buttonsState.accept.loading) "Loading..." else "Accept",
+            state = buttonsState.accept,
+            onClick = onAccept
+        )
+
+        ComposeCustomButton(
+            text = "Cancel",
+            state = buttonsState.cancel.copy(backgroundColor = Color(0xFFE53935)),
+            onClick = onCancel
+        )
+    }
+}
+
+@Composable
+fun ComposeCustomButton(
+    text: String,
+    state: ComposeButtonState,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(12.dp)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .alpha(if (state.enabled) 1f else 0.6f)
+            .background(state.backgroundColor, shape)
+            .then(
+                if (state.borderColor != null) {
+                    Modifier.border(1.dp, state.borderColor, shape)
+                } else Modifier
+            )
+            .clickable(enabled = state.enabled && !state.loading) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        if (state.loading) {
+            CircularProgressIndicator(
+                color = state.textColor,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(20.dp)
+            )
+        } else {
+            Text(
+                text = text,
+                color = state.textColor,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+```
+
+---
+
+# 6) Compose `SubscriberPaymentViewModel` with `UiState + UiEvent + UiEffect`
+
+This is a Compose-friendly ViewModel that mirrors your current logic but exposes a proper state/effect architecture.
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import com.google.gson.JsonSyntaxException
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Subscriber
+import ifac.td.taxi.domain.model.SubscriberQR
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.VoucherQR
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.SubscriberUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class SubscriberPaymentViewModelCompose(
+    private val subscriberUseCase: SubscriberUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val tripUseCase: TripUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val ticketUseCase: TicketUseCase,
+    app: Application,
+) : BaseViewModel(app) {
+
+    private val _uiState = MutableStateFlow(SubscriberPaymentUiState())
+    val uiState: StateFlow<SubscriberPaymentUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<SubscriberPaymentUiEffect>()
+    val uiEffect: SharedFlow<SubscriberPaymentUiEffect> = _uiEffect.asSharedFlow()
+
+    private var actualTrip: Trip? = null
+    private var actualDispatch: InfoDispatchModel? = null
+
+    private var hasScannedQR: Boolean = false
+    var scannedCompanyId: Int? = null
+        private set
+
+    init {
+        viewModelScope.launch {
+            val subscriber = subscriberUseCase.getSubscriber()
+            _uiState.value = _uiState.value.copy(
+                subscriber = subscriber?.manualSubscriber?.toString().orEmpty(),
+                user = subscriber?.manualUser?.toString().orEmpty(),
+                authorization = subscriber?.manualAuthorization.orEmpty(),
+                pin = subscriber?.manualPin.orEmpty()
+            )
+        }
+    }
+
+    fun bindArgs(
+        user: String?,
+        subscriber: String?,
+        fromDispatch: Boolean,
+        trip: Trip?,
+        dispatch: InfoDispatchModel?
+    ) {
+        actualTrip = trip
+        actualDispatch = dispatch
+
+        _uiState.value = _uiState.value.copy(
+            user = user.orEmpty(),
+            subscriber = subscriber.orEmpty(),
+            isFromDispatch = fromDispatch,
+            fieldsEnabled = SubscriberPaymentFieldsEnabled(
+                subscriberEnabled = !(fromDispatch && dispatch?.autorizacion.isNullOrEmpty().not()),
+                userEnabled = !(fromDispatch && dispatch?.autorizacion.isNullOrEmpty().not()),
+                authorizationEnabled = true,
+                pinEnabled = true
+            ),
+            buttonsState = buildSubscriberPaymentButtonsState(
+                fromDispatch = fromDispatch,
+                dispatchSubscriberExists = dispatch?.subscriber?.isNotEmpty() == true,
+                authPresent = !dispatch?.autorizacion.isNullOrEmpty(),
+                loading = false
+            )
+        )
+    }
+
+    fun onEvent(event: SubscriberPaymentUiEvent) {
+        when (event) {
+            is SubscriberPaymentUiEvent.SubscriberChanged -> updateSubscriber(event.value)
+            is SubscriberPaymentUiEvent.UserChanged -> updateUser(event.value)
+            is SubscriberPaymentUiEvent.AuthorizationChanged -> updateAuthorization(event.value)
+            is SubscriberPaymentUiEvent.PinChanged -> updatePin(event.value)
+
+            SubscriberPaymentUiEvent.AcceptClicked -> acceptClicked()
+            SubscriberPaymentUiEvent.CancelClicked -> cancelClicked()
+            SubscriberPaymentUiEvent.QrClicked -> {
+                _uiEffect.tryEmit(SubscriberPaymentUiEffect.OpenScanner)
+            }
+
+            is SubscriberPaymentUiEvent.QrScanned -> handleQrResult(event.result)
+        }
+    }
+
+    private fun updateSubscriber(value: String) {
+        _uiState.value = _uiState.value.copy(subscriber = value)
+    }
+
+    private fun updateUser(value: String) {
+        _uiState.value = _uiState.value.copy(user = value)
+    }
+
+    private fun updateAuthorization(value: String) {
+        _uiState.value = _uiState.value.copy(authorization = value)
+    }
+
+    private fun updatePin(value: String) {
+        _uiState.value = _uiState.value.copy(pin = value)
+    }
+
+    private fun acceptClicked() {
+        val current = _uiState.value
+        _uiState.value = current.copy(buttonsState = current.buttonsState.copy(accept = current.buttonsState.accept.copy(loading = true, enabled = false)))
+
+        if (current.isFromDispatch && actualDispatch?.subscriber?.isNotEmpty() == true) {
+            clickedOkSubscriberDispatch()
+        } else {
+            clickedOkSubscriberStreet()
+        }
+    }
+
+    private fun cancelClicked() {
+        viewModelScope.launch {
+            bravoCentralUseCase.cancelCredit()
+            _uiEffect.emit(SubscriberPaymentUiEffect.NavigateBack)
+        }
+    }
+
+    private fun clickedOkSubscriberDispatch() {
+        if (_uiState.value.pin == actualDispatch?.pin) {
+            actualDispatch?.let { dispatch ->
+                actualTrip?.let { trip ->
+                    saveSubscriber()?.let { subscriber ->
+                        subscriberFromDispatch(dispatch, trip, subscriber)
+                    }
+                }
+            }
+        } else {
+            StaticConfiguration.subscriberFailPin = true
+            viewModelScope.launch {
+                _uiEffect.emit(SubscriberPaymentUiEffect.ShowErrorDialog(app.getString(R.string.pin_incorrecto)))
+                _uiEffect.emit(SubscriberPaymentUiEffect.NavigateBack)
+            }
+        }
+    }
+
+    private fun clickedOkSubscriberStreet() {
+        saveSubscriber()?.let { subscriber ->
+            subscriberLogic(
+                tripId = actualTrip?.id ?: return,
+                subscriber = subscriber,
+                isFromIngenico = false
+            )
+        }
+    }
+
+    private fun saveSubscriber(): Subscriber? {
+        val subscriberText = _uiState.value.subscriber.trim()
+        val userText = _uiState.value.user.trim()
+
+        val subscriberValue = subscriberText.toIntOrNull()
+        val userValue = userText.toIntOrNull()
+
+        return if (subscriberValue != null && userValue != null && subscriberValue > 0 && userValue > 0) {
+            val sub = Subscriber(
+                tripId = actualTrip?.id,
+                isManual = false,
+                manualSubscriber = subscriberValue,
+                manualUser = userValue,
+                manualAuthorization = _uiState.value.authorization,
+                manualPin = _uiState.value.pin.ifBlank { "" },
+                companyId = scannedCompanyId?.toString().orEmpty()
+            )
+            viewModelScope.launch { subscriberUseCase.registerSubscriberAndAssignToTrip(sub) }
+            sub
+        } else null
+    }
+
+    fun handleQrResult(result: String) {
+        val gson = Gson()
+        try {
+            val subscriberQR = gson.fromJson(result, SubscriberQR::class.java)
+            if (subscriberQR.type == 1) {
+                saveSubscriberQR(subscriberQR)
+                _uiState.value = _uiState.value.copy(
+                    subscriber = subscriberQR.accountId,
+                    user = subscriberQR.userId?.toString().orEmpty().ifBlank { "1" }
+                )
+                return
+            }
+        } catch (_: JsonSyntaxException) { }
+
+        try {
+            val voucherQR = gson.fromJson(result, VoucherQR::class.java)
+            saveVoucherQR(voucherQR)
+            _uiState.value = _uiState.value.copy(
+                subscriber = voucherQR.accountId,
+                user = voucherQR.userId?.toString().orEmpty().ifBlank { "1" }
+            )
+        } catch (_: JsonSyntaxException) {
+            viewModelScope.launch {
+                _uiEffect.emit(SubscriberPaymentUiEffect.ShowErrorDialog("Failed to parse QR code"))
+            }
+        }
+    }
+
+    fun saveVoucherQR(voucherQR: VoucherQR?) {
+        scannedCompanyId = voucherQR?.companyId
+        hasScannedQR = true
+        viewModelScope.launch { subscriberUseCase.saveVoucherQR(voucherQR) }
+    }
+
+    fun saveSubscriberQR(subscriberQR: SubscriberQR?) {
+        scannedCompanyId = subscriberQR?.companyId
+    }
+
+    fun cancelSubscriberPetition() {
+        viewModelScope.launch { bravoCentralUseCase.cancelCredit() }
+    }
+
+    private fun subscriberLogic(tripId: Long, subscriber: Subscriber, isFromIngenico: Boolean) {
+        viewModelScope.launch {
+            if (!hasScannedQR) subscriberUseCase.saveVoucherQR(null)
+
+            val request = subscriberUseCase.getAccountPaymentRequest(tripId, subscriber)
+            if (isFromIngenico) request?._abonadoConTarjeta = true
+            subscriberUseCase.sendAccountPaymentRequest(request)
+        }
+    }
+
+    private fun subscriberFromDispatch(actualDispatch: InfoDispatchModel, actualTrip: Trip, subscriber: Subscriber?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!hasScannedQR) subscriberUseCase.saveVoucherQR(null)
+
+            val manualSubscriberId = actualDispatch.subscriber?.toIntOrNull()
+            val manualUserId = actualDispatch.subscriberUser?.toIntOrNull()
+
+            val validSubscriber = if (manualSubscriberId != null && manualUserId != null && manualSubscriberId > 0 && manualUserId > 0) {
+                Subscriber(
+                    manualSubscriber = manualSubscriberId,
+                    manualUser = manualUserId,
+                    tripId = actualTrip.id
+                )
+            } else subscriber?.copy(tripId = actualTrip.id)
+
+            if (validSubscriber != null) {
+                subscriberUseCase.updateSubscriber(validSubscriber)
+
+                if (actualDispatch.checkCreditLimit) {
+                    subscriberUseCase.checkCreditLimit(
+                        actualTrip.totalAmount,
+                        _checkSubscriberCreditLimitFlowInternal
+                    )
+                } else {
+                    dispatchSubscriberNextStep(actualDispatch, actualTrip)
+                }
+            } else {
+                _uiEffect.emit(
+                    SubscriberPaymentUiEffect.ShowErrorDialog(app.getString(R.string.dialog_error_subscriber))
+                )
+            }
+        }
+    }
+
+    private val _checkSubscriberCreditLimitFlowInternal = MutableSharedFlow<String>()
+
+    init {
+        viewModelScope.launch {
+            _checkSubscriberCreditLimitFlowInternal.collect { value ->
+                val validCredit = value == "1" || value == "true"
+                if (validCredit) {
+                    _uiEffect.emit(SubscriberPaymentUiEffect.ShowToast(R.string.toast_valid_credit))
+                    actualDispatch?.let { dispatch ->
+                        when {
+                            dispatch.requireSignature -> _uiEffect.emit(SubscriberPaymentUiEffect.NavigateToSignature(dispatch.longDispatchNumber))
+                            dispatch.requireVoucher -> _uiEffect.emit(SubscriberPaymentUiEffect.NavigateToVoucher(dispatch.longDispatchNumber))
+                            dispatch.requireQr -> _uiEffect.emit(SubscriberPaymentUiEffect.NavigateToQr(dispatch.longDispatchNumber))
+                            else -> {
+                                actualTrip?.let {
+                                    validCredit(it)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    _uiEffect.emit(SubscriberPaymentUiEffect.ShowToast(R.string.toast_not_enough_credit))
+                }
+                _uiState.value = _uiState.value.copy(buttonsState = _uiState.value.buttonsState.copy(accept = _uiState.value.buttonsState.accept.copy(loading = false, enabled = true)))
+            }
+        }
+    }
+
+    private fun dispatchSubscriberNextStep(dispatchValue: InfoDispatchModel, trip: Trip) {
+        viewModelScope.launch {
+            when {
+                dispatchValue.requireSignature -> _uiEffect.emit(SubscriberPaymentUiEffect.NavigateToSignature(dispatchValue.longDispatchNumber))
+                dispatchValue.requireVoucher -> _uiEffect.emit(SubscriberPaymentUiEffect.NavigateToVoucher(dispatchValue.longDispatchNumber))
+                dispatchValue.requireQr -> _uiEffect.emit(SubscriberPaymentUiEffect.NavigateToQr(dispatchValue.longDispatchNumber))
+                else -> {
+                    withContext(Dispatchers.IO) {
+                        tripUseCase.endTrip(trip, ifac.td.taxi.domain.model.PaymentMethod.SUBSCRIBER)
+                    }
+                    ticketUseCase.prepareTicket(trip, dispatchValue, shiftStatusUseCase.getStatus())
+                    _uiEffect.emit(SubscriberPaymentUiEffect.ShowOperationAuthorizedDialog)
+                    _uiEffect.emit(SubscriberPaymentUiEffect.NavigateHome)
+                }
+            }
+            _uiState.value = _uiState.value.copy(buttonsState = _uiState.value.buttonsState.copy(accept = _uiState.value.buttonsState.accept.copy(loading = false, enabled = true)))
+        }
+    }
+
+    private fun validCredit(trip: Trip) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                tripUseCase.endTrip(trip, ifac.td.taxi.domain.model.PaymentMethod.SUBSCRIBER)
+            }
+            ticketUseCase.prepareTicket(trip, null, shiftStatusUseCase.getStatus())
+            _uiEffect.emit(SubscriberPaymentUiEffect.NavigateHome)
+        }
+    }
+}
+```
+
+---
+
+# 7) State, events, effects
+
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+
+import androidx.compose.runtime.Immutable
+
+@Immutable
+data class SubscriberPaymentUiState(
+    val subscriber: String = "",
+    val user: String = "",
+    val authorization: String = "",
+    val pin: String = "",
+    val isFromDispatch: Boolean = false,
+    val fieldsEnabled: SubscriberPaymentFieldsEnabled = SubscriberPaymentFieldsEnabled(),
+    val buttonsState: SubscriberPaymentButtonsState = SubscriberPaymentButtonsState.default()
+)
+
+@Immutable
+data class SubscriberPaymentFieldsEnabled(
+    val subscriberEnabled: Boolean = true,
+    val userEnabled: Boolean = true,
+    val authorizationEnabled: Boolean = true,
+    val pinEnabled: Boolean = true
+)
+
+sealed interface SubscriberPaymentUiEvent {
+    data class SubscriberChanged(val value: String) : SubscriberPaymentUiEvent
+    data class UserChanged(val value: String) : SubscriberPaymentUiEvent
+    data class AuthorizationChanged(val value: String) : SubscriberPaymentUiEvent
+    data class PinChanged(val value: String) : SubscriberPaymentUiEvent
+
+    data object AcceptClicked : SubscriberPaymentUiEvent
+    data object CancelClicked : SubscriberPaymentUiEvent
+    data object QrClicked : SubscriberPaymentUiEvent
+    data class QrScanned(val result: String) : SubscriberPaymentUiEvent
+}
+
+sealed interface SubscriberPaymentUiEffect {
+    data class ShowToast(val messageRes: Int) : SubscriberPaymentUiEffect
+    data class ShowErrorDialog(val description: String) : SubscriberPaymentUiEffect
+    data object ShowOperationAuthorizedDialog : SubscriberPaymentUiEffect
+
+    data object NavigateBack : SubscriberPaymentUiEffect
+    data object NavigateHome : SubscriberPaymentUiEffect
+
+    data class NavigateToSignature(val dispatchId: Long) : SubscriberPaymentUiEffect
+    data class NavigateToVoucher(val dispatchId: Long) : SubscriberPaymentUiEffect
+    data class NavigateToQr(val dispatchId: Long) : SubscriberPaymentUiEffect
+
+    data object OpenScanner : SubscriberPaymentUiEffect
+}
+```
+
+---
+
+# 8) Compose `CustomDialog` implementation
+
+This is a Compose version of your XML/custom dialog behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+data class SubscriberPaymentDialogState(
+    val title: String,
+    val description: String? = null,
+    val buttons: List<SubscriberPaymentDialogButton>,
+    val cancellable: Boolean = true
+)
+
+enum class SubscriberPaymentDialogButton {
+    Accept,
+    FrontCamera,
+    BackCamera
+}
+
+@Composable
+fun SubscriberPaymentDialog(
+    state: SubscriberPaymentDialogState?,
+    onDismiss: () -> Unit,
+    onButtonClick: (SubscriberPaymentDialogButton) -> Unit
+) {
+    if (state == null) return
+
+    AlertDialog(
+        onDismissRequest = if (state.cancellable) onDismiss else {},
+        title = {
+            Text(text = state.title)
+        },
+        text = {
+            Column {
+                state.description?.let { Text(text = it) }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                state.buttons.forEach { button ->
+                    TextButton(onClick = {
+                        onButtonClick(button)
+                    }) {
+                        Text(
+                            text = when (button) {
+                                SubscriberPaymentDialogButton.Accept -> "Accept"
+                                SubscriberPaymentDialogButton.FrontCamera -> "Front camera"
+                                SubscriberPaymentDialogButton.BackCamera -> "Back camera"
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    )
+}
+```
+
+---
+
+# 9) Notes for navigation preservation
+
+To preserve your current Fragment navigation behavior in Compose:
+
+- use `NavController`
+- emit navigation as `UiEffect`
+- handle those effects in a `LaunchedEffect`
+- navigate to the same destinations you already have in your NavGraph
+
+If your current graph uses generated directions, you can still use them in Compose if you keep the same module setup and expose a navigation lambda instead of hardcoding strings.
+
+---
+
+# 10) Important mapping from your original Fragment
+
+Here is how the old fragment logic maps to Compose:
+
+- `setData()` → initial `uiState` from args / `bindArgs(...)`
+- `lockEditTexts()` → `fieldsEnabled = false` for those fields
+- `setButtons()` → `SubscriberPaymentButtonsState`
+- `btnAccept.setAction` → `SubscriberPaymentUiEvent.AcceptClicked`
+- `btnCancel.setAction` → `SubscriberPaymentUiEvent.CancelClicked`
+- `ivQR.setOnClickListener` → `QrClicked` + `OpenScanner` effect
+- `showErrorDialog(...)` → `UiEffect.ShowErrorDialog`
+- scanner result handling → `QrScanned(result)` or direct `handleQrResult(result)`
+- loading state → `buttonsState.accept.loading`
+
+---
+
+If you want, I can also provide:
+
+1. a **full Compose screen with TextField validation** equivalent to `FieldType.SUBSCRIBER`
+2. a **Navigation Compose graph** for the same routes
+3. a **Koin module** for the new Compose ViewModel
+4. a **more exact XML-like CustomDialog with camera selection buttons** matching `CustomDialog.kt` behavior more closely

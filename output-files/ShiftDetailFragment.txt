@@ -1,0 +1,637 @@
+Below is a Compose-first rewrite of the `ShiftDetailFragment` and a companion Compose `ViewModel` that preserves the original navigation/data flow behavior while replacing the fragment button logic with state holders and a single `SharedFlow<ShiftDetailUiEffect>`.
+
+I’ll provide:
+
+1. **Compose screen** for `ShiftDetailFragment`
+2. **Compose ViewModel** using `UiState + UiEffect`
+3. **Buttons state holder** that fully replaces the fragment button logic
+4. **Dialog state + CustomDialog composable**
+5. **Button styling helpers** to mimic your custom button behavior
+6. **Navigation preservation** using `NavController`
+7. **Lifecycle collection** for state/effects
+8. **Optional adapter replacement with LazyColumn**
+
+---
+
+# 1) Compose UI model
+
+```kotlin
+package ifac.td.taxi.ui.screen.shiftdetail
+
+import android.content.Intent
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+
+data class ShiftDetailUiState(
+    val shiftId: Long = 0L,
+    val trips: List<Trip> = emptyList(),
+    val sortState: SortStateUi = SortStateUi(),
+    val buttons: ShiftDetailButtonsState = ShiftDetailButtonsState(),
+    val dialog: CustomDialogState? = null
+)
+
+data class SortStateUi(
+    val option: ShiftOrderOptions = ShiftOrderOptions.NONE,
+    val isAscending: Boolean? = null
+)
+
+data class ShiftDetailDialogState(
+    val title: String,
+    val message: String,
+    val positiveText: String = "OK",
+    val negativeText: String? = null
+)
+
+data class CustomDialogState(
+    val title: String,
+    val message: String,
+    val positiveButtonText: String,
+    val negativeButtonText: String? = null
+)
+
+sealed interface ShiftDetailUiEffect {
+    data class OpenIntent(val intent: Intent) : ShiftDetailUiEffect
+    data class ShowDialog(val dialog: CustomDialogState) : ShiftDetailUiEffect
+    data class ShowToast(val messageRes: Int) : ShiftDetailUiEffect
+}
+```
+
+---
+
+# 2) Button state holder replacing fragment button logic
+
+This fully replaces:
+- `refreshHeaderImages()`
+- `handleSortButtonClick()`
+- icon visibility changes
+- sort toggle behavior
+
+```kotlin
+package ifac.td.taxi.ui.screen.shiftdetail
+
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+
+data class ShiftDetailButtonsState(
+    val export: ButtonState = ButtonState(label = "Export", enabled = true),
+    val email: ButtonState = ButtonState(label = "Email", enabled = true),
+    val print: ButtonState = ButtonState(label = "Print", enabled = true),
+
+    val idSort: SortButtonState = SortButtonState(
+        option = ShiftOrderOptions.ID,
+        label = "ID"
+    ),
+    val amountSort: SortButtonState = SortButtonState(
+        option = ShiftOrderOptions.AMOUNT,
+        label = "Amount"
+    ),
+    val initHourSort: SortButtonState = SortButtonState(
+        option = ShiftOrderOptions.START_DATE,
+        label = "Init Hour"
+    ),
+    val distanceSort: SortButtonState = SortButtonState(
+        option = ShiftOrderOptions.DISTANCE,
+        label = "Distance"
+    )
+) {
+    fun clearSortIndicators(): ShiftDetailButtonsState = copy(
+        idSort = idSort.clear(),
+        amountSort = amountSort.clear(),
+        initHourSort = initHourSort.clear(),
+        distanceSort = distanceSort.clear()
+    )
+
+    fun applySort(option: ShiftOrderOptions, ascending: Boolean?): ShiftDetailButtonsState {
+        val reset = clearSortIndicators()
+        return when (option) {
+            ShiftOrderOptions.ID -> reset.copy(idSort = reset.idSort.withSortState(ascending))
+            ShiftOrderOptions.AMOUNT -> reset.copy(amountSort = reset.amountSort.withSortState(ascending))
+            ShiftOrderOptions.START_DATE -> reset.copy(initHourSort = reset.initHourSort.withSortState(ascending))
+            ShiftOrderOptions.DISTANCE -> reset.copy(distanceSort = reset.distanceSort.withSortState(ascending))
+            ShiftOrderOptions.NONE -> reset
+        }
+    }
+}
+
+data class ButtonState(
+    val label: String,
+    val enabled: Boolean = true,
+    val backgroundColor: Long = 0xFF1E88E5,
+    val contentColor: Long = 0xFFFFFFFF,
+    val borderColor: Long? = null
+)
+
+data class SortButtonState(
+    val option: ShiftOrderOptions,
+    val label: String,
+    val arrowVisible: Boolean = false,
+    val ascending: Boolean? = null
+) {
+    fun clear() = copy(arrowVisible = false, ascending = null)
+
+    fun withSortState(ascending: Boolean?): SortButtonState =
+        copy(
+            arrowVisible = ascending != null,
+            ascending = ascending
+        )
+}
+```
+
+---
+
+# 3) Compose ViewModel
+
+This replaces the fragment’s `getTripsFromShiftId`, sorting, export, email, and print behavior with a single state-driven architecture.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.ShiftExportUseCase
+import ifac.td.taxi.domain.usecase.ShiftUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.ui.screen.shiftdetail.CustomDialogState
+import ifac.td.taxi.ui.screen.shiftdetail.ShiftDetailButtonsState
+import ifac.td.taxi.ui.screen.shiftdetail.ShiftDetailUiEffect
+import ifac.td.taxi.ui.screen.shiftdetail.ShiftDetailUiState
+import ifac.td.taxi.ui.screen.shiftdetail.SortStateUi
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class ShiftDetailComposeViewModel(
+    application: Application,
+    private val tripUseCase: TripUseCase,
+    private val shiftExportUseCase: ShiftExportUseCase,
+    private val shiftUseCase: ShiftUseCase
+) : BaseViewModel(application) {
+
+    private val _uiState = MutableStateFlow(ShiftDetailUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ShiftDetailUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onScreenStarted(shiftId: Long) {
+        _uiState.update { it.copy(shiftId = shiftId) }
+        loadTrips(shiftId)
+    }
+
+    private fun loadTrips(shiftId: Long) {
+        viewModelScope.launch {
+            val trips = tripUseCase.getTripsByShiftId(shiftId)
+            _uiState.update { it.copy(trips = trips) }
+        }
+    }
+
+    fun onExportClicked() {
+        val shiftId = uiState.value.shiftId
+        viewModelScope.launch {
+            shiftExportUseCase.exportShift(shiftId, ShiftExportUseCaseImpl.ACTION_EXPORT_FILE)
+                ?.let { _uiEffect.emit(ShiftDetailUiEffect.OpenIntent(it)) }
+        }
+    }
+
+    fun onEmailClicked() {
+        val shiftId = uiState.value.shiftId
+        viewModelScope.launch {
+            shiftExportUseCase.exportShift(shiftId, ShiftExportUseCaseImpl.ACTION_SEND_FILE)
+                ?.let { _uiEffect.emit(ShiftDetailUiEffect.OpenIntent(it)) }
+        }
+    }
+
+    fun onPrintClicked() {
+        val shiftId = uiState.value.shiftId
+        viewModelScope.launch(Dispatchers.IO) {
+            val trips = tripUseCase.getTripsByShiftId(shiftId)
+            shiftUseCase.printShift(trips)
+        }
+    }
+
+    fun onSortClicked(option: ShiftOrderOptions) {
+        val current = uiState.value.sortState
+        val next = when {
+            current.option != option -> SortStateUi(option, true)
+            current.isAscending == true -> SortStateUi(option, false)
+            current.isAscending == false -> SortStateUi(ShiftOrderOptions.NONE, null)
+            else -> SortStateUi(option, true)
+        }
+
+        _uiState.update { state ->
+            state.copy(
+                sortState = next,
+                buttons = state.buttons.applySort(next.option, next.isAscending)
+            )
+        }
+
+        val shiftId = uiState.value.shiftId
+        sortShiftTripsBy(shiftId, next.option, next.isAscending ?: true)
+    }
+
+    private fun sortShiftTripsBy(
+        shiftId: Long,
+        orderOptions: ShiftOrderOptions,
+        isAscending: Boolean
+    ) {
+        viewModelScope.launch {
+            val shiftTrips = when (orderOptions) {
+                ShiftOrderOptions.ID ->
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.id }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.id }
+
+                ShiftOrderOptions.AMOUNT ->
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.totalAmount }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.totalAmount }
+
+                ShiftOrderOptions.START_DATE ->
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.initDate }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.initDate }
+
+                ShiftOrderOptions.DISTANCE ->
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.distance }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.distance }
+
+                ShiftOrderOptions.NONE ->
+                    tripUseCase.getTripsByShiftId(shiftId)
+            }
+
+            _uiState.update { it.copy(trips = shiftTrips) }
+        }
+    }
+
+    fun showDialog(dialog: CustomDialogState) {
+        _uiEffect.tryEmit(ShiftDetailUiEffect.ShowDialog(dialog))
+    }
+
+    fun showToast(messageRes: Int) {
+        _uiEffect.tryEmit(ShiftDetailUiEffect.ShowToast(messageRes))
+    }
+}
+```
+
+---
+
+# 4) Compose screen preserving navigation
+
+This screen:
+- uses `NavController`
+- uses lifecycle collection
+- manages dialog state locally
+- handles `OpenIntent`, `ShowDialog`, `ShowToast`
+
+```kotlin
+package ifac.td.taxi.ui.screen.shiftdetail
+
+import android.content.Intent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.ShiftDetailComposeViewModel
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun ShiftDetailScreen(
+    navController: NavController,
+    viewModel: ShiftDetailComposeViewModel,
+    shiftId: Long,
+    onShowToast: (Int) -> Unit = {}
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var dialogState by remember { mutableStateOf<CustomDialogState?>(null) }
+
+    LaunchedEffect(shiftId) {
+        viewModel.onScreenStarted(shiftId)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ShiftDetailUiEffect.OpenIntent -> {
+                    try {
+                        if (effect.intent.getStringExtra("EXTRA_INTENT_PURPOSE") == "PURPOSE_SEND_EMAIL") {
+                            navController.context.startActivity(
+                                Intent.createChooser(effect.intent, navController.context.getString(R.string.send_email_title))
+                            )
+                        } else {
+                            navController.context.startActivity(effect.intent)
+                        }
+                    } catch (_: Exception) {
+                        onShowToast(R.string.start_activity_error_toast)
+                    }
+                }
+                is ShiftDetailUiEffect.ShowDialog -> dialogState = effect.dialog
+                is ShiftDetailUiEffect.ShowToast -> onShowToast(effect.messageRes)
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            ShiftDetailButtonsRow(
+                buttons = state.buttons,
+                onExport = viewModel::onExportClicked,
+                onEmail = viewModel::onEmailClicked,
+                onPrint = viewModel::onPrintClicked
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            ShiftSortRow(
+                buttons = state.buttons,
+                onSortById = { viewModel.onSortClicked(ShiftOrderOptions.ID) },
+                onSortByAmount = { viewModel.onSortClicked(ShiftOrderOptions.AMOUNT) },
+                onSortByInitHour = { viewModel.onSortClicked(ShiftOrderOptions.START_DATE) },
+                onSortByDistance = { viewModel.onSortClicked(ShiftOrderOptions.DISTANCE) }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(state.trips) { trip ->
+                    TripRow(trip = trip)
+                }
+            }
+        }
+
+        dialogState?.let { dialog ->
+            CustomDialog(
+                state = dialog,
+                onDismiss = { dialogState = null },
+                onConfirm = { dialogState = null }
+            )
+        }
+    }
+}
+```
+
+---
+
+# 5) Button rows and styling helpers
+
+These are intended to match your custom button component behavior more closely.
+
+```kotlin
+package ifac.td.taxi.ui.screen.shiftdetail
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowDropUp
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+
+@Composable
+fun ShiftDetailButtonsRow(
+    buttons: ShiftDetailButtonsState,
+    onExport: () -> Unit,
+    onEmail: () -> Unit,
+    onPrint: () -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ShiftActionButton(buttons.export, onClick = onExport, modifier = Modifier.weight(1f))
+        ShiftActionButton(buttons.email, onClick = onEmail, modifier = Modifier.weight(1f))
+        ShiftActionButton(buttons.print, onClick = onPrint, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+fun ShiftSortRow(
+    buttons: ShiftDetailButtonsState,
+    onSortById: () -> Unit,
+    onSortByAmount: () -> Unit,
+    onSortByInitHour: () -> Unit,
+    onSortByDistance: () -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SortHeaderButton(buttons.idSort, onSortById, Modifier.weight(1f))
+        SortHeaderButton(buttons.amountSort, onSortByAmount, Modifier.weight(1f))
+        SortHeaderButton(buttons.initHourSort, onSortByInitHour, Modifier.weight(1f))
+        SortHeaderButton(buttons.distanceSort, onSortByDistance, Modifier.weight(1f))
+    }
+}
+
+@Composable
+fun ShiftActionButton(
+    state: ButtonState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bg = Color(state.backgroundColor)
+    val content = Color(state.contentColor)
+    val border = state.borderColor?.let { Color(it) }
+
+    Surface(
+        modifier = modifier
+            .height(48.dp)
+            .then(
+                if (border != null) Modifier.border(1.dp, border, RoundedCornerShape(12.dp))
+                else Modifier
+            )
+            .clickable(enabled = state.enabled, onClick = onClick),
+        color = bg,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(text = state.label, color = content)
+        }
+    }
+}
+
+@Composable
+fun SortHeaderButton(
+    state: SortButtonState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(10.dp)
+
+    Surface(
+        modifier = modifier
+            .height(44.dp)
+            .clickable(onClick = onClick),
+        shape = shape,
+        color = Color(0xFFEFEFEF)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(text = state.label, style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.width(4.dp))
+            when (state.ascending) {
+                true -> Icon(Icons.Default.ArrowDropUp, contentDescription = null)
+                false -> Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                null -> Box(modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+}
+```
+
+---
+
+# 6) CustomDialog composable
+
+This is the Compose replacement for `custom_dialog.xml` / `CustomDialog.kt`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.shiftdetail
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    state: CustomDialogState,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = state.title) },
+        text = { Text(text = state.message) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(text = state.positiveButtonText)
+            }
+        },
+        dismissButton = {
+            state.negativeButtonText?.let {
+                TextButton(onClick = onDismiss) {
+                    Text(text = it)
+                }
+            }
+        }
+    )
+}
+```
+
+---
+
+# 7) Trip row composable
+
+A simple placeholder for your `TripsInShiftAdapter` row replacement.
+
+```kotlin
+package ifac.td.taxi.ui.screen.shiftdetail
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.domain.model.Trip
+
+@Composable
+fun TripRow(trip: Trip) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(text = "Trip #${trip.id}")
+            Text(text = "Amount: ${trip.totalAmount}")
+            Text(text = "Distance: ${trip.distance}")
+        }
+    }
+}
+```
+
+---
+
+# 8) Navigation preservation from Fragment to Compose
+
+If you still need a Fragment host for navigation compatibility, you can wrap the Compose screen like this:
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.os.Bundle
+import android.view.View
+import androidx.compose.ui.platform.ComposeView
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
+import ifac.td.taxi.ui.screen.shiftdetail.ShiftDetailScreen
+import ifac.td.taxi.viewmodel.ShiftDetailComposeViewModel
+import org.koin.androidx.viewmodel.ext.android.viewModel
+
+class ShiftDetailComposeFragment : Fragment() {
+
+    private val viewModel: ShiftDetailComposeViewModel by viewModel()
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        val shiftId = arguments?.getLong("shiftId") ?: 0L
+
+        view.findViewById<ComposeView>(android.R.id.content)?.setContent {
+            ShiftDetailScreen(
+                navController = findNavController(),
+                viewModel = viewModel,
+                shiftId = shiftId,
+                onShowToast = { /* host-side toast */ }
+            )
+        }
+    }
+}
+```
+
+---
+
+# 9) Notes on exact XML parity
+
+Your XML behavior includes:
+- sort icon hidden for all headers except the active one
+- first click: ascending/up arrow visible
+- second click: descending/down arrow visible
+- third click: hidden / reset to NONE
+
+That logic is preserved in:
+- `ShiftDetailButtonsState.applySort(...)`
+- `ShiftDetailComposeViewModel.onSortClicked(...)`
+
+---
+
+# 10) What you may need to adapt
+
+Because I only used Android + Jetpack Compose references, a few project-specific items need alignment:
+
+- `ShiftExportUseCaseImpl.ACTION_EXPORT_FILE`
+- `ShiftExportUseCaseImpl.ACTION_SEND_FILE`
+- intent extras like `EXTRA_INTENT_PURPOSE`
+- your actual `Trip` model field types
+- your actual dialog XML content if you want pixel-perfect parity
+- your custom button colors if different from the defaults I used
+
+---
+
+If you want, I can produce a **second version** that is even closer to your existing UI by:
+- recreating the **exact row layout structure** from `fragment_shift_detail.xml`
+- adding a **Compose top bar/header**
+- matching the **custom button component** more closely with paddings, radius, stroke, and text style
+- including a **Navigation Compose route version** instead of fragment hosting

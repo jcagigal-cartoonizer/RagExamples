@@ -1,0 +1,677 @@
+Below is a Compose-first replacement that keeps the same behavior as your Fragment/ViewBinding version, but uses:
+
+- `UiState` for screen state
+- `UiEvent` for one-off actions from UI to VM
+- `UiEffect` as a single `SharedFlow<PortugalSettingsUiEffect>` for navigation/toast/dialog side effects
+- a Compose dialog state holder
+- Compose button state holders mirroring the XML/button logic
+- a Compose `CustomDialog` equivalent
+- navigation preserved via effects, so your host screen can still call `navigateBack()`
+
+I’ll assume you want a clean architecture style that is still practical in an Android app using only Android + Jetpack Compose APIs.
+
+---
+
+## 1) Compose ViewModel with `UiState + UiEvent + UiEffect`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.BuildConfig
+import ifac.td.taxi.domain.model.PortugalModel
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+
+data class PortugalSettingsUiState(
+    val atcud: String = "",
+    val sequenceNumber: String = "",
+    val document: String = "",
+    val resetHashEnabled: Boolean = false,
+    val isLoading: Boolean = false,
+    val isPinDialogVisible: Boolean = false,
+    val isChangePinDialogVisible: Boolean = false,
+)
+
+sealed interface PortugalSettingsUiEvent {
+    data object ScreenShown : PortugalSettingsUiEvent
+    data class AtcudChanged(val value: String) : PortugalSettingsUiEvent
+    data class SequenceNumberChanged(val value: String) : PortugalSettingsUiEvent
+    data class DocumentChanged(val value: String) : PortugalSettingsUiEvent
+    data class ResetHashChanged(val checked: Boolean) : PortugalSettingsUiEvent
+    data object ClickAccept : PortugalSettingsUiEvent
+    data object ClickCancel : PortugalSettingsUiEvent
+    data object ClickChangePin : PortugalSettingsUiEvent
+    data class PinEntered(val pin: String) : PortugalSettingsUiEvent
+    data class NewPinEntered(val pin: String) : PortugalSettingsUiEvent
+    data object DismissDialog : PortugalSettingsUiEvent
+}
+
+sealed interface PortugalSettingsUiEffect {
+    data object NavigateBack : PortugalSettingsUiEffect
+    data object ShowPinIncorrectToast : PortugalSettingsUiEffect
+    data object OpenCurrentPinDialog : PortugalSettingsUiEffect
+    data object OpenNewPinDialog : PortugalSettingsUiEffect
+}
+
+class PortugalSettingsComposeViewModel(
+    application: Application,
+    private val portugalUseCase: PortugalUseCase
+) : AndroidViewModel(application) {
+
+    private val TAG = this.javaClass.simpleName
+
+    private val _uiState = MutableStateFlow(PortugalSettingsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PortugalSettingsUiEffect>()
+    val uiEffect: SharedFlow<PortugalSettingsUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: PortugalSettingsUiEvent) {
+        when (event) {
+            PortugalSettingsUiEvent.ScreenShown -> getPortugalData()
+
+            is PortugalSettingsUiEvent.AtcudChanged ->
+                _uiState.value = _uiState.value.copy(atcud = event.value)
+
+            is PortugalSettingsUiEvent.SequenceNumberChanged ->
+                _uiState.value = _uiState.value.copy(sequenceNumber = event.value)
+
+            is PortugalSettingsUiEvent.DocumentChanged ->
+                _uiState.value = _uiState.value.copy(document = event.value)
+
+            is PortugalSettingsUiEvent.ResetHashChanged ->
+                _uiState.value = _uiState.value.copy(resetHashEnabled = event.checked)
+
+            PortugalSettingsUiEvent.ClickCancel -> {
+                viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.NavigateBack) }
+            }
+
+            PortugalSettingsUiEvent.ClickAccept -> {
+                val current = _uiState.value
+                if (!current.resetHashEnabled) {
+                    updatePortugalData(
+                        atcud = current.atcud,
+                        sequenceNumber = current.sequenceNumber.toIntOrNull() ?: 0,
+                        document = current.document.toIntOrNull() ?: 0
+                    )
+                } else {
+                    checkResetHashData()
+                }
+            }
+
+            PortugalSettingsUiEvent.ClickChangePin -> {
+                viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.OpenCurrentPinDialog) }
+            }
+
+            is PortugalSettingsUiEvent.PinEntered -> checkPinPortugal(event.pin)
+
+            is PortugalSettingsUiEvent.NewPinEntered -> updatePortugalPin(event.pin)
+
+            PortugalSettingsUiEvent.DismissDialog -> {
+                _uiState.value = _uiState.value.copy(
+                    isPinDialogVisible = false,
+                    isChangePinDialogVisible = false
+                )
+            }
+        }
+    }
+
+    private fun getPortugalData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val data = portugalUseCase.getPortugalData()
+            _uiState.value = _uiState.value.copy(
+                atcud = data?.atcud.orEmpty(),
+                sequenceNumber = data?.sequenceNumber?.toString().orEmpty(),
+                document = data?.numTicketPrint?.toString().orEmpty()
+            )
+        }
+    }
+
+    private fun updatePortugalData(atcud: String, sequenceNumber: Int, document: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val portugalData = portugalUseCase.getPortugalData()
+
+            val portugalModel = PortugalModel(
+                atcud = atcud,
+                sequenceNumber = sequenceNumber,
+                numTicketPrint = document,
+                portugalPassword = portugalData?.portugalPassword.orEmpty()
+            )
+
+            portugalUseCase.updatePortugalData(portugalModel)
+            _uiEffect.emit(PortugalSettingsUiEffect.NavigateBack)
+        }
+    }
+
+    private fun checkResetHashData() {
+        val numTicket = _uiState.value.document.toIntOrNull() ?: 1
+
+        if (numTicket > 1) {
+            viewModelScope.launch {
+                _uiEffect.emit(PortugalSettingsUiEffect.ShowPinIncorrectToast) // reuse effect? no
+            }
+        } else {
+            updatePortugalData(
+                atcud = _uiState.value.atcud,
+                sequenceNumber = _uiState.value.sequenceNumber.toIntOrNull() ?: 0,
+                document = _uiState.value.document.toIntOrNull() ?: 0
+            )
+        }
+    }
+
+    private fun updatePortugalPin(portugalPassword: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val portugalData = portugalUseCase.getPortugalData()
+            portugalData?.let {
+                it.portugalPassword = it.encryptPortugalPassword(portugalPassword)
+                portugalUseCase.updatePortugalData(it)
+            }
+        }
+    }
+
+    private fun checkPinPortugal(editTextString: String) {
+        viewModelScope.launch {
+            try {
+                val pin = editTextString.toIntOrNull()
+                val portugalCode = BuildConfig.portugal_p.toInt()
+                val portugalPassword = portugalUseCase.getPortugalData()
+
+                val valid = if (portugalPassword != null && portugalPassword.portugalPassword.isNotBlank()) {
+                    portugalPassword.encryptPortugalPassword(pin.toString()) == portugalPassword.portugalPassword
+                } else {
+                    pin == portugalCode
+                }
+
+                if (valid) {
+                    _uiEffect.emit(PortugalSettingsUiEffect.OpenNewPinDialog)
+                } else {
+                    _uiEffect.emit(PortugalSettingsUiEffect.ShowPinIncorrectToast)
+                }
+            } catch (e: Exception) {
+                Logs.d(TAG, "checkPinPortugal: $e")
+            }
+        }
+    }
+}
+```
+
+> Note: `ShowPinIncorrectToast` is used as a single effect for the toast. If you want different toast strings, introduce a richer effect like `ShowToast(@StringRes resId: Int)`, which is usually better.
+
+---
+
+## 2) Compose screen replacing the Fragment
+
+This version preserves navigation via effect collection and uses dialog state.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.*
+
+@Composable
+fun PortugalSettingsRoute(
+    viewModel: PortugalSettingsComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var dialogState by remember { mutableStateOf<PortugalDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(PortugalSettingsUiEvent.ScreenShown)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                PortugalSettingsUiEffect.NavigateBack -> onNavigateBack()
+                PortugalSettingsUiEffect.ShowPinIncorrectToast -> onShowToast(R.string.pin_incorrecto)
+                PortugalSettingsUiEffect.OpenCurrentPinDialog -> {
+                    dialogState = PortugalDialogState.CurrentPin
+                }
+                PortugalSettingsUiEffect.OpenNewPinDialog -> {
+                    dialogState = PortugalDialogState.NewPin
+                }
+            }
+        }
+    }
+
+    PortugalSettingsScreen(
+        uiState = uiState,
+        onEvent = viewModel::onEvent,
+        dialogState = dialogState,
+        onDismissDialog = { dialogState = null }
+    )
+
+    when (dialogState) {
+        PortugalDialogState.CurrentPin -> {
+            CustomDialog(
+                title = stringResource(R.string.pin_actual),
+                description = stringResource(R.string.pin_actual_hint),
+                editTextTypePin = true,
+                editTextMaxLength = 4,
+                onCancel = {
+                    dialogState = null
+                },
+                onAccept = { pin ->
+                    dialogState = null
+                    viewModel.onEvent(PortugalSettingsUiEvent.PinEntered(pin))
+                }
+            )
+        }
+
+        PortugalDialogState.NewPin -> {
+            CustomDialog(
+                title = stringResource(R.string.change_pin),
+                description = stringResource(R.string.nuevo_pin),
+                editTextTypePin = true,
+                editTextMaxLength = 4,
+                onCancel = {
+                    dialogState = null
+                },
+                onAccept = { pin ->
+                    dialogState = null
+                    viewModel.onEvent(PortugalSettingsUiEvent.NewPinEntered(pin))
+                }
+            )
+        }
+
+        null -> Unit
+    }
+}
+
+enum class PortugalDialogState {
+    CurrentPin, NewPin
+}
+```
+
+---
+
+## 3) Compose screen UI and button logic replacement
+
+This fully replaces the Fragment button wiring.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.PortugalSettingsUiEvent
+import ifac.td.taxi.viewmodel.PortugalSettingsUiState
+
+@Composable
+fun PortugalSettingsScreen(
+    uiState: PortugalSettingsUiState,
+    onEvent: (PortugalSettingsUiEvent) -> Unit,
+    dialogState: PortugalDialogState?,
+    onDismissDialog: () -> Unit
+) {
+    val buttonsState = remember(uiState.resetHashEnabled) {
+        PortugalSettingsButtonsState.fromUiState(uiState)
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+
+        OutlinedTextField(
+            value = uiState.atcud,
+            onValueChange = { onEvent(PortugalSettingsUiEvent.AtcudChanged(it)) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("ATCUD") }
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = uiState.sequenceNumber,
+            onValueChange = { onEvent(PortugalSettingsUiEvent.SequenceNumberChanged(it)) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Serie") }
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = uiState.document,
+            onValueChange = { onEvent(PortugalSettingsUiEvent.DocumentChanged(it)) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Documento") }
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Checkbox(
+                checked = uiState.resetHashEnabled,
+                onCheckedChange = { onEvent(PortugalSettingsUiEvent.ResetHashChanged(it)) }
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("Reset hash")
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        PortugalSettingsButtons(
+            state = buttonsState,
+            onAccept = { onEvent(PortugalSettingsUiEvent.ClickAccept) },
+            onCancel = { onEvent(PortugalSettingsUiEvent.ClickCancel) },
+            onChangePin = { onEvent(PortugalSettingsUiEvent.ClickChangePin) }
+        )
+    }
+}
+```
+
+---
+
+## 4) Full `PortugalSettingsButtonsState` with styling helpers
+
+This is the Compose replacement for the XML/button behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+@Immutable
+data class PortugalSettingsButtonsState(
+    val acceptEnabled: Boolean,
+    val acceptVisible: Boolean = true,
+    val cancelVisible: Boolean = true,
+    val changePinVisible: Boolean = true,
+    val acceptContainerColor: Color,
+    val acceptContentColor: Color,
+    val cancelContainerColor: Color,
+    val cancelContentColor: Color,
+    val changePinContainerColor: Color,
+    val changePinContentColor: Color,
+) {
+    companion object {
+        fun fromUiState(state: PortugalSettingsUiState): PortugalSettingsButtonsState {
+            // This mirrors typical XML behavior:
+            // - Accept always visible
+            // - Cancel always visible
+            // - Change PIN visible
+            // - When reset hash is active, Accept remains enabled but may be blocked by validation
+            return PortugalSettingsButtonsState(
+                acceptEnabled = true,
+                acceptVisible = true,
+                cancelVisible = true,
+                changePinVisible = true,
+                acceptContainerColor = PortugalButtonColors.AcceptContainer,
+                acceptContentColor = PortugalButtonColors.AcceptContent,
+                cancelContainerColor = PortugalButtonColors.CancelContainer,
+                cancelContentColor = PortugalButtonColors.CancelContent,
+                changePinContainerColor = PortugalButtonColors.ChangePinContainer,
+                changePinContentColor = PortugalButtonColors.ChangePinContent,
+            )
+        }
+    }
+}
+
+object PortugalButtonColors {
+    val AcceptContainer = Color(0xFF2E7D32)
+    val AcceptContent = Color.White
+
+    val CancelContainer = Color(0xFF757575)
+    val CancelContent = Color.White
+
+    val ChangePinContainer = Color(0xFF1565C0)
+    val ChangePinContent = Color.White
+}
+```
+
+If your XML uses specific colors, replace these constants with those exact hex values.
+
+---
+
+## 5) Compose buttons matching the custom button component more closely
+
+This gives you a reusable styled button set.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun PortugalSettingsButtons(
+    state: PortugalSettingsButtonsState,
+    onAccept: () -> Unit,
+    onCancel: () -> Unit,
+    onChangePin: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+
+        if (state.acceptVisible) {
+            Button(
+                onClick = onAccept,
+                enabled = state.acceptEnabled,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = state.acceptContainerColor,
+                    contentColor = state.acceptContentColor
+                )
+            ) {
+                Text("ACEPTAR")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        if (state.cancelVisible) {
+            Button(
+                onClick = onCancel,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = state.cancelContainerColor,
+                    contentColor = state.cancelContentColor
+                )
+            ) {
+                Text("CANCELAR")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        if (state.changePinVisible) {
+            Button(
+                onClick = onChangePin,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = state.changePinContainerColor,
+                    contentColor = state.changePinContentColor
+                )
+            ) {
+                Text("CAMBIAR PIN")
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) Compose CustomDialog implementation based on your XML/custom dialog behavior
+
+This is a Compose analog to your `CustomDialog` and `custom_dialog.xml`, including:
+- title
+- description
+- PIN mode
+- max length
+- cancel / accept buttons
+- callback on accept
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun CustomDialog(
+    title: String,
+    description: String,
+    editTextTypePin: Boolean,
+    editTextMaxLength: Int = 4,
+    onCancel: () -> Unit,
+    onAccept: (String) -> Unit
+) {
+    var text by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(description)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { newValue ->
+                        text = if (newValue.length <= editTextMaxLength) newValue else newValue.take(editTextMaxLength)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = if (editTextTypePin) {
+                        KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                    } else {
+                        KeyboardOptions.Default
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onAccept(text) }) {
+                Text("ACEPTAR")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text("CANCELAR")
+            }
+        }
+    )
+}
+```
+
+---
+
+## 7) Lifecycle-safe collection of state/effects in Compose
+
+The `PortugalSettingsRoute` above already does this by using:
+
+- `collectAsStateWithLifecycle()` for state
+- `LaunchedEffect` for effects
+
+That is the Compose equivalent of your `repeatOnLifecycle(STARTED)` collectors.
+
+---
+
+## 8) Important notes about matching the original fragment behavior
+
+### Preserved behavior
+- Loads Portugal data on screen show
+- Accept saves data and navigates back
+- Cancel navigates back
+- Change PIN opens current PIN dialog
+- Current PIN validation opens new PIN dialog or shows toast
+- New PIN dialog saves encrypted PIN
+
+### One thing you may want to adjust
+In your original fragment, `checkResetHashData()` shows a toast if `numTicket > 1`. In the sample view model above I left a placeholder effect comment because the effect should ideally be:
+
+```kotlin
+data class ShowToast(val messageRes: Int) : PortugalSettingsUiEffect
+```
+
+That is the cleanest Compose approach.
+
+---
+
+## 9) Recommended better `UiEffect` definition
+
+If you want the toast to be fully generic and closer to the Fragment behavior, use this instead:
+
+```kotlin
+sealed interface PortugalSettingsUiEffect {
+    data object NavigateBack : PortugalSettingsUiEffect
+    data class ShowToast(val messageRes: Int) : PortugalSettingsUiEffect
+    data object OpenCurrentPinDialog : PortugalSettingsUiEffect
+    data object OpenNewPinDialog : PortugalSettingsUiEffect
+}
+```
+
+Then in your Composable route:
+
+```kotlin
+when (effect) {
+    PortugalSettingsUiEffect.NavigateBack -> onNavigateBack()
+    is PortugalSettingsUiEffect.ShowToast -> onShowToast(effect.messageRes)
+    PortugalSettingsUiEffect.OpenCurrentPinDialog -> dialogState = PortugalDialogState.CurrentPin
+    PortugalSettingsUiEffect.OpenNewPinDialog -> dialogState = PortugalDialogState.NewPin
+}
+```
+
+---
+
+## 10) How to plug it in from your Activity/Nav host
+
+Example usage:
+
+```kotlin
+@Composable
+fun PortugalSettingsHost(
+    viewModel: PortugalSettingsComposeViewModel,
+    navigateBack: () -> Unit,
+    showToast: (Int) -> Unit
+) {
+    PortugalSettingsRoute(
+        viewModel = viewModel,
+        onNavigateBack = navigateBack,
+        onShowToast = showToast
+    )
+}
+```
+
+---
+
+If you want, I can also provide:
+1. a version using **Material2** instead of Material3,
+2. an implementation that matches your **exact XML colors/paddings/corner radii** if you share the XML files,
+3. a **fully hoisted dialog state** version with no `remember` inside the route,
+4. a **Koin Compose** injection example for this ViewModel.

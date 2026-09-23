@@ -1,0 +1,605 @@
+1. A **Compose `ZoningServicesScreen` composable**
+2. A **Compose-friendly `ZoningServicesViewModel`** using `UiState + UiEvent + UiEffect`
+3. A full **`ZoningServicesButtonsState`** with button styling/visibility logic
+4. A **Compose `ZoningServicesCustomDialog`** based on the classic XML dialog pattern
+5. Lifecycle-aware event/state collection and navigation effect handling
+6. Notes on how it maps to the existing Fragment behavior
+---
+# 1) Compose Screen
+## `ZoningServicesScreen.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 11-1: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.flowWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.navigation.NavController
+import ifac.td.taxi.HomeDirections
+import ifac.td.taxi.ui.model.ZoneTripModel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun ZoningServicesScreen(
+    navController: NavController,
+    viewModel: ZoningServicesComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateToHome: () -> Unit,
+    onNavigateToOnTrip: () -> Unit,
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // Collect one-shot effects lifecycle-aware
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        viewModel.effects
+            .flowWithLifecycle(lifecycleOwner.lifecycle, Lifecycle.State.STARTED)
+            .collectLatest { effect ->
+                when (effect) {
+                    ZoningServicesUiEffect.NavigateBack -> onNavigateBack()
+                    ZoningServicesUiEffect.NavigateToHome -> onNavigateToHome()
+                    ZoningServicesUiEffect.NavigateToOnTrip -> onNavigateToOnTrip()
+                    ZoningServicesUiEffect.ShowCloseDialog -> {
+                        viewModel.onEvent(ZoningServicesUiEvent.ShowCloseDialog)
+                    }
+                    ZoningServicesUiEffect.HideCloseDialog -> {
+                        viewModel.onEvent(ZoningServicesUiEvent.HideCloseDialog)
+                    }
+                }
+            }
+    }
+    val buttonsState = uiState.buttonsState
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+                text = uiState.zoneName,
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                textAlign = TextAlign.Center
+            )
+            ZoningServicesButtonsRow(
+                state = buttonsState,
+                onShowAllClick = { viewModel.onEvent(ZoningServicesUiEvent.ShowAllClicked) },
+                onShowRecentClick = { viewModel.onEvent(ZoningServicesUiEvent.ShowRecentClicked) },
+                onCancelClick = { viewModel.onEvent(ZoningServicesUiEvent.CancelClicked) },
+                onCloseClick = { viewModel.onEvent(ZoningServicesUiEvent.CloseClicked) },
+            )
+            LinearProgressIndicator(
+                progress = { uiState.refreshProgress / 1000f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .height(6.dp)
+            )
+            if (uiState.showLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+            if (uiState.zoneTrips.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text = "No cars available")
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(uiState.zoneTrips, key = { it.id ?: it.hashCode() }) { trip ->
+                        ZoneTripRow(trip)
+                    }
+                }
+            }
+        }
+        if (uiState.dialogState.visible) {
+            ZoningServicesCustomDialog(
+                state = uiState.dialogState,
+                onConfirm = { viewModel.onEvent(ZoningServicesUiEvent.ConfirmDialog) },
+                onDismiss = { viewModel.onEvent(ZoningServicesUiEvent.DismissDialog) }
+            )
+        }
+    }
+}
+@Composable
+fun ZoneTripRow(trip: ZoneTripModel) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "Trip ID: ${trip.id ?: "-"}")
+            Text(text = "Pickup: ${trip.pickupTime ?: "-"}")
+            Text(text = "Company: ${trip.company ?: "-"}")
+        }
+    }
+}
+```
+---
+# 2) ViewModel with UiState + UiEvent + UiEffect
+## `ZoningServicesComposeViewModel.kt`
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 140-2: import android.app.Application
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.rest.zone_trips.response.ZoneTrip
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.repository.room.dao.BravoConfigurationVariableDao
+import ifac.td.taxi.ui.model.ZoneTripModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class ZoningServicesComposeViewModel(
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val bravoConfigurationVariableDao: BravoConfigurationVariableDao,
+    application: Application,
+) : AndroidViewModel(application) {
+    private val handler = Handler(Looper.getMainLooper())
+    private var zonesCarsRunnable: Runnable? = null
+    private var refreshJob: Job? = null
+    private var idMacroZone: Int = 0
+    private var idZone: Int = 0
+    private var showAllTrips: Boolean = false
+    private var companyNumber: String? = null
+    private val _uiState = MutableStateFlow(ZoningServicesUiState())
+    val uiState: StateFlow<ZoningServicesUiState> = _uiState.asStateFlow()
+    private val _effects = MutableSharedFlow<ZoningServicesUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<ZoningServicesUiEffect> = _effects.asSharedFlow()
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            companyNumber = bravoConfigurationVariableDao.getBravoConfigurationVariable()?.companyNumber
+            val requestAll = bravoConfigurationVariableDao.getBravoConfigurationVariable()?.requestAllServices ?: false
+            _uiState.update { it.copy(buttonsState = it.buttonsState.copy(showAllVisible = requestAll)) }
+        }
+    }
+    fun onEvent(event: ZoningServicesUiEvent) {
+        when (event) {
+            is ZoningServicesUiEvent.Init -> initViewModelData(event.idMacroZone, event.idZone)
+            ZoningServicesUiEvent.ShowAllClicked -> {
+                showAllTrips = true
+                loadTrips()
+                _uiState.update { it.copy(buttonsState = it.buttonsState.withShowAllHidden()) }
+            }
+            ZoningServicesUiEvent.ShowRecentClicked -> {
+                showAllTrips = false
+                loadTrips()
+                _uiState.update { it.copy(buttonsState = it.buttonsState.withShowRecentHidden()) }
+            }
+            ZoningServicesUiEvent.CancelClicked -> {
+                viewModelScope.launch {
+                    _effects.emit(ZoningServicesUiEffect.NavigateBack)
+                }
+            }
+            ZoningServicesUiEvent.CloseClicked -> {
+                val currentStatus = _uiState.value.currentShiftStatus
+                val shouldGoToOnTrip = isHiredState(currentStatus)
+                viewModelScope.launch {
+                    if (shouldGoToOnTrip && _uiState.value.tripId != null) {
+                        _effects.emit(ZoningServicesUiEffect.NavigateToHome)
+                        _effects.emit(ZoningServicesUiEffect.NavigateToOnTrip)
+                    } else {
+                        _effects.emit(ZoningServicesUiEffect.NavigateToHome)
+                    }
+                }
+            }
+            ZoningServicesUiEvent.ShowCloseDialog -> {
+                _uiState.update { it.copy(dialogState = it.dialogState.copy(visible = true)) }
+            }
+            ZoningServicesUiEvent.HideCloseDialog,
+            ZoningServicesUiEvent.DismissDialog -> {
+                _uiState.update { it.copy(dialogState = it.dialogState.copy(visible = false)) }
+            }
+            ZoningServicesUiEvent.ConfirmDialog -> {
+                _uiState.update { it.copy(dialogState = it.dialogState.copy(visible = false)) }
+                viewModelScope.launch { _effects.emit(ZoningServicesUiEffect.NavigateToHome) }
+            }
+        }
+    }
+    fun initViewModelData(idMacroZone: Int, idZone: Int) {
+        this.idMacroZone = idMacroZone
+        this.idZone = idZone
+        removeHandlerCallbacks()
+        viewModelScope.launch {
+            val refreshRate = licensingUseCase.getLicensingParameters()?.segRefrescoConsUbicacion ?: return@launch
+            _uiState.update { it.copy(zoneLoading = true) }
+            zoningUseCase.getServicesInformation(
+                idMacroZone,
+                idZone,
+                showAllTrips,
+                bravoConfigurationVariableDao.getBravoConfigurationVariable()?.showCarsInTripRange,
+                callback = ::onTripsReceived
+            )
+            _uiState.update { it.copy(refreshProgress = 1000, showLoading = false) }
+            var lastUpdate = System.currentTimeMillis()
+            val millis = refreshRate * 1000L
+            zonesCarsRunnable = object : Runnable {
+                override fun run() {
+                    viewModelScope.launch {
+                        val elapsed = System.currentTimeMillis() - lastUpdate
+                        val progress = 1000 - ((elapsed.toFloat() / millis) * 1000).toInt().coerceIn(0, 1000)
+                        _uiState.update { it.copy(refreshProgress = progress) }
+                        if (elapsed >= millis) {
+                            zoningUseCase.getServicesInformation(
+                                idMacroZone,
+                                idZone,
+                                showAllTrips,
+                                bravoConfigurationVariableDao.getBravoConfigurationVariable()?.showCarsInTripRange,
+                                callback = ::onTripsReceived
+                            )
+                            lastUpdate = System.currentTimeMillis()
+                            _uiState.update { it.copy(refreshProgress = 1000) }
+                        }
+                    }
+                    handler.postDelayed(this, 1000)
+                }
+            }
+            handler.post(zonesCarsRunnable!!)
+        }
+    }
+    fun loadTrips() {
+        viewModelScope.launch {
+            zoningUseCase.getServicesInformation(
+                idMacroZone,
+                idZone,
+                showAllTrips,
+                bravoConfigurationVariableDao.getBravoConfigurationVariable()?.showCarsInTripRange,
+                callback = ::onTripsReceived
+            )
+        }
+    }
+    fun onTripsReceived(trips: List<ZoneTrip>?) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    zoneTrips = trips?.map { trip ->
+                        ZoneTripModel(
+                            id = trip.tripID,
+                            pickupTime = trip.pickupTime,
+                            company = trip.company,
+                            passengerNumber = trip.passengerNumber,
+                            baggageNumber = trip.baggageNumber,
+                            vehicleRequirements = trip.vehicleRequirements,
+                            driverRequirements = trip.driverRequirements,
+                            maxDistanceZoneService = trip.maxDistanceZoneService,
+                            ownNearbyVehicles = trip.ownNearbyVehicles,
+                            totalNearbyVehicles = trip.totalNearbyVehicles,
+                            myOrder = trip.myOrder
+                        )
+                    } ?: emptyList(),
+                    zoneLoading = false
+                )
+            }
+        }
+    }
+    fun removeHandlerCallbacks() {
+        zonesCarsRunnable?.let { handler.removeCallbacks(it) }
+    }
+    fun isHiredState(state: Int?): Boolean {
+        return when (state) {
+            null -> false
+            else -> shiftStatusUseCase.isHired(state)
+        }
+    }
+    override fun onCleared() {
+        removeHandlerCallbacks()
+        super.onCleared()
+    }
+}
+```
+---
+# 3) UiState, UiEvent, UiEffect, ButtonState
+## `ZoningServicesUiModels.kt`
+```kotlin
+package ifac.td.taxi.viewmodel.compose
+// # Block 320-3: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.ui.model.ZoneTripModel
+@Immutable
+data class ZoningServicesUiState(
+    val zoneName: String = "",
+    val zoneTrips: List<ZoneTripModel> = emptyList(),
+    val refreshProgress: Int = 0,
+    val showLoading: Boolean = true,
+    val currentShiftStatus: Int? = null,
+    val tripId: Long? = null,
+    val dialogState: ZoningServicesCustomDialogState = ZoningServicesCustomDialogState(),
+    val buttonsState: ZoningServicesButtonsState = ZoningServicesButtonsState(),
+    val zoneLoading: Boolean = false,
+)
+sealed interface ZoningServicesUiEvent {
+    data class Init(val idMacroZone: Int, val idZone: Int) : ZoningServicesUiEvent
+    data object ShowAllClicked : ZoningServicesUiEvent
+    data object ShowRecentClicked : ZoningServicesUiEvent
+    data object CancelClicked : ZoningServicesUiEvent
+    data object CloseClicked : ZoningServicesUiEvent
+    data object ShowCloseDialog : ZoningServicesUiEvent
+    data object HideCloseDialog : ZoningServicesUiEvent
+    data object DismissDialog : ZoningServicesUiEvent
+    data object ConfirmDialog : ZoningServicesUiEvent
+}
+sealed interface ZoningServicesUiEffect {
+    data object NavigateBack : ZoningServicesUiEffect
+    data object NavigateToHome : ZoningServicesUiEffect
+    data object NavigateToOnTrip : ZoningServicesUiEffect
+}
+@Immutable
+data class ZoningServicesCustomDialogState(
+    val visible: Boolean = false,
+    val title: String = "Confirm",
+    val message: String = "Do you want to continue?",
+    val confirmText: String = "OK",
+    val dismissText: String = "Cancel",
+)
+@Immutable
+data class ZoningServicesButtonsState(
+    val showAllVisible: Boolean = false,
+    val showRecentVisible: Boolean = true,
+    val showAllEnabled: Boolean = true,
+    val showRecentEnabled: Boolean = true,
+    val cancelVisible: Boolean = true,
+    val closeVisible: Boolean = true,
+    val showAllSelected: Boolean = false,
+    val showRecentSelected: Boolean = false,
+) {
+    fun withShowAllHidden() = copy(
+        showAllVisible = false,
+        showRecentVisible = true,
+        showAllSelected = true,
+        showRecentSelected = false
+    )
+    fun withShowRecentHidden() = copy(
+        showAllVisible = true,
+        showRecentVisible = false,
+        showAllSelected = false,
+        showRecentSelected = true
+    )
+}
+```
+---
+# 4) Compose button styling helpers matching CustomButton more closely
+## `ZoningServicesButtonStyle.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 389-4: import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.state.ZoningServicesButtonsState
+private val EnabledBg = Color(0xFF1E88E5)
+private val DisabledBg = Color(0xFFE0E0E0)
+private val EnabledText = Color.White
+private val DisabledText = Color(0xFF9E9E9E)
+private val Stroke = Color(0xFFBDBDBD)
+@Composable
+fun zoningServicesButtonColors(enabled: Boolean): ButtonColors {
+    return ButtonDefaults.buttonColors(
+        containerColor = if (enabled) EnabledBg else DisabledBg,
+        contentColor = if (enabled) EnabledText else DisabledText,
+        disabledContainerColor = DisabledBg,
+        disabledContentColor = DisabledText
+    )
+}
+@Composable
+fun zoningServicesOutlinedColors(enabled: Boolean): ButtonColors {
+    return ButtonDefaults.outlinedButtonColors(
+        contentColor = if (enabled) EnabledBg else DisabledText,
+        disabledContentColor = DisabledText
+    )
+}
+fun zoningServicesBorder(enabled: Boolean): BorderStroke {
+    return BorderStroke(1.dp, if (enabled) Stroke else DisabledBg)
+}
+fun zoningServicesShape() = RoundedCornerShape(8.dp)
+fun zoningServicesPadding() = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+```
+---
+# 5) Buttons row composable
+## `ZoningServicesButtonsRow.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 432-5: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.state.ZoningServicesButtonsState
+@Composable
+fun ZoningServicesButtonsRow(
+    state: ZoningServicesButtonsState,
+    onShowAllClick: () -> Unit,
+    onShowRecentClick: () -> Unit,
+    onCancelClick: () -> Unit,
+    onCloseClick: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+        if (state.showAllVisible) {
+            Button(
+                onClick = onShowAllClick,
+                enabled = state.showAllEnabled,
+                colors = zoningServicesButtonColors(state.showAllEnabled),
+                shape = zoningServicesShape(),
+                contentPadding = zoningServicesPadding(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Show all")
+            }
+        }
+        if (state.showRecentVisible) {
+            Button(
+                onClick = onShowRecentClick,
+                enabled = state.showRecentEnabled,
+                colors = zoningServicesButtonColors(state.showRecentEnabled),
+                shape = zoningServicesShape(),
+                contentPadding = zoningServicesPadding(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Show recent")
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.cancelVisible) {
+                OutlinedButton(
+                    onClick = onCancelClick,
+                    colors = zoningServicesOutlinedColors(true),
+                    border = zoningServicesBorder(true),
+                    shape = zoningServicesShape(),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Cancel")
+                }
+            }
+            if (state.closeVisible) {
+                Button(
+                    onClick = onCloseClick,
+                    colors = zoningServicesButtonColors(true),
+                    shape = zoningServicesShape(),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Close")
+                }
+            }
+        }
+    }
+}
+```
+---
+## `ZoningServicesCustomDialog.kt`
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+// # Block 504-6: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.state.ZoningServicesCustomDialogState
+@Composable
+fun ZoningServicesCustomDialog(
+    state: ZoningServicesCustomDialogState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = state.title)
+        },
+        text = {
+            Text(text = state.message)
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(text = state.confirmText)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text(text = state.dismissText)
+            }
+        }
+    )
+}
+```
+---
+# 7) How navigation is preserved
+Example Fragment host:
+```kotlin
+class ZoningServicesComposeFragment : Fragment() {
+    private val viewModel: ZoningServicesComposeViewModel by viewModel()
+    private val args: ZoningServicesFragmentArgs by navArgs()
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        // If using ComposeView
+    }
+}
+```
+But in Compose you can keep your existing nav actions via the lambdas:
+```kotlin
+ZoningServicesScreen(
+    navController = navController,
+    viewModel = viewModel,
+    onNavigateBack = { navController.popBackStack() },
+    onNavigateToHome = {
+        navController.navigate(ZoningServicesFragmentDirections.actionZoningServicesFragmentToHomeFragment())
+    },
+    onNavigateToOnTrip = {
+        navController.navigate(HomeDirections.goToOnTripFragment())
+    }
+)
+```
+---
+# 8) Important mapping notes
+## Fragment logic replaced by state
+Your old fragment had:
+That is now represented in `ZoningServicesButtonsState`.
+## Flow collection replaced by StateFlow
+The old:
+is now consolidated into `ZoningServicesUiState`.
+## Dialog handling
+---
+# 9) Minimal usage example
+```kotlin
+@Composable
+fun ZoningServicesRoute(
+    navController: NavController,
+    viewModel: ZoningServicesComposeViewModel,
+    idMacroZone: Int,
+    idZone: Int,
+) {
+    LaunchedEffect(idMacroZone, idZone) {
+        viewModel.onEvent(ZoningServicesUiEvent.Init(idMacroZone, idZone))
+    }
+    ZoningServicesScreen(
+        navController = navController,
+        viewModel = viewModel,
+        onNavigateBack = { navController.popBackStack() },
+        onNavigateToHome = {
+            navController.navigate(
+                ifac.td.taxi.ui.screen.ZoningServicesFragmentDirections
+                    .actionZoningServicesFragmentToHomeFragment()
+            )
+        },
+        onNavigateToOnTrip = {
+            navController.navigate(ifac.td.taxi.HomeDirections.goToOnTripFragment())
+        }
+    )
+}
+```
+---
+# 10) What you may want to refine next
+To match your XML even more precisely, the next step would be:
+---

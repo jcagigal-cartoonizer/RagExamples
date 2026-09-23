@@ -1,16 +1,15 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.MessageDetailUiState
+import ifac.td.taxi.ui.screen.components.MessageDetailScreen
+import ifac.td.taxi.ui.screen.components.MessageDetailButtonsState
+import ifac.td.taxi.ui.screen.components.MessageDetailButtons
+import ifac.td.taxi.ui.screen.components.MessageDetailButtonStyle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 365-4: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 @Composable
 fun MessageDetailScreen(
     uiState: MessageDetailUiState,

@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.HomeUiEffect
+import ifac.td.taxi.ui.screen.components.HomeUiState
+import ifac.td.taxi.ui.screen.components.HomeUiEvent
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,13 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 273-4: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-import ifac.td.taxi.ui.screen.compose.*
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class HomeComposeViewModel(
     application: Application,
 ) : AndroidViewModel(application) {

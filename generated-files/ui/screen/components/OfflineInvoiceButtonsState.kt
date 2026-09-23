@@ -1,13 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OfflineInvoiceButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 214-2: import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Stable
-import androidx.compose.ui.graphics.Color
 @Stable
 data class OfflineInvoiceButtonsState(
     val acceptEnabled: Boolean,

@@ -1,13 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DashboardButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 311-3: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
-import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
 @Immutable
 data class DashboardButtonsState(
     val onStop: HeaderButtonState = HeaderButtonState(),

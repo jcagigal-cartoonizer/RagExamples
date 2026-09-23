@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.OnTripButtonsState
+import ifac.td.taxi.ui.screen.components.OnTripUiEffect
+import ifac.td.taxi.ui.screen.components.OnTripUiState
+import ifac.td.taxi.ui.screen.components.OnTripButtonState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,32 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 121-3: import android.app.Application
-import android.content.Intent
-import androidx.core.net.toUri
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import androidx.navigation.NavDeepLinkRequest
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import com.interfacom.sdk.taximeter.bravocomm.ifConstants
-import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
-import ifac.td.taxi.domain.usecase.DispatchNotificationUseCase
-import ifac.td.taxi.domain.usecase.LocationUseCase
-import ifac.td.taxi.domain.usecase.MessageUseCase
-import ifac.td.taxi.domain.usecase.RoofLightUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralConfigurationUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
-import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.viewmodel.model.FilterOptions
-import ifac.td.taxi.viewmodel.model.InfoDispatchModel
-import ifac.td.taxi.viewmodel.model.LocationInHiredEnum
-import ifac.td.taxi.viewmodel.model.MessageUIEnum
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class OnTripComposeViewModel(
     private val messageUseCase: MessageUseCase,
     private val shiftStatusUseCase: ShiftStatusUseCase,

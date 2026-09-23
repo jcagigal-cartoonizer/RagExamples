@@ -1,20 +1,16 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DispatchReceivedUiEffect
+import ifac.td.taxi.ui.screen.components.DispatchReceivedButtonsState
+import ifac.td.taxi.ui.screen.components.DispatchReceivedDialogModel
+import ifac.td.taxi.compose.viewmodel.DispatchReceivedComposeViewModel
+import ifac.td.taxi.ui.screen.components.DispatchReceivedUiState
+import ifac.td.taxi.ui.screen.components.DispatchReceivedUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 114-2: import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.DispatchUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.repository.room.dao.BravoConfigurationVariableDao
-import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toDispatchReceivedModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class DispatchReceivedComposeViewModel(
     private val dispatchUseCase: DispatchUseCase,
     private val userPreferencesUseCase: UserPreferencesUseCase,

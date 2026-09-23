@@ -1,32 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.FixedPriceUiEvent
+import ifac.td.taxi.compose.viewmodel.FixedPriceComposeViewModel
+import ifac.td.taxi.ui.screen.components.FixedPriceUiState
+import ifac.td.taxi.ui.screen.components.FixedPriceUiEffect
+import ifac.td.taxi.ui.screen.components.FixedPriceDialogState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 10-1: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.rest.poi.response.Poi
-import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.FixedPriceCallback
-import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.fixed_price.PriceEstimationDTO
-import com.interfacom.sdk.taximeter.licensing.rest.pois.POISDataModule
-import com.interfacom.sdk.taximeter.licensing.rest.pois.POISListener
-import com.nexusgeographics.cercalia.maps.features.Marker
-import com.nexusgeographics.cercalia.maps.model.LatLng
-import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.domain.usecase.BravoRestApiUseCase
-import ifac.td.taxi.domain.usecase.DispatchUseCase
-import ifac.td.taxi.domain.usecase.FixedPriceUseCase
-import ifac.td.taxi.domain.usecase.LocationUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.repository.connections.rest.bravoRest.SuggestModel
-import ifac.td.taxi.ui.util.CoordenatesUtil
-import ifac.td.taxi.viewmodel.model.InfoDispatchModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 data class FixedPriceUiState(
     val query: String = "",
     val isPoiSearch: Boolean = false,

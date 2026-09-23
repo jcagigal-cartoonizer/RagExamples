@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.ChangeUserPasswordUiState
+import ifac.td.taxi.ui.screen.components.ChangeUserPasswordUiEffect
+import ifac.td.taxi.ui.screen.components.ChangeUserPasswordButtonsState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,20 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 94-4: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView
-import com.interfacom.sdk.taximeter.licensing.rest.user.UserModule
-import com.interfacom.sdk.taximeter.licensing.rest.user.UserPresenter
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.ui.screen.*
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class ChangeUserPasswordComposeViewModel(
     application: Application,
     private val sessionUseCase: SessionUseCase

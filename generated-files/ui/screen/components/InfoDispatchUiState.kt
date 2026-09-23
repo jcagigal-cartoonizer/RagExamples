@@ -1,12 +1,16 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.InfoDispatchButtonsState = InfoDispatchButtonsState
+import ifac.td.taxi.ui.screen.components.InfoDispatchDialogState
+import ifac.td.taxi.ui.screen.components.InfoDispatchDialogButtonType
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiState
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiModel = emptyList
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 4-1: import androidx.annotation.StringRes
-import androidx.annotation.StringRes
-import androidx.compose.runtime.Immutable
 @Immutable
 data class InfoDispatchUiState(
     val isHeaderVisible: Boolean = true,

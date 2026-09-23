@@ -1,15 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ClosedPartialButtonsRow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 286-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 @Composable
 fun ClosedPartialButtonsRow(
     buttonsState: ClosedPartialButtonsState,
@@ -79,7 +75,6 @@ fun closedPartialButtonColors(disabled: Boolean): ButtonColors {
         )
     }
 }
-import androidx.compose.foundation.border
 @Composable
 fun TicketViewerReceipts(
     ticketContent: String

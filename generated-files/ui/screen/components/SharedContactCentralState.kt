@@ -5,7 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 421-4: import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
 data class SharedContactCentralState(
     val shortBreakStatus: ShortBreakStatus? = null,
     val voiceValue: Boolean = false,

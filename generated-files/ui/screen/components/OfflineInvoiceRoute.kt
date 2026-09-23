@@ -1,23 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OfflineInvoiceCustomDialog
+import ifac.td.taxi.compose.viewmodel.OfflineInvoiceComposeViewModel
+import ifac.td.taxi.ui.screen.components.OfflineInvoiceUiEvent
+import ifac.td.taxi.ui.screen.components.OfflineInvoiceUiEffect
+import ifac.td.taxi.ui.screen.components.OfflineInvoiceCustomDialogModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 370-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.compose.viewmodel.OfflineInvoiceComposeViewModel
-import ifac.td.taxi.ui.screen.state.OfflineInvoiceUiEffect
-import ifac.td.taxi.ui.screen.state.OfflineInvoiceUiEvent
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun OfflineInvoiceRoute(
     navController: NavController,
@@ -66,7 +58,7 @@ fun OfflineInvoiceRoute(
         )
         if (uiState.isCopyDialogVisible) {
             ComposeOfflineInvoiceCustomDialog(
-                model = ComposeCustomDialogModel(
+                model = ComposeOfflineInvoiceCustomDialogModel(
                     title = stringResource(R.string.btn_invoice),
                     description = stringResource(R.string.ask_invoice_copy),
                     isCancellable = false

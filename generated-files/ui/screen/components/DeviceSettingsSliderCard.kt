@@ -1,14 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DeviceSettingsCustomDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 479-5: import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Column
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 @Composable
 fun DeviceSettingsSliderCard(
     title: String,
@@ -30,15 +27,6 @@ fun DeviceSettingsSliderCard(
         )
     }
 }
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.ui.screen.state.DeviceSettingsDialogState
 @Composable
 fun DeviceSettingsCustomDialog(
     state: DeviceSettingsDialogState,

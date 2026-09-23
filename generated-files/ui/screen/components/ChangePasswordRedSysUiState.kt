@@ -1,25 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysUiState
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysUiEffect
+import ifac.td.taxi.compose.viewmodel.ChangePasswordRedSysComposeViewModel
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 4-1: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import es.redsys.paysys.Operative.DTO.RedCLSChangePassData
-import es.redsys.paysys.Utils.RedCLSErrorCodes
-import ifac.td.taxi.domain.usecase.RedSysUseCase
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 data class ChangePasswordRedSysUiState(
     val user: String = "",
     val password: String = "",

@@ -1,23 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.GPSTestButtonsState
+import ifac.td.taxi.ui.screen.components.GPSTestUiEffect
+import ifac.td.taxi.compose.viewmodel.GPSTestComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 272-5: import android.app.Activity
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
-import android.content.Intent
-import androidx.compose.runtime.*
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.viewmodel.GPSTestViewModel
-import kotlinx.coroutines.launch
 @Composable
 fun GPSTestRoute(
     viewModel: GPSTestComposeViewModel,

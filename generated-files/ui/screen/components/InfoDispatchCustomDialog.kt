@@ -1,4 +1,5 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.InfoDispatchCustomDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,14 +7,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 550-9: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
 @Composable
 fun InfoDispatchCustomDialog(
     state: InfoDispatchDialogState,

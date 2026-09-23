@@ -1,29 +1,13 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.HomeUiEffect
+import ifac.td.taxi.ui.screen.components.HomeScreen
+import ifac.td.taxi.ui.screen.components.HomeUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 11-1: import android.media.ToneGenerator
-import android.media.ToneGenerator
-import androidx.compose.foundation.layout.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.compose.material3.*
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.navigation.NavController
-import androidx.navigation.NavDeepLinkRequest
-import androidx.navigation.compose.rememberNavController
-import androidx.core.net.toUri
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.collectLatest
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
 @Composable
 fun HomeScreen(
     state: HomeUiState,

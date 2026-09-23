@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.PaymentMoneiUiEffect
+import ifac.td.taxi.ui.screen.components.PaymentMoneiUiEvent
+import ifac.td.taxi.ui.screen.components.PaymentMoneiButtonsState
+import ifac.td.taxi.ui.screen.components.PaymentMoneiUiState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,33 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 259-2: import android.app.Application
-import android.graphics.Bitmap
-import android.os.Handler
-import android.os.Looper
-import androidx.annotation.StringRes
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.WriterException
-import com.journeyapps.barcodescanner.BarcodeEncoder
-import ifac.td.taxi.NavGraphDirections
-import ifac.td.taxi.domain.model.PaymentMethod
-import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.domain.model.monei.GeneratePaymentRequest
-import ifac.td.taxi.domain.model.monei.InfoPayment
-import ifac.td.taxi.domain.model.monei.MoneiPaymentInfo
-import ifac.td.taxi.domain.usecase.MoneiUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.domain.usecase.TripUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.framework.util.tickets.Tickets
-import ifac.td.taxi.repository.connections.rest.invoice.Resource
-import ifac.td.taxi.ui.model.SmartTDUIException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class PaymentMoneiComposeViewModel(
     private val moneiUseCase: MoneiUseCase,
     private val tripUseCase: TripUseCase,
@@ -257,7 +234,6 @@ class PaymentMoneiComposeViewModel(
         EXPIRED
     }
 }
-import androidx.compose.ui.graphics.ImageBitmap
 data class PaymentMoneiUiState(
     val isLoading: Boolean = false,
     val showQrLoading: Boolean = true,

@@ -1,18 +1,13 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.compose.viewmodel.ContactCentralComposeViewModel
+import ifac.td.taxi.ui.screen.components.ContactCentralUiEffect
+import ifac.td.taxi.ui.screen.components.ContactCentralScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 299-3: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun ContactCentralScreen(
     navController: NavController,

@@ -1,4 +1,9 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.MacroZoningComposeViewModel
+import ifac.td.taxi.ui.screen.components.MacroZoningCustomDialogState
+import ifac.td.taxi.ui.screen.components.MacroZoningUiEffect
+import ifac.td.taxi.ui.screen.components.MacroZoningCustomDialogComposable
+import ifac.td.taxi.ui.screen.components.MacroZoningScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,16 +11,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 526-5: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 data class MacroZoningCustomDialogState(
     val visible: Boolean = false,
     val title: String,
@@ -28,7 +23,7 @@ sealed interface MacroZoningDialogButtonSpec {
 }
 @Composable
 fun MacroZoningCustomDialogComposable(
-    state: CustomDialogState,
+    state: MacroZoningCustomDialogState,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
@@ -69,7 +64,6 @@ fun MacroZoningCustomDialogComposable(
         }
     }
 }
-import ifac.td.taxi.ui.screen.state.MacroZoningActionButtonState
 @Composable
 fun CustomActionButton(
     text: String,

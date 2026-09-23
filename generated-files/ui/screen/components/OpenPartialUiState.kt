@@ -1,11 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OpenPartialUiState
+import ifac.td.taxi.ui.screen.components.OpenPartialButtonsState
+import ifac.td.taxi.ui.screen.components.OpenPartialButtonsState = OpenPartialButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 5-1: import androidx.annotation.StringRes
-import androidx.annotation.StringRes
 data class OpenPartialUiState(
     val isLoading: Boolean = true,
     val rawPartialContent: String? = null,

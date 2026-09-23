@@ -1,15 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.AboutButtonColors = AboutButtonColors
+import ifac.td.taxi.ui.screen.components.AboutButtonsState
+import ifac.td.taxi.ui.screen.components.AboutButtonState
+import ifac.td.taxi.ui.screen.components.AboutButtonColors
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 302-5: import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
 @Immutable
 data class AboutButtonsState(
     val accept: AboutButtonState

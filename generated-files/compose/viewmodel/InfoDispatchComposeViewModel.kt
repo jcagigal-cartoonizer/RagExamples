@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiEffect
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiState
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiEvent
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiModel
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,12 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 198-4: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.ifConstants
-import ifac.td.taxi.framework.sdk.usecase.PhoneCallUseCaseImpl
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class InfoDispatchComposeViewModel(
     application: Application,
     // inject your existing dependencies here

@@ -1,26 +1,13 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.LoginUserRedSysScreen
+import ifac.td.taxi.compose.viewmodel.LoginUserRedSysComposeViewModel
+import ifac.td.taxi.ui.screen.components.LoginUserRedSysUiEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 224-5: import android.widget.Toast
-import android.widget.Toast
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import kotlinx.coroutines.flow.Flow
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.runtime.LaunchedEffect
 @Composable
 fun LoginUserRedSysScreen(
     viewModel: ifac.td.taxi.viewmodel.LoginUserRedSysComposeViewModel,

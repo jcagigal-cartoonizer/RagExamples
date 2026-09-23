@@ -1,21 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.MeetingSignComposeViewModel
+import ifac.td.taxi.ui.screen.components.MeetingSignUiEffect
+import ifac.td.taxi.ui.screen.components.MeetingSignScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 278-5: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
 @Composable
 fun MeetingSignFabButton(
     state: MeetingSignFabButtonState,
@@ -37,16 +29,6 @@ fun MeetingSignFabButton(
         )
     }
 }
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.viewmodel.MeetingSignViewModel
-import kotlinx.coroutines.launch
 @Composable
 fun MeetingSignScreen(
     navController: NavController,
@@ -162,7 +144,7 @@ That gives you one-off effect handling without leaking collectors.
 For dialog handling:
 The original XML/fragment uses:
 In Compose, `Modifier.alpha` and `Modifier.offset` can mimic this visually, but Compose does not use `GONE` the same way. The `visible` flag in `MeetingSignFabButtonState` is the equivalent control. If you need animation parity, you can wrap buttons in `AnimatedVisibility`, `animateFloatAsState`, and `animateDpAsState`.
-I can refine the Compose `CustomDialog` into a more exact `Dialog + Surface + Column` implementation that mirrors padding, shape, and typography more closely.
+I can refine the Compose `MeetingSignCustomDialog` into a more exact `Dialog + Surface + Column` implementation that mirrors padding, shape, and typography more closely.
 1. a full `@Composable` version with `AnimatedVisibility` for the FAB menu,
 2. a `MeetingSignRoute()` example with Koin injection,
 3. a more exact Material3 dialog styled to match your XML theme.

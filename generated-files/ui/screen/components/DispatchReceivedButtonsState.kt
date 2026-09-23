@@ -1,11 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DispatchReceivedButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 273-3: import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Color
 data class DispatchReceivedButtonsState(
     val acceptVisible: Boolean = true,
     val cancelVisible: Boolean = true,

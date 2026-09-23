@@ -1,12 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.AddAmountComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 599-7: import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 @Composable
 fun stringResourceCompat(resId: Int): String {
     return LocalContext.current.getString(resId)

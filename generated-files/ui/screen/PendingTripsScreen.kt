@@ -1,23 +1,14 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.PendingTripsUiEffect
+import ifac.td.taxi.compose.viewmodel.PendingTripsComposeViewModel
+import ifac.td.taxi.ui.screen.components.PendingTripsScreen
+import ifac.td.taxi.ui.screen.components.PendingTripsScreenButtonAction
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 5-1: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.viewmodel.PendingTripsUiEffect
-import ifac.td.taxi.viewmodel.PendingTripsUiEvent
-import ifac.td.taxi.viewmodel.PendingTripsUiState
-import ifac.td.taxi.viewmodel.PendingTripsViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun PendingTripsScreen(
     viewModel: PendingTripsComposeViewModel,

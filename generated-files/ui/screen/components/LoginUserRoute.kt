@@ -1,27 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.LoginUserUiEvent
+import ifac.td.taxi.ui.screen.components.LoginUserUiEffect
+import ifac.td.taxi.compose.viewmodel.LoginUserComposeViewModel
+import ifac.td.taxi.ui.screen.components.LoginUserScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 6-1: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.ui.custom.button.ButtonType
-import ifac.td.taxi.ui.screen.state.LoginUserCustomDialog
-import ifac.td.taxi.viewmodel.LoginUserUiEffect
-import ifac.td.taxi.viewmodel.LoginUserUiEvent
-import ifac.td.taxi.viewmodel.LoginUserUiState
-import ifac.td.taxi.viewmodel.LoginUserComposeViewModel
 @Composable
 fun LoginUserRoute(
     navController: NavController,

@@ -1,4 +1,5 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DestinationMapCustomDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,16 +7,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 425-5: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
 @Composable
 fun DestinationMapCustomDialog(
     title: String,
@@ -89,7 +80,7 @@ class DestinationMapComposeFragment : Fragment() {
         }
     }
 }
-Because the actual XML files and original `CustomDialog.kt` are not included, I modeled the behavior in a Compose-equivalent way. To make it exact, you would map:
+Because the actual XML files and original `DestinationMapCustomDialog.kt` are not included, I modeled the behavior in a Compose-equivalent way. To make it exact, you would map:
 Your original `DestinationMapViewModel` only emitted navigator intents. In Compose, the more scalable pattern is:
 That is exactly what the code above does.
 1. a fully type-safe version using your actual dispatch model class,  

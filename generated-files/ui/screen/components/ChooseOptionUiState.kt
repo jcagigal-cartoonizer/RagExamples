@@ -1,29 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ChooseOptionUiState
+import ifac.td.taxi.ui.screen.components.ChooseOptionUiEffect
+import ifac.td.taxi.compose.viewmodel.ChooseOptionComposeViewModel
+import ifac.td.taxi.ui.screen.components.ChooseOptionButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 10-1: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import com.interfacom.sdk.taximeter.bravocomm.ifConstants
-import ifac.td.taxi.domain.usecase.EndShiftUseCase
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 data class ChooseOptionUiState(
     val options: List<ChooseOptionItem> = emptyList(),
     val buttonsState: ChooseOptionButtonsState = ChooseOptionButtonsState.default(),

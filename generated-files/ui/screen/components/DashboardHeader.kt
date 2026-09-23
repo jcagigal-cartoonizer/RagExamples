@@ -1,16 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DashboardUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 425-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.viewmodel.DashboardUiEvent
-import ifac.td.taxi.viewmodel.DashboardButtonsState
 @Composable
 fun DashboardHeader(
     state: DashboardButtonsState,

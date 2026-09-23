@@ -5,7 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 86-2: import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Color
 object OnTripButtonStyles {
     val red = Color(0xFFD32F2F)
     val green = Color(0xFF2E7D32)

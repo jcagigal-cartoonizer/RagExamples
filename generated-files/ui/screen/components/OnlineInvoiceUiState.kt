@@ -1,14 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceButtonUi
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceDialogState
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceUiState
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceButtonStyle
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 10-1: import androidx.annotation.StringRes
-import androidx.annotation.StringRes
-import androidx.compose.ui.graphics.Color
-import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.ui.model.FiscalData
 data class OnlineInvoiceUiState(
     val isLoading: Boolean = false,
     val trip: Trip? = null,

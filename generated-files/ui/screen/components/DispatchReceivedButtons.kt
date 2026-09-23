@@ -1,17 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DispatchReceivedButtons
+import ifac.td.taxi.compose.viewmodel.DispatchReceivedComposeViewModel
+import ifac.td.taxi.ui.screen.components.DispatchReceivedCustomDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 314-4: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.ui.screen.compose.state.DispatchReceivedButtonStyles
-import ifac.td.taxi.ui.screen.compose.state.DispatchReceivedButtonsState
 @Composable
 fun DispatchReceivedButtons(
     state: DispatchReceivedButtonsState,
@@ -54,10 +50,6 @@ fun DispatchReceivedButtons(
         }
     }
 }
-import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.graphics.Color
 data class DispatchReceivedDialogModel(
     val title: String,
     val description: String,

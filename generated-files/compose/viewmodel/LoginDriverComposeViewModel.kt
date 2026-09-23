@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.LoginDriverUiEffect
+import ifac.td.taxi.ui.screen.components.LoginDriverButtonsState
+import ifac.td.taxi.ui.screen.components.LoginDriverUiState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,30 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 87-2: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import com.interfacom.sdk.taximeter.bravocomm.ifConstants
-import ifac.td.taxi.domain.usecase.CountdownManagerUseCase
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.domain.usecase.StartShiftUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
-import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
-import ifac.td.taxi.repository.room.entities.countdown.CountdownId
-import ifac.td.taxi.repository.room.entities.countdown.CountdownIdCallback
-import ifac.td.taxi.viewmodel.model.CountdownModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 class LoginDriverComposeViewModel(
     private val loginDriverUseCase: LoginDriverUseCase,
     private val startShiftUseCase: StartShiftUseCase,

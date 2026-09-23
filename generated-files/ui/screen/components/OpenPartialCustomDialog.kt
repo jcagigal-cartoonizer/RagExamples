@@ -1,4 +1,5 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OpenPartialCustomDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,12 +7,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 421-7: import androidx.annotation.StringRes
-import androidx.annotation.StringRes
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 @Composable
 fun OpenPartialCustomDialog(
     state: OpenPartialDialogState,
@@ -87,4 +82,4 @@ val totalizersEnabled = isTaximeterConnected && hasTotalizers
 Then store it in `OpenPartialButtonsState`.
 1. a full `OpenPartialComposable` wired into `NavHost`
 2. a Koin module for the Compose `ViewModel`
-3. a more exact Material-style clone of your `CustomButton` and `CustomDialog` XML visuals
+3. a more exact Material-style clone of your `CustomButton` and `OpenPartialCustomDialog` XML visuals

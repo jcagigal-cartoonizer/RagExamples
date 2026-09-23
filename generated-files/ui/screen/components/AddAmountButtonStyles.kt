@@ -1,17 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.AddAmountButtons
+import ifac.td.taxi.ui.screen.components.AddAmountButtonStyles
+import ifac.td.taxi.ui.screen.components.AddAmountButtonsState
+import ifac.td.taxi.ui.screen.components.AddAmountCustomDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 475-5: import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.ui.screen.state.AddAmountButtonsState
 object AddAmountButtonStyles {
     @Composable
     fun acceptColors(state: AddAmountButtonsState): ButtonColors {
@@ -71,11 +68,6 @@ fun AddAmountButtons(
         }
     }
 }
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.window.Dialog
-import ifac.td.taxi.ui.screen.state.AddAmountDialogState
 @Composable
 fun AddAmountCustomDialog(
     dialog: AddAmountDialogState,

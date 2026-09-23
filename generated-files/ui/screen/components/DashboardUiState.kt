@@ -1,26 +1,18 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DashboardButtonsState
+import ifac.td.taxi.compose.viewmodel.DashboardComposeViewModel
+import ifac.td.taxi.ui.screen.components.DashboardUiEffect
+import ifac.td.taxi.ui.screen.components.DashboardUiState
+import ifac.td.taxi.ui.screen.components.DashboardButtonsState = DashboardButtonsState
+import ifac.td.taxi.ui.screen.components.DashboardUiState = DashboardUiState
+import ifac.td.taxi.ui.screen.components.DashboardUiEvent
+import ifac.td.taxi.ui.screen.components.DashboardDialogState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 132-2: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
-import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
-import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
-import ifac.td.taxi.domain.usecase.PendingTripsUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
-import ifac.td.taxi.repository.room.entities.BravoConfigurationVariableEntity
-import ifac.td.taxi.ui.model.ZoneModel
-import ifac.td.taxi.ui.util.ZoneUtils
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 data class DashboardUiState(
     val buttonsState: DashboardButtonsState = DashboardButtonsState(),
     val nearbyZones: List<ZoneModel> = emptyList(),

@@ -1,4 +1,6 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.MessageDetailCustomDialog
+import ifac.td.taxi.compose.viewmodel.MessageDetailComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,13 +8,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 487-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.unit.dp
 @Composable
 fun MessageDetailCustomDialog(
     state: MessageDetailDialogState,
@@ -77,13 +72,6 @@ sealed interface MessageDetailDialogResult {
     data class SendCustomMessage(val text: String) : MessageDetailDialogResult
     data object DeleteAccepted : MessageDetailDialogResult
 }
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
-import androidx.fragment.app.Fragment
-import androidx.navigation.fragment.findNavController
-import ifac.td.taxi.ui.screen.compose.MessageDetailRoute
-import org.koin.androidx.viewmodel.ext.android.activityViewModel
-import org.koin.androidx.viewmodel.ext.android.viewModel
 class MessageDetailComposeFragment : Fragment(R.layout.fragment_message_detail_compose) {
     private val vModel: ifac.td.taxi.viewmodel.MessageDetailComposeViewModel by viewModel()
     private val sharedViewModel: ifac.td.taxi.viewmodel.MainActivityViewModel by activityViewModel()

@@ -1,26 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.AddAmountScreen
+import ifac.td.taxi.ui.screen.components.AddAmountUiEffect
+import ifac.td.taxi.compose.viewmodel.AddAmountComposeViewModel
+import ifac.td.taxi.ui.screen.components.AddAmountUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 5-1: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.graphics.Color
-import androidx.lifecycle.Lifecycle
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun AddAmountRoute(
     viewModel: AddAmountComposeViewModel,

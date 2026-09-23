@@ -1,22 +1,12 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.compose.viewmodel.DestinationMapComposeViewModel
+import ifac.td.taxi.ui.screen.components.DestinationMapUiEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 212-3: import android.content.Intent
-import android.content.Intent
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.ui.model.RoutePointModel
-import ifac.td.taxi.viewmodel.DestinationMapViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun DestinationMapRouteScreen(
     viewModel: DestinationMapComposeViewModel,

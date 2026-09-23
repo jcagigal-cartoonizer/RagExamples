@@ -1,20 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ContactCentralButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 496-6: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 @Composable
 fun ContactCentralButton(
     style: ContactCentralButtonStyle,
@@ -66,4 +57,4 @@ The fragment logic is preserved like this:
 To preserve navigation exactly like the fragment, use the composable inside a Fragment-hosted ComposeView, or directly in a Compose NavHost route, but keep the navigation destinations the same:
 1. a **full Fragment wrapper** using `ComposeView` while preserving your existing `BaseFragment`
 2. a **version that uses your existing `MainActivityViewModel` as the shared state source**
-3. a **more exact Material/shape replica** of your `CustomButton` and `CustomDialog` XML style.
+3. a **more exact Material/shape replica** of your `CustomButton` and `ContactCentralCustomDialog` XML style.

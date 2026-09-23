@@ -315,6 +315,9 @@ public class GeneralAnswerProcessor extends ReadFile {
         if (line.contains(PREFIX + PREFIX + "CustomDialog")) {
             line = line.replaceAll(Pattern.quote(PREFIX + PREFIX), PREFIX);
         }
+        if (line.contains("CustomDialog") && !line.contains(PREFIX + "CustomDialog")) {
+            line = line.replaceAll(Pattern.quote("CustomDialog"), PREFIX + "CustomDialog");
+        }
         if (printAlways) {
             if (line.contains("ifac.td.taxi.ui.screen.compose.dialog.")) {
                 line = line.replaceAll(Pattern.quote("ifac.td.taxi.ui.screen.compose.dialog."), "ifac.td.taxi.ui.screen.state.");

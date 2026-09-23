@@ -1,19 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.PendingTripsButtonsRow
+import ifac.td.taxi.ui.screen.components.PendingTripsButton
+import ifac.td.taxi.ui.screen.components.PendingTripsScreenButtonAction
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 380-4: import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.viewmodel.PendingTripsButtonsState
-import ifac.td.taxi.viewmodel.PendingTripsDialogButtonsState
-import ifac.td.taxi.viewmodel.PendingTripsScreenButtonAction
 @Composable
 fun PendingTripsButtonsRow(
     state: PendingTripsButtonsState,

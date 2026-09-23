@@ -1,36 +1,15 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.compose.viewmodel.CropImageComposeViewModel
+import ifac.td.taxi.ui.screen.components.CropImageCustomDialogState
+import ifac.td.taxi.ui.screen.components.CropImageUiEvent
+import ifac.td.taxi.ui.screen.components.CropImageUiEffect
+import ifac.td.taxi.ui.screen.components.CropImageScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 301-6: import android.net.Uri
-import android.net.Uri
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavHostController
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.background
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.style.TextAlign
-import kotlinx.coroutines.launch
-import androidx.lifecycle.LifecycleOwner
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 @Composable
 fun CropImageScreen(
     viewModel: CropImageComposeViewModel,
@@ -56,7 +35,7 @@ fun CropImageScreen(
                         is CropImageUiEffect.RequestCropImage -> onOpenCropImage(effect.uri)
                         CropImageUiEffect.RequestImageSelect -> onOpenImageSelect()
                         CropImageUiEffect.NavigateBack -> navController.popBackStack()
-                        is CropImageUiEffect.OpenCustomDialog -> {
+                        is CropImageUiEffect.OpenCropImageCustomDialog -> {
                             // if you prefer dialogs from effects, map it here
                         }
                     }
@@ -91,8 +70,8 @@ fun CropImageScreen(
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
         }
         when (val dialog = dialogState) {
-            CustomDialogState.Hidden -> Unit
-            is CustomDialogState.Visible -> {
+            CropImageCustomDialogState.Hidden -> Unit
+            is CropImageCustomDialogState.Visible -> {
                 CropImageCustomDialog(
                     title = dialog.title,
                     description = dialog.description,

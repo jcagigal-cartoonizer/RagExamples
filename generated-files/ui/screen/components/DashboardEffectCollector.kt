@@ -1,14 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.DashboardComposeViewModel
+import ifac.td.taxi.ui.screen.components.DashboardUiEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 503-7: import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun DashboardEffectCollector(
     viewModel: DashboardComposeViewModel,

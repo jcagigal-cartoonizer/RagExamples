@@ -1,11 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.AddAmountButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 447-4: import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Color
 data class AddAmountButtonsState(
     val acceptEnabled: Boolean = true,
     val cancelEnabled: Boolean = true,

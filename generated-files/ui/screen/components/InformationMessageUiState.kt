@@ -1,24 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.InformationMessageUiEffect
+import ifac.td.taxi.compose.viewmodel.InformationMessageComposeViewModel
+import ifac.td.taxi.ui.screen.components.InformationMessageUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 127-2: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.InformationMessagesUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.AlfaMessageHandler
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 data class InformationMessageUiState(
     val informationMessages: List<String> = emptyList(),
     val selectedInformationMessage: Pair<Int, String>? = null,

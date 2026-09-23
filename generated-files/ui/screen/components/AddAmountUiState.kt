@@ -1,4 +1,7 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.AddAmountUiState
+import ifac.td.taxi.ui.screen.components.AddAmountButtonsState = AddAmountButtonsState
+import ifac.td.taxi.ui.screen.components.AddAmountDialogState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf

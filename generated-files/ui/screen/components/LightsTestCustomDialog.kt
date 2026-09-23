@@ -1,4 +1,8 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.LightsTestComposeViewModel
+import ifac.td.taxi.ui.screen.components.LightsTestUiEvent
+import ifac.td.taxi.ui.screen.components.LightsTestUiEffect
+import ifac.td.taxi.ui.screen.components.LightsTestScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,25 +10,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 234-4: import android.app.Activity
-import android.app.Activity
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.flow.collectLatest
-import androidx.compose.runtime.LaunchedEffect
-import androidx.navigation.NavController
 @Composable
 fun LightsTestScreen(
     viewModel: LightsTestComposeViewModel,

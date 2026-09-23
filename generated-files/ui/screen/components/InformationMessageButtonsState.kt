@@ -1,13 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.InformationMessageButtonsState
+import ifac.td.taxi.ui.screen.components.InformationMessageUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 221-3: import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Color
-import ifac.td.taxi.ui.screen.compose.InformationMessageUiState
-import ifac.td.taxi.ui.screen.compose.InformationMessageInformationMessageDialogButtonType
 data class InformationMessageButtonsState(
     val cancelVisible: Boolean,
     val cancelEnabled: Boolean,

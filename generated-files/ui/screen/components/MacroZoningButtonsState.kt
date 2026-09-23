@@ -1,12 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.MacroZoningButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 477-4: import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Color
-import ifac.td.taxi.viewmodel.model.OrderOptions
 data class MacroZoningButtonsState(
     val onStopVisible: Boolean = false,
     val onZoneVisible: Boolean = false,

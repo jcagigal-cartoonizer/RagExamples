@@ -1,24 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.HomeUiEffect
+import ifac.td.taxi.ui.screen.components.HomeButton
+import ifac.td.taxi.ui.screen.components.HomeCustomDialog
+import ifac.td.taxi.ui.screen.components.HomeUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 408-5: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 @Composable
 fun HomeButton(
     state: HomeButtonUiState,
@@ -46,7 +36,6 @@ fun HomeButton(
         }
     }
 }
-import androidx.compose.material3.*
 @Composable
 fun HomeCustomDialog(
     dialog: HomeDialogState,

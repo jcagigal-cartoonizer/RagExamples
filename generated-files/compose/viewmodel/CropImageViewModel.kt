@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.CropImageUiEvent
+import ifac.td.taxi.ui.screen.components.CropImageUiState
+import ifac.td.taxi.ui.screen.components.CropImageUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,34 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 115-5: import android.app.Application
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.model.PaymentMethod
-import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.domain.usecase.SendImageUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.domain.usecase.SubscriberUseCase
-import ifac.td.taxi.domain.usecase.TripUseCase
-import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.PaymentDirections
-import ifac.td.taxi.viewmodel.BaseViewModel
-import ifac.td.taxi.viewmodel.model.InfoDispatchModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 class CropImageComposeViewModel(
     context: Application,
     private val shiftStatusUseCase: ShiftStatusUseCase,
@@ -61,8 +36,8 @@ class CropImageComposeViewModel(
             CropImageUiEvent.AcceptClicked -> onAcceptClicked()
             CropImageUiEvent.CropClicked -> onCropClicked()
             CropImageUiEvent.SelectImageClicked -> emitEffect(CropImageUiEffect.RequestImageSelect)
-            CropImageUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = CustomDialogState.Hidden) }
-            CropImageUiEvent.DialogConfirmed -> _uiState.update { it.copy(dialogState = CustomDialogState.Hidden) }
+            CropImageUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = CropImageCustomDialogState.Hidden) }
+            CropImageUiEvent.DialogConfirmed -> _uiState.update { it.copy(dialogState = CropImageCustomDialogState.Hidden) }
         }
     }
     fun onAcceptClicked() {

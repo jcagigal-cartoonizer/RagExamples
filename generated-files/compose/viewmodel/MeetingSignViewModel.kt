@@ -1,4 +1,6 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.MeetingSignUiState
+import ifac.td.taxi.ui.screen.components.MeetingSignUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,17 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 90-3: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.MeetingSignUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class MeetingSignComposeViewModel(
     application: Application,
     private val meetingSignUseCase: MeetingSignUseCase,

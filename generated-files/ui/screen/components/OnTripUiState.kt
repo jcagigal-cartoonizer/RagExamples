@@ -1,14 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OnTripButtonsState
+import ifac.td.taxi.ui.screen.components.OnTripUiState
+import ifac.td.taxi.ui.screen.components.OnTripButtonState
+import ifac.td.taxi.ui.screen.components.OnTripButtonsState = OnTripButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 12-1: import androidx.annotation.DrawableRes
-import androidx.annotation.DrawableRes
-import androidx.annotation.StringRes
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
 @Immutable
 data class OnTripUiState(
     val buttons: OnTripButtonsState = OnTripButtonsState(),

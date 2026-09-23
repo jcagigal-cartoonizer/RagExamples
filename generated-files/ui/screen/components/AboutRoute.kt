@@ -1,24 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.AboutCustomDialogState
+import ifac.td.taxi.compose.viewmodel.AboutComposeViewModel
+import ifac.td.taxi.ui.screen.components.AboutUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 6-1: import androidx.compose.foundation.clickable
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.TextDecoration
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.framework.util.ApkUtils
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun AboutRoute(
     viewModel: AboutComposeViewModel,
@@ -39,7 +28,7 @@ fun AboutRoute(
     }
     if (showWarningDialog) {
         AboutCustomDialog(
-            dialogState = CustomDialogState(
+            dialogState = AboutCustomDialogState(
                 title = "Warning",
                 message = "No browser available to open this link.",
                 confirmText = "OK",

@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.PaymentUiEvent
+import ifac.td.taxi.ui.screen.components.PaymentButtonsState
+import ifac.td.taxi.ui.screen.components.PaymentScreenUiState
+import ifac.td.taxi.ui.screen.components.PaymentUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,17 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 135-3: import android.app.Application
-import android.content.Intent
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.model.PaymentMethod
-import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.viewmodel.model.RedSysPaymentState
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 class PaymentComposeViewModel(
     application: Application
 ) : AndroidViewModel(application) {

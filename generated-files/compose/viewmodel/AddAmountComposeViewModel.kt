@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.AddAmountUiState
+import ifac.td.taxi.ui.screen.components.AddAmountUiEffect
+import ifac.td.taxi.ui.screen.components.AddAmountUiEvent
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,24 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 151-2: import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.domain.usecase.TripUseCase
-import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
-import ifac.td.taxi.domain.usecase.TTSUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.domain.model.PaymentModifiers
-import ifac.td.taxi.domain.model.PaymentModifiers.ModifyImports.ALWAYS
-import ifac.td.taxi.domain.model.PaymentModifiers.ModifyImports.NOT_ALLOWED
-import ifac.td.taxi.domain.model.PaymentModifiers.ModifyImports.ONLY_IMPORT_0
-import ifac.td.taxi.domain.model.TTSType
-import ifac.td.taxi.domain.usecase.TTSUseCaseImpl
-import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class AddAmountComposeViewModel(
     private val tripUseCase: TripUseCase,
     private val licensingUseCase: LicensingUseCase,

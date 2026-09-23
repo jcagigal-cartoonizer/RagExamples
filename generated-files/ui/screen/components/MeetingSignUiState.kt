@@ -1,11 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.MeetingSignButtonsState = MeetingSignButtonsState
+import ifac.td.taxi.ui.screen.components.MeetingSignUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 11-1: import androidx.annotation.ColorInt
-import androidx.annotation.ColorInt
 data class MeetingSignUiState(
     val message: String = "",
     @ColorInt val textColor: Int = 0,

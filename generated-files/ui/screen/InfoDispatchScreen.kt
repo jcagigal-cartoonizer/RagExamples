@@ -1,18 +1,14 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiEffect
+import ifac.td.taxi.compose.viewmodel.InfoDispatchComposeViewModel
+import ifac.td.taxi.ui.screen.components.InfoDispatchUiEvent
+import ifac.td.taxi.ui.screen.components.InfoDispatchScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 352-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.HomeDirections
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun InfoDispatchScreen(
     navController: NavController,

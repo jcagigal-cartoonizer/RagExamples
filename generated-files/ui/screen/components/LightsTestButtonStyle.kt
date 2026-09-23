@@ -1,25 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.LightsTestComposeViewModel
+import ifac.td.taxi.ui.screen.components.LightsTestUiEffect
+import ifac.td.taxi.ui.screen.components.LightsTestUiEvent
+import ifac.td.taxi.ui.screen.components.LightsTestUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 128-3: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.model.UserPreferences
-import ifac.td.taxi.domain.usecase.LightSkyGlassUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class LightsTestComposeViewModel(
     application: Application,
     private val lightSkyGlassUseCase: LightSkyGlassUseCase,

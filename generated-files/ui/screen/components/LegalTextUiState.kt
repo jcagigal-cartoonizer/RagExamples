@@ -1,16 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.LegalTextButtonsState = LegalTextButtonsState
+import ifac.td.taxi.compose.viewmodel.LegalTextComposeViewModel
+import ifac.td.taxi.ui.screen.components.LegalTextUiState
+import ifac.td.taxi.ui.screen.components.LegalTextUiEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 111-2: import android.app.Application
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.framework.sdk.usecase.ShowLegalTextUseCase
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 data class LegalTextUiState(
     val legalText: String? = null,
     val buttonsState: LegalTextButtonsState = LegalTextButtonsState(),

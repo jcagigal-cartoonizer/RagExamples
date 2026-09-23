@@ -1,4 +1,6 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.PendingTripsCustomDialog
+import ifac.td.taxi.compose.viewmodel.PendingTripsComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -6,14 +8,6 @@ import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
 // # Block 453-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.viewmodel.PendingTripsDialogButton
-import ifac.td.taxi.viewmodel.PendingTripsDialogButtonsState
 @Composable
 fun PendingTripsCustomDialog(
     title: String,
@@ -71,7 +65,6 @@ fun DialogButton(
         Text(text)
     }
 }
-import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
 data class PendingTripsDialogState(
     val title: String,
     val description: String,

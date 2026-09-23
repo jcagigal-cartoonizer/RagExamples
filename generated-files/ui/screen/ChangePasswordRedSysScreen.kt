@@ -1,25 +1,15 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.compose.viewmodel.ChangePasswordRedSysComposeViewModel
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysCustomDialogModel
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysScreen
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysButtonsStateHolder
+import ifac.td.taxi.ui.screen.components.ChangePasswordRedSysUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 286-5: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LifecycleStartEffect
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.Lifecycle
-import kotlinx.coroutines.flow.collectLatest
-import androidx.compose.runtime.LaunchedEffect
-import ifac.td.taxi.viewmodel.*
-import ifac.td.taxi.ui.custom.dialog.compose.*
 @Composable
 fun ChangePasswordRedSysScreen(
     viewModel: ChangePasswordRedSysComposeViewModel,
@@ -39,7 +29,7 @@ fun ChangePasswordRedSysScreen(
     }
     uiState.dialog?.let { dialog ->
         ChangePasswordRedSysCustomDialog(
-            model = CustomDialogModel(
+            model = ChangePasswordRedSysCustomDialogModel(
                 title = dialog.title,
                 description = dialog.description,
                 buttons = listOf(ButtonType.ACCEPT)

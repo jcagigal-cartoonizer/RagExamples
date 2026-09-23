@@ -1,21 +1,13 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.compose.viewmodel.OnTripComposeViewModel
+import ifac.td.taxi.ui.screen.components.OnTripUiEffect
+import ifac.td.taxi.ui.screen.components.OnTripScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 422-4: import android.content.Intent
-import android.content.Intent
-import android.widget.Toast
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.viewmodel.OnTripViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun OnTripScreen(
     navController: NavController,

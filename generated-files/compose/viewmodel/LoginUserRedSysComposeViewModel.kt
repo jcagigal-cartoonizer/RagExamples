@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.LoginUserRedSysUiState
+import ifac.td.taxi.ui.screen.components.LoginUserRedSysUiEffect
+import ifac.td.taxi.ui.screen.components.LoginUserRedSysButtonsState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,25 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 92-4: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import es.redsys.paysys.Utils.RedCLSErrorCodes
-import ifac.td.taxi.domain.model.RedSysLoginResponse
-import ifac.td.taxi.domain.usecase.RedSysUseCase
-import ifac.td.taxi.framework.TemporalData
-import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysButtonsState
-import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysDialogState
-import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiEffect
-import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiState
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class LoginUserRedSysComposeViewModel(
     private val redSysUseCase: RedSysUseCase,
     application: Application

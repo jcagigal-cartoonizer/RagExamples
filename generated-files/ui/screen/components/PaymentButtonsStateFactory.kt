@@ -1,18 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.PaymentButtonsState
+import ifac.td.taxi.ui.screen.components.Payment = PaymentButtonUiState
+import ifac.td.taxi.ui.screen.components.PaymentButtonUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 244-4: import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Color
-import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CASH_CARD
-import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CASH_NO_CARD
-import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CREDIT_CARD
-import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CREDIT_CARD_COMPULSORY
-import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_CREDIT_NO_CARD
-import ifac.td.taxi.domain.usecase.DispatchUseCase.Companion.SUBSCRIBER_TCC
-import ifac.td.taxi.domain.utils.StaticConfiguration
 object PaymentButtonsStateFactory {
     fun build(
         clientType: Int?,

@@ -1,12 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.HomeButtonBackground
+import ifac.td.taxi.ui.screen.components.HomeButtonsState
+import ifac.td.taxi.ui.screen.components.HomeButtonUiState = HomeButtonUiState
+import ifac.td.taxi.ui.screen.components.HomeButtonUiState
+import ifac.td.taxi.compose.viewmodel.HomeComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 174-3: import androidx.annotation.StringRes
-import androidx.annotation.StringRes
-import androidx.compose.ui.graphics.Color
 data class HomeButtonsState(
     val zoning: HomeButtonUiState = HomeButtonUiState(),
     val pending: HomeButtonUiState = HomeButtonUiState(),

@@ -1,22 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.PendingTripsUiState
+import ifac.td.taxi.ui.screen.components.PendingTripsUiEffect
+import ifac.td.taxi.compose.viewmodel.PendingTripsComposeViewModel
+import ifac.td.taxi.ui.screen.components.PendingTripsUiEvent
+import ifac.td.taxi.ui.screen.components.PendingTripsButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 158-2: import android.app.Application
-import android.app.Application
-import android.os.Handler
-import android.os.Looper
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
-import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
-import ifac.td.taxi.domain.usecase.PendingTripsUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 data class PendingTripsUiState(
     val isLoading: Boolean = false,
     val pendingTrips: List<PendingTrip> = emptyList(),

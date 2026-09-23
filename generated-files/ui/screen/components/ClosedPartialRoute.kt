@@ -1,24 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ClosedPartialUiEffect
+import ifac.td.taxi.compose.viewmodel.ClosedPartialComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 177-3: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import androidx.navigation.fragment.NavHostFragment
-import ifac.td.taxi.viewmodel.MainActivityViewModel
-import kotlinx.coroutines.launch
 @Composable
 fun ClosedPartialRoute(
     viewModel: ClosedPartialComposeViewModel,

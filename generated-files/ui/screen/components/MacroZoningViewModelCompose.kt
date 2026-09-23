@@ -1,34 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.MacroZoningUiEvent
+import ifac.td.taxi.ui.screen.components.MacroZoningUiEffect
+import ifac.td.taxi.ui.screen.components.MacroZoningCustomDialogState
+import ifac.td.taxi.ui.screen.components.MacroZoningUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 200-2: import android.app.Application
-import android.app.Application
-import android.os.Handler
-import android.os.Looper
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
-import ifac.td.taxi.domain.usecase.PendingTripsUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
-import ifac.td.taxi.repository.connections.receivers.utils.DateUtils
-import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-import ifac.td.taxi.repository.room.dao.BravoConfigurationVariableDao
-import ifac.td.taxi.repository.room.entities.ZoningConfigurationEntity
-import ifac.td.taxi.ui.model.ScrollModeEnum
-import ifac.td.taxi.viewmodel.model.FilterOptions
-import ifac.td.taxi.viewmodel.model.OrderOptions
-import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toBoolean1or0
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class MacroZoningComposeViewModelCompose(
     private val zoningUseCase: ZoningUseCase,
     private val licensingUseCase: LicensingUseCase,
@@ -144,7 +124,7 @@ class MacroZoningComposeViewModelCompose(
     fun onFilterClick() {
         _uiState.update {
             it.copy(
-                dialogState = CustomDialogState(
+                dialogState = MacroZoningCustomDialogState(
                     visible = true,
                     title = "Filter",
                     description = "Open filter bottom sheet",

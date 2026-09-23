@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.MessagesUiEvent
+import ifac.td.taxi.ui.screen.components.MessagesUiEffect
+import ifac.td.taxi.ui.screen.components.MessagesUiState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,17 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 56-2: import android.app.Application
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.MessageUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.repository.room.entities.message.MessageEntity
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class MessagesComposeViewModel(
     private val messageUseCase: MessageUseCase,
     context: Application,

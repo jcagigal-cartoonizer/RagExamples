@@ -1,4 +1,6 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.DestinationMapButtonsState
+import ifac.td.taxi.ui.screen.components.DestinationMapUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,20 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 71-2: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.DispatchUseCase
-import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.ui.model.RoutePointModel
-import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.getDispatchNumber
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class DestinationMapComposeViewModel(
     private val dispatchUseCase: DispatchUseCase,
     private val navigatorUseCase: NavigatorUseCase,

@@ -1,4 +1,6 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.ContactCentralUiState
+import ifac.td.taxi.ui.screen.components.ContactCentralUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,18 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 97-2: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
-import ifac.td.taxi.domain.usecase.PredefinedMessagesUseCase
-import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralConfigurationUseCase
-import ifac.td.taxi.framework.sdk.usecase.VoicePetitionUseCase
-import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
-import ifac.td.taxi.ui.screen.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class ContactCentralComposeViewModel(
     private val bravoCentralConfigurationUseCase: BravoCentralConfigurationUseCase,
     private val shiftStatusUseCase: ShiftStatusUseCase,

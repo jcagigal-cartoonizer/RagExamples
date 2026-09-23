@@ -1,23 +1,14 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.FixedPriceUiEvent
+import ifac.td.taxi.compose.viewmodel.FixedPriceComposeViewModel
+import ifac.td.taxi.ui.screen.components.FixedPriceButtonsState
+import ifac.td.taxi.ui.screen.components.FixedPriceUiEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 509-4: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.ui.screen.components.*
-import ifac.td.taxi.viewmodel.FixedPriceComposeViewModel
-import ifac.td.taxi.viewmodel.FixedPriceUiEffect
-import ifac.td.taxi.viewmodel.FixedPriceUiEvent
-import ifac.td.taxi.viewmodel.FixedPriceDialogState
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun FixedPriceMapScreen(
     navController: NavController,

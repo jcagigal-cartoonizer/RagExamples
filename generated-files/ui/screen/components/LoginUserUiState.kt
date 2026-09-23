@@ -1,28 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.LoginUserButtonsState = LoginUserButtonsState
+import ifac.td.taxi.ui.screen.components.LoginUserUiEffect
+import ifac.td.taxi.ui.screen.components.LoginUserUiEvent
+import ifac.td.taxi.compose.viewmodel.LoginUserComposeViewModel
+import ifac.td.taxi.ui.screen.components.LoginUserUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 201-2: import android.app.Application
-import android.app.Application
-import android.widget.Toast
-import androidx.annotation.StringRes
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.ConfigurationScreenPasswordUseCase
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.domain.usecase.oldv2.MigrationV2UseCase
-import ifac.td.taxi.framework.sdk.ExternalBridgeInterface
-import ifac.td.taxi.framework.sdk.model.UserInfo
-import ifac.td.taxi.framework.sdk.usecase.ConfigurationUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 data class LoginUserUiState(
     val user: String = "",
     val password: String = "",

@@ -1,11 +1,11 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.InfoDispatchButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 94-2: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
 @Immutable
 data class InfoDispatchButtonsState(
     val notifications: ComposeButtonState = ComposeButtonState.disabled(),

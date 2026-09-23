@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.AboutButtonsState
+import ifac.td.taxi.ui.screen.components.AboutUiState
+import ifac.td.taxi.ui.screen.components.AboutUiEffect
+import ifac.td.taxi.ui.screen.components.AboutUiEvent
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,17 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 149-3: import android.app.Application
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.net.Uri
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
-import ifac.td.taxi.framework.sdk.model.BluetoothInfo
-import ifac.td.taxi.framework.util.ApkUtils
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class AboutComposeViewModel(
     application: Application,
     private val bluetoothLocalUseCase: BluetoothLocalUseCase

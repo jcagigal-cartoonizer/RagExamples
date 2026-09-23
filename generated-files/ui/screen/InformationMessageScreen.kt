@@ -1,22 +1,13 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.InformationMessageUiEffect
+import ifac.td.taxi.ui.screen.components.InformationMessageScreen
+import ifac.td.taxi.compose.viewmodel.InformationMessageComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 14-1: import androidx.activity.compose.BackHandler
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.ui.screen.state.InformationMessageDialog
-import ifac.td.taxi.ui.screen.compose.state.InformationMessageButtonsState
-import ifac.td.taxi.compose.viewmodel.InformationMessageComposeViewModel
 @Composable
 fun InformationMessageScreen(
     viewModel: InformationMessageComposeViewModel,

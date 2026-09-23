@@ -1,13 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ContactCentralButtonStyle = ContactCentralButtonStyle
+import ifac.td.taxi.ui.screen.components.ContactCentralUiState
+import ifac.td.taxi.ui.screen.components.ContactCentralButtonsState = ContactCentralButtonsState
+import ifac.td.taxi.ui.screen.components.ContactCentralButtonsState
+import ifac.td.taxi.ui.screen.components.ContactCentralButtonStyle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 12-1: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Stable
-import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
 @Immutable
 data class ContactCentralUiState(
     val buttons: ContactCentralButtonsState = ContactCentralButtonsState(),

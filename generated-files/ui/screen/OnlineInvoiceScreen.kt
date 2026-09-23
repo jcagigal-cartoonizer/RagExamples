@@ -1,29 +1,13 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceUiEffect
+import ifac.td.taxi.ui.screen.components.OnlineInvoiceScreen
+import ifac.td.taxi.compose.viewmodel.OnlineInvoiceComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 328-3: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.navigation.NavController
-import ifac.td.taxi.viewmodel.OnlineInvoiceViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun OnlineInvoiceScreen(
     tripId: Long,

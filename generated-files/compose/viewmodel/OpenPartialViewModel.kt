@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.OpenPartialUiState
+import ifac.td.taxi.ui.screen.components.OpenPartialUiEffect
+import ifac.td.taxi.ui.screen.components.OpenPartialUiEvent
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,20 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 66-2: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.model.PartialModel
-import ifac.td.taxi.domain.usecase.PartialUseCase
-import ifac.td.taxi.domain.usecase.PrinterUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
-import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 class OpenPartialComposeViewModel(
     application: Application,
     private val partialUseCase: PartialUseCase,

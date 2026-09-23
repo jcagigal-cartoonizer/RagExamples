@@ -1,25 +1,14 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.DeviceSettingsUiEvent
+import ifac.td.taxi.ui.screen.components.DeviceSettingsScreen
+import ifac.td.taxi.compose.viewmodel.DeviceSettingsComposeViewModel
+import ifac.td.taxi.ui.screen.components.DeviceSettingsUiEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 352-4: import android.content.Intent
-import android.content.Intent
-import android.net.Uri
-import android.provider.Settings
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.ui.screen.state.*
-import kotlinx.coroutines.launch
 @Composable
 fun DeviceSettingsScreen(
     navController: NavController,

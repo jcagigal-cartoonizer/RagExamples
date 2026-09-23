@@ -1,22 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.MessageDetailUiEffect
+import ifac.td.taxi.compose.viewmodel.MessageDetailComposeViewModel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 294-3: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.repository.room.entities.message.MessageEntity
-import ifac.td.taxi.viewmodel.MainActivityViewModel
-import ifac.td.taxi.viewmodel.MessageDetailComposeViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun MessageDetailRoute(
     navController: NavController,

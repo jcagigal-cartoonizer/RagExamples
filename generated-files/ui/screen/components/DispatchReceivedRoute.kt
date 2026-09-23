@@ -1,21 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.DispatchReceivedUiEffect
+import ifac.td.taxi.compose.viewmodel.DispatchReceivedComposeViewModel
+import ifac.td.taxi.ui.screen.components.DispatchReceivedScreen
+import ifac.td.taxi.ui.screen.components.DispatchReceivedUiEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 4-1: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.ui.screen.state.DispatchReceivedCustomDialog
-import ifac.td.taxi.ui.screen.compose.state.DispatchReceivedButtonsState
-import ifac.td.taxi.ui.screen.compose.viewmodel.DispatchReceivedComposeViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun DispatchReceivedRoute(
     viewModel: DispatchReceivedComposeViewModel,
@@ -30,7 +23,7 @@ fun DispatchReceivedRoute(
     LaunchedEffect(idDispatch) {
         viewModel.onEvent(DispatchReceivedUiEvent.LoadDispatch(idDispatch))
         viewModel.onEvent(DispatchReceivedUiEvent.CheckCancelDialogPermission)
-        viewModel.onEvent(DispatchReceivedUiEvent.CloseExternalDialog(CustomDialogTags.LOCATE_ON_STAND_DIALOG))
+        viewModel.onEvent(DispatchReceivedUiEvent.CloseExternalDialog(DispatchReceivedCustomDialogTags.LOCATE_ON_STAND_DIALOG))
     }
     LaunchedEffect(Unit) {
         viewModel.effects.collectLatest { effect ->

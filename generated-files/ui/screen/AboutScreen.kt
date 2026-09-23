@@ -1,20 +1,11 @@
 package ifac.td.taxi.ui.screen
+import ifac.td.taxi.ui.screen.components.AboutScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 70-2: import androidx.compose.foundation.Image
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.BasicText
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.TextDecoration
-import androidx.compose.ui.unit.dp
 @Composable
 fun AboutScreen(
     uiState: AboutUiState,

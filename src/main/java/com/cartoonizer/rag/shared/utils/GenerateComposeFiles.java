@@ -351,48 +351,75 @@ public class GenerateComposeFiles {
 
         private void addImportForInternalVars(HashMap<String, String> lines, ArrayList<String> orderedLines) {
 //            System.out.println("==> addImportForInternalVars " + outputPath + " orderedLines  " + orderedLines.size());
-            for (String line : orderedLines) {
-                if (line.contains(PREFIX + "ComposeViewModel") && !line.startsWith("import ") && !outputPath.contains("ComposeViewModel")) {
+            for (String original : orderedLines) {
+                String line = original.trim();
+                if (line.startsWith("import ") && line.contains("ComposeViewModel") && !generateFiles.outputPath.contains("ComposeViewModel")) {
+                    line = "// " + line;
+                }
+                if (line.contains(".kt")) {
+                    continue;
+                }
+                if (line.startsWith("import ") || line.startsWith("//")) {
+                    continue;
+                }
+                if (line.contains(PREFIX + "Ui") || line.contains(PREFIX + "Button") || line.contains(PREFIX + "Ui") ||
+                        line.contains(PREFIX + "Custom") || line.contains(PREFIX + "Screen")) {
+                    int idx = line.indexOf(PREFIX);
+                    if (idx > 0) {
+                        String name = line.substring(idx);
+                            System.out.println("GenerateComposeFiles addImportForInternalVars BEFORE name = " + name);
+//                        if (!name.contains(".")) {
+                            name = name.replaceAll("`", "");
+                            idx = name.indexOf("(");
+                            if (idx < 0) {
+                                idx = name.indexOf(")");
+                                if (idx < 0) {
+                                    idx = name.indexOf("?");
+                                    if (idx < 0) {
+                                        idx = name.indexOf(">");
+                                        if (idx < 0) {
+                                            idx = name.indexOf("<");
+                                        }
+                                    }
+                                }
+//                            }
+                        }
+                        if (idx > 0) {
+                            name = name.substring(0, idx).replaceAll(">", "").replaceAll(Pattern.quote(")"), "");
+                            idx = name.indexOf(".");
+                            if (idx > 0) {
+                                name = name.substring(0, idx);
+                                idx = name.indexOf(" ");
+                                if (idx > 0) {
+                                    name = name.substring(0, idx);
+                                }
+                            }
+                            String lineImport = "import ifac.td.taxi.ui.screen.components." + name;
+                            System.out.println("GenerateComposeFiles addImportForInternalVars AFTER lineImport = " + lineImport);
+                            internalImports.put(lineImport, lineImport);
+                        }
+                    }
+                }
+                if ((line.contains(PREFIX + "ComposeViewModel") && !generateFiles.outputPath.contains("ViewModel"))) {
                     String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
 //                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                    // internalImports.put(lineImport, lineImport);
-                } else if (line.contains(PREFIX + "CustomDialog") && !line.startsWith("import ")) {
-                    String lineImport = "import ifac.td.taxi.ui.screen.components." + PREFIX + "CustomDialog";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                    // internalImports.put(lineImport, lineImport);
-                } else if (line.contains(PREFIX + "Screen") && !line.startsWith("import ")) {
-                    String lineImport = "import ifac.td.taxi.ui.screen." + PREFIX + "Screen";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                    // internalImports.put(lineImport, lineImport);
-                } else if ((line.contains(PREFIX + "DialogState") || line.contains(PREFIX + "DialogType") || line.contains(PREFIX + "ButtonsState") || line.contains(PREFIX + "Buttons"))
-                        && !line.startsWith("import ")) {
-                    if (line.contains(PREFIX + "DialogState")) {
-                        String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogState";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
-                    } else if (line.contains(PREFIX + "DialogType")) {
-                        String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "DialogType";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
-                    } else if (line.contains(PREFIX + "ButtonsState")) {
-                        String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "ButtonsState";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
-                    } else if (line.contains(PREFIX + "Buttons")) {
-                        String lineImport = "import ifac.td.taxi.ui.screen.state." + PREFIX + "Buttons";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                        // internalImports.put(lineImport, lineImport);
-                    }
+                    internalImports.put(lineImport, lineImport);
                 }
             }
         }
 
         private void printAll(HashMap<String, String> lines, ArrayList<String> orderedLines) {
-//            addImportForInternalVars(lines, orderedLines);
+            addImportForInternalVars(lines, orderedLines);
             System.out.println("*** printAll " + outputPath + " orderedLines  " + orderedLines.size());
             int linesPrinted = 0;
+            boolean importsFound = false;
+            boolean importsEnded = false;
             for (String line : orderedLines) {
+                if (line.trim().startsWith("import ") && importsEnded) {
+                    continue;
+                }
                 if (line.trim().startsWith("import ")) {
+                    importsFound = true;
                     String val = internalImports.get(line);
                     String added = addedImports.get(line);
                     if (val == null && added == null) {
@@ -402,15 +429,18 @@ public class GenerateComposeFiles {
                             addedImports.put(line, line);
                         }
                     } else {
-//                        System.out.println("*** printAll interrnal " + val + " added  " + added);
+//                        System.out.println("*** printAll internal " + val + " added  " + added);
                         if (added == null) {
                             addedImports.put(line, line);
                         }
                     }
                 } else {
+                    if (importsFound) {
+                        importsEnded = true;
+                    }
                     print(line);
                     linesPrinted++;
-                    if (line.startsWith("package ")) {
+                    if (line.startsWith("package ") && !importsEnded) {
                         for (Entry<String, String> entry : internalImports.entrySet()) {
                             print(entry.getKey());
                             linesPrinted++;
@@ -419,6 +449,8 @@ public class GenerateComposeFiles {
                 }
             }
             System.out.println("*** printAll END " + " linesPrinted =  " + linesPrinted + " in " + outputPath);
+            internalImports.clear();
+            addedImports.clear();
         }
     }
 }

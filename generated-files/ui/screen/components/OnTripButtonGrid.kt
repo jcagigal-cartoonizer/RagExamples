@@ -1,21 +1,13 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.OnTripButtonStyles
+import ifac.td.taxi.ui.screen.components.OnTripCustomDialog
+import ifac.td.taxi.ui.screen.components.OnTripButtonGrid
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 584-5: import androidx.compose.foundation.background
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.viewmodel.model.InfoDispatchModel
 @Composable
 fun OnTripButtonGrid(
     buttons: OnTripButtonsState,
@@ -76,9 +68,6 @@ fun OnTripActionButton(
         Text(text = if (state.text.isNotBlank()) state.text else fallbackLabel)
     }
 }
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
 @Composable
 fun OnTripCustomDialog(
     state: OnTripDialogState,

@@ -1,4 +1,7 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.ClosedPartialUiState
+import ifac.td.taxi.ui.screen.components.ClosedPartialUiEffect
+import ifac.td.taxi.ui.screen.components.ClosedPartialButtonsState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,19 +9,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 52-2: import android.app.Application
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.model.PartialModel
-import ifac.td.taxi.domain.usecase.PartialUseCase
-import ifac.td.taxi.domain.usecase.PrinterUseCase
-import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.addTicketLines
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class ClosedPartialComposeViewModel(
     context: Application,
     private val printerUseCase: PrinterUseCase,

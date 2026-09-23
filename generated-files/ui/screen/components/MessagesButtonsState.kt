@@ -1,12 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.MessagesButtonsState
+import ifac.td.taxi.ui.screen.components.MessagesUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 302-4: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
 @Immutable
 data class MessagesButtonsState(
     val showBack: Boolean = true,

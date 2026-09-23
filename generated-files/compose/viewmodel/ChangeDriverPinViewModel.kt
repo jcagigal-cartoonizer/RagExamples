@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinUiEvent
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinUiEffect
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinButtonsState
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinUiState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,23 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 93-2: import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView
-import com.interfacom.sdk.taximeter.licensing.rest.user.UserModule
-import com.interfacom.sdk.taximeter.licensing.rest.user.UserPresenter
-import ifac.td.taxi.ui.screen.ChangeDriverPinButtonsState
-import ifac.td.taxi.ui.screen.ChangeDriverPinUiEffect
-import ifac.td.taxi.ui.screen.ChangeDriverPinUiEvent
-import ifac.td.taxi.ui.screen.ChangeDriverPinUiState
-import ifac.td.taxi.ui.screen.CustomDialogState
-import ifac.td.taxi.ui.screen.ChangeDriverPinDialogButtonType
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 class ChangeDriverPinComposeViewModel(
     context: Application
 ) : AndroidViewModel(context) {
@@ -110,7 +97,7 @@ class ChangeDriverPinComposeViewModel(
     ) {
         emitEffect(
             ChangeDriverPinUiEffect.ShowDialog(
-                CustomDialogState(
+                ChangeDriverPinCustomDialogState(
                     title = title,
                     buttons = listOf(ChangeDriverPinDialogButtonType.Accept)
                 )
@@ -126,7 +113,7 @@ class ChangeDriverPinComposeViewModel(
     fun onPinChangeSuccess() {
         emitEffect(
             ChangeDriverPinUiEffect.ShowDialog(
-                CustomDialogState(
+                ChangeDriverPinCustomDialogState(
                     title = app.getString(R.string.dialog_change_pin),
                     buttons = listOf(ChangeDriverPinDialogButtonType.Accept)
                 )
@@ -136,7 +123,7 @@ class ChangeDriverPinComposeViewModel(
     fun onPinChangeFailure() {
         emitEffect(
             ChangeDriverPinUiEffect.ShowDialog(
-                CustomDialogState(
+                ChangeDriverPinCustomDialogState(
                     title = app.getString(R.string.dialog_error_change_pin),
                     buttons = listOf(ChangeDriverPinDialogButtonType.Accept)
                 )

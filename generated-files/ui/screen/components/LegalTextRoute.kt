@@ -1,29 +1,12 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.compose.viewmodel.LegalTextComposeViewModel
+import ifac.td.taxi.ui.screen.components.LegalTextScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 5-1: import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.ui.screen.components.CustomDialog
-import ifac.td.taxi.ui.screen.components.LegalTextButtons
-import ifac.td.taxi.viewmodel.LegalTextUiEffect
-import ifac.td.taxi.viewmodel.LegalTextComposeViewModel
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
 @Composable
 fun LegalTextRoute(
     navController: NavController,

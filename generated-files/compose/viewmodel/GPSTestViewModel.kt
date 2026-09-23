@@ -1,4 +1,6 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.GPSTestUiState
+import ifac.td.taxi.ui.screen.components.GPSTestUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,28 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 118-4: import android.app.Application
-import android.content.Intent
-import android.os.Handler
-import android.os.Looper
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
-import com.interfacom.sdk.taximeter.bravocomm.models.GPSData
-import com.interfacom.sdk.taximeter.log.Log as SdkLog
-import com.interfacom.sdk.taximeter.taximeter.BluetoothConstants
-import com.interfacom.sdk.taximeter.taximeter.Taximeter
-import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.framework.sdk.model.BluetoothInfo
-import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import java.util.Locale
 class GPSTestComposeViewModel(
     application: Application,
     private val bluetoothLocalUseCase: BluetoothLocalUseCase,

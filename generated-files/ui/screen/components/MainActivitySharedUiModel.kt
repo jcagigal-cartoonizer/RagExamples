@@ -5,7 +5,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 673-5: import ifac.td.taxi.domain.model.Trip
-import ifac.td.taxi.domain.model.Trip
 data class MainActivitySharedUiModel(
     val trip: Trip? = null
 )

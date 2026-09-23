@@ -1,12 +1,15 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinCustomDialogState
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinButtonVisualState
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinButtonsState
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinButtonsState = ChangeDriverPinButtonsState
+import ifac.td.taxi.ui.screen.components.ChangeDriverPinUiState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 4-1: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Stable
 @Immutable
 data class ChangeDriverPinUiState(
     val currentDriverNumber: String = "",
@@ -29,7 +32,7 @@ sealed interface ChangeDriverPinUiEvent {
 sealed interface ChangeDriverPinUiEffect {
     data object NavigateBack : ChangeDriverPinUiEffect
     data class ShowDialog(
-        val dialog: CustomDialogState
+        val dialog: ChangeDriverPinCustomDialogState
     ) : ChangeDriverPinUiEffect
     data object RequestUserPresenter : ChangeDriverPinUiEffect
     data class ChangePin(

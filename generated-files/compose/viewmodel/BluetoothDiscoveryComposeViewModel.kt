@@ -1,4 +1,8 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.BluetoothDiscoveryUiState
+import ifac.td.taxi.ui.screen.components.BluetoothDiscoveryUiEffect
+import ifac.td.taxi.ui.screen.components.BluetoothDiscoveryUiEvent
+import ifac.td.taxi.ui.screen.components.BluetoothDiscoveryButtonVisualState
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,23 +10,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 227-3: import android.app.Application
-import android.bluetooth.BluetoothManager
-import android.content.Context
-import android.location.LocationManager
-import android.os.Build
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.framework.PermissionRequest
-import ifac.td.taxi.framework.sdk.model.BluetoothInfo
-import ifac.td.taxi.framework.sdk.model.BluetoothInfo.Companion.checkTaximeterType
-import ifac.td.taxi.framework.sdk.usecase.BluetoothUseCase
-import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
-import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class BluetoothDiscoveryComposeViewModel(
     private val bluetoothLocalUseCase: BluetoothLocalUseCase,
     private val licensingUseCase: LicensingUseCase,

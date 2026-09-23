@@ -1,4 +1,6 @@
 package ifac.td.taxi.compose.viewmodel
+import ifac.td.taxi.ui.screen.components.MessageDetailUiState
+import ifac.td.taxi.ui.screen.components.MessageDetailUiEffect
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -6,25 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 87-2: import android.app.Application
-import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.models.freetextmessage.FreeTextMessageRequest
-import ifac.td.taxi.domain.usecase.CountdownManagerUseCase
-import ifac.td.taxi.domain.usecase.MessageUseCase
-import ifac.td.taxi.domain.usecase.PredefinedMessagesUseCase
-import ifac.td.taxi.domain.usecase.PrinterUseCase
-import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.sdk.bravocentral.AlfaMessageHandler
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.repository.room.entities.countdown.CountdownId
-import ifac.td.taxi.repository.room.entities.countdown.CountdownIdCallback
-import ifac.td.taxi.repository.room.entities.countdown.CountdownState
-import ifac.td.taxi.repository.room.entities.message.MessageEntity
-import ifac.td.taxi.repository.room.entities.message.MessageType
-import ifac.td.taxi.ui.screen.compose.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 class MessageDetailComposeViewModel(
     private val alfaMessageHandler: AlfaMessageHandler,
     private val messageUseCase: MessageUseCase,

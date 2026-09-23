@@ -1,11 +1,14 @@
 package ifac.td.taxi.ui.screen.components
+import ifac.td.taxi.ui.screen.components.HomeUiState
+import ifac.td.taxi.ui.screen.components.HomeDialogState
+import ifac.td.taxi.ui.screen.components.HomeNavigation
+import ifac.td.taxi.ui.screen.components.HomeButtonsState = HomeButtonsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 // # Block 125-2: import androidx.annotation.StringRes
-import androidx.annotation.StringRes
 data class HomeUiState(
     val buttons: HomeButtonsState = HomeButtonsState(),
     val dialog: HomeDialogState? = null

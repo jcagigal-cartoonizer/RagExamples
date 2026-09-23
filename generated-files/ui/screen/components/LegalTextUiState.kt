@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 111-2: import android.app.Application
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -50,6 +51,7 @@ class LegalTextComposeViewModelCompose(
     }
     fun onAcceptClick() {
         viewModelScope.launch {
+            // dialog-based handling
             _uiState.update {
                 it.copy(
                     isDialogVisible = true,

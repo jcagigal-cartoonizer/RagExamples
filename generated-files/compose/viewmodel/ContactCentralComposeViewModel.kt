@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 97-2: import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
@@ -56,6 +57,7 @@ class ContactCentralComposeViewModel(
                 isLoadingShortBreakAction = true
             )
         }
+        // Preserves old fragment behavior: action was delegated to activity
     }
     fun onVoiceCallClick(voiceValue: Boolean) {
         if (voiceValue) {

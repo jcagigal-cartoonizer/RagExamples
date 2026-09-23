@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 115-5: import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -143,6 +144,7 @@ class CropImageComposeViewModel(
     private suspend fun handleUploadResult(success: Boolean) {
         if (success) {
             if (uiState.value.serviceId == null) {
+                // keep behavior flexible; navigation handled by host/shared VM in old code
             }
             _uiEffect.emit(CropImageUiEffect.ShowToast(R.string.dialog_send_image_description))
             _uiEffect.emit(CropImageUiEffect.NavigateBack)
@@ -181,20 +183,3 @@ class CropImageComposeViewModel(
         viewModelScope.launch { _uiEffect.emit(effect) }
     }
 }
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavHostController
-import androidx.compose.ui.viewinterop.AndroidView

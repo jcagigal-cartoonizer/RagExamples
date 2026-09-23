@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 149-3: import android.app.Application
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
@@ -50,6 +51,8 @@ class AboutComposeViewModel(
         logoTapCounter++
         Logs.d(TAG, "logoTapped count=$logoTapCounter")
         if (logoTapCounter == 5) {
+            // Preserve original hidden action
+            // W2CLocation.setTrackingState(AlfaLocation.ESTADO_SEGUIMIENTO_ALARMA, "1")
             logoTapCounter = 0
         }
     }
@@ -81,6 +84,7 @@ class AboutComposeViewModel(
                     showBluetoothInfo = isDeviceAvailable && bluetooth != null,
                     bluetoothInfoText = deviceInfoText,
                     buttonsState = it.buttonsState.copy(
+                        // matches XML logic: accept always visible/enabled
                         accept = it.buttonsState.accept.copy(
                             visible = true,
                             enabled = true
@@ -91,6 +95,7 @@ class AboutComposeViewModel(
         }
     }
     fun buildBluetoothInfoText(bluetoothInfo: BluetoothInfo): String {
+        // Preserves the original intended display format
         return buildString {
             appendLine("${bluetoothInfo.name} [${bluetoothInfo.btPIN}]")
             val firmware = runCatching { com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().taximeterVersionFirmware }.getOrDefault("")

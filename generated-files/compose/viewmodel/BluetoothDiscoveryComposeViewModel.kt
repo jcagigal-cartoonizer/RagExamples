@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 227-3: import android.app.Application
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.location.LocationManager
@@ -309,4 +310,3 @@ class BluetoothDiscoveryComposeViewModel(
     }
     fun Boolean?.orFalse() = this == true
 }
-import androidx.compose.foundation.Image

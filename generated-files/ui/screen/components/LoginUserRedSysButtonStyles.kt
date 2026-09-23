@@ -4,25 +4,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 78-3: import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Color
-data class LoginUserRedSysUiState(
-    val user: String = "",
-    val password: String = "",
-    val isLoading: Boolean = false,
-    val userError: String? = null,
-    val passwordError: String? = null,
-    val dialog: LoginUserRedSysDialogState? = null,
-    val buttons: LoginUserRedSysButtonsState = LoginUserRedSysButtonsState()
-)
-sealed interface LoginUserRedSysUiEffect {
-    data object NavigateBack : LoginUserRedSysUiEffect
-    data object NavigateToChangePassword : LoginUserRedSysUiEffect
-    data class ShowToast(val resId: Int) : LoginUserRedSysUiEffect
-}
-sealed interface LoginUserRedSysDialogState {
-    data class Error(
-        val title: String,
-        val message: String,
-        val confirmText: String = "OK"
-    ) : LoginUserRedSysDialogState
+object LoginUserRedSysButtonStyles {
+    val Green = Color(0xFF2E7D32)
+    val GreenDisabled = Color(0xFFA5D6A7)
+    val Gray = Color(0xFFE0E0E0)
+    val Black = Color(0xFF212121)
+    val White = Color.White
 }

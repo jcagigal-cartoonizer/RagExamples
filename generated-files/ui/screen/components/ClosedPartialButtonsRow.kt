@@ -4,53 +4,96 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 286-5: import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.NavController
-import androidx.navigation.fragment.NavHostFragment
-import ifac.td.taxi.viewmodel.MainActivityViewModel
-import kotlinx.coroutines.launch
 @Composable
-fun ClosedPartialRoute(
-    viewModel: ClosedPartialComposeViewModel,
-    justClosed: Boolean,
-    navController: NavController,
-    sharedViewModel: MainActivityViewModel
+fun ClosedPartialButtonsRow(
+    buttonsState: ClosedPartialButtonsState,
+    onCancel: () -> Unit,
+    onPrint: () -> Unit,
+    onTotalizers: () -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        viewModel.onStart()
-    }
-    LaunchedEffect(viewModel, lifecycleOwner) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                viewModel.uiEffects.collect { effect ->
-                    when (effect) {
-                        ClosedPartialUiEffect.NavigateBack -> navController.popBackStack()
-                        is ClosedPartialUiEffect.NavigateToTotalizers ->
-                            navController.navigate(effect.destinationId)
-                        ClosedPartialUiEffect.PrintPartial -> Unit
-                        ClosedPartialUiEffect.CloseDialog -> Unit
-                    }
-                }
-            }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        StyledActionButton(
+            text = "Cancel",
+            style = buttonsState.cancel,
+            onClick = onCancel
+        )
+        StyledActionButton(
+            text = "Print",
+            style = buttonsState.print,
+            onClick = onPrint
+        )
+        if (buttonsState.showTotalizers) {
+            StyledActionButton(
+                text = "Totalizers",
+                style = buttonsState.totalizers,
+                onClick = onTotalizers
+            )
         }
     }
-    ClosedPartialScreen(
-        uiState = uiState,
-        onCancel = { viewModel.onCancelClicked(justClosed) },
-        onPrint = { viewModel.onPrintClicked() },
-        onTotalizers = { viewModel.onTotalizersClicked(R.id.action_closedPartialFragment_to_totalizersFragment) },
-        onDialogDismiss = { viewModel.onDialogDismiss() }
-    )
+}
+@Composable
+fun StyledActionButton(
+    text: String,
+    style: ClosedPartialButtonStyle,
+    onClick: () -> Unit
+) {
+    when (style) {
+        ClosedPartialButtonStyle.Hidden -> Unit
+        ClosedPartialButtonStyle.Disabled -> {
+            Button(
+                onClick = onClick,
+                enabled = false,
+                colors = closedPartialButtonColors(disabled = true),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(text) }
+        }
+        ClosedPartialButtonStyle.Enabled -> {
+            Button(
+                onClick = onClick,
+                enabled = true,
+                colors = closedPartialButtonColors(disabled = false),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(text) }
+        }
+    }
+}
+@Composable
+fun closedPartialButtonColors(disabled: Boolean): ButtonColors {
+    return if (disabled) {
+        ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        )
+    } else {
+        ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
+    }
+}
+import androidx.compose.foundation.border
+@Composable
+fun TicketViewerReceipts(
+    ticketContent: String
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 180.dp)
+            .border(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Text(
+            text = ticketContent,
+            modifier = Modifier.padding(12.dp),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
 }

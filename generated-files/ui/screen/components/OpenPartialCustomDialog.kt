@@ -5,57 +5,86 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
+// # Block 421-7: import androidx.annotation.StringRes
 import androidx.annotation.StringRes
-data class OpenPartialUiState(
-    val isLoading: Boolean = true,
-    val rawPartialContent: String? = null,
-    val ticketContent: String = "",
-    val buttons: OpenPartialButtonsState = OpenPartialButtonsState(),
-    val dialog: OpenPartialDialogState? = null,
-)
-data class OpenPartialButtonsState(
-    val back: ButtonUiState = ButtonUiState.visibleEnabled(),
-    val print: ButtonUiState = ButtonUiState.visibleEnabled(),
-    val close: ButtonUiState = ButtonUiState.gone(),
-    val totalizers: ButtonUiState = ButtonUiState.gone(),
-)
-data class ButtonUiState(
-    val visible: Boolean,
-    val enabled: Boolean,
-    val style: ButtonStyle,
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+@Composable
+fun OpenPartialCustomDialog(
+    state: OpenPartialDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit,
 ) {
-    companion object {
-        fun visibleEnabled(style: ButtonStyle = ButtonStyle.ENABLE) =
-            ButtonUiState(visible = true, enabled = true, style = style)
-        fun visibleDisabled(style: ButtonStyle = ButtonStyle.DISABLE) =
-            ButtonUiState(visible = true, enabled = false, style = style)
-        fun gone() =
-            ButtonUiState(visible = false, enabled = false, style = ButtonStyle.DISABLE)
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = "Alert",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Are you sure you want to close partials?",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = onAccept) {
+                        Text("Accept")
+                    }
+                }
+            }
+        }
     }
 }
-enum class ButtonStyle {
-    ENABLE, DISABLE
+@Composable
+fun OpenPartialCustomDialog(
+    state: OpenPartialDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit,
+) {
+    val title = androidx.compose.ui.res.stringResource(state.titleRes)
+    val message = androidx.compose.ui.res.stringResource(state.messageRes)
+    Dialog(onDismissRequest = onDismiss) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(text = title, style = MaterialTheme.typography.titleLarge)
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(text = message, style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(20.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = onAccept) { Text("Accept") }
+                }
+            }
+        }
+    }
 }
-data class OpenPartialDialogState(
-    @StringRes val titleRes: Int = R.string.alert,
-    @StringRes val messageRes: Int,
-    val buttons: List<OpenPartialDialogButtonType> = listOf(OpenPartialDialogButtonType.CANCEL, OpenPartialDialogButtonType.ACCEPT)
-)
-enum class OpenPartialDialogButtonType {
-    CANCEL, ACCEPT
-}
-sealed interface OpenPartialUiEvent {
-    data object OnBackClicked : OpenPartialUiEvent
-    data object OnPrintClicked : OpenPartialUiEvent
-    data object OnCloseClicked : OpenPartialUiEvent
-    data object OnTotalizersClicked : OpenPartialUiEvent
-    data object OnDialogDismissed : OpenPartialUiEvent
-    data object OnDialogAccepted : OpenPartialUiEvent
-}
-sealed interface OpenPartialUiEffect {
-    data object NavigateBack : OpenPartialUiEffect
-    data object NavigateToTotalizers : OpenPartialUiEffect
-    data object ShowToastNoPartialsToPrint : OpenPartialUiEffect
-    data object RequestClosePartialsConfirmation : OpenPartialUiEffect
-    data object ClosePartialsAndNavigate : OpenPartialUiEffect
-}
+Your fragment logic had a few conditions:
+Because the shared `MainActivityViewModel` is not provided in the request, I left `hasTotalizers = false` as a placeholder in the view model. If you want, you can inject a shared repository or a parent-scoped state holder and compute it there exactly as the fragment did.
+To fully preserve the original fragment logic, add a shared state source for:
+Then compute button state like this:
+val canShowTotalizers =
+    !canClose &&
+    shiftStatus?.currentStatus != ifConstants.STATE_DISCONNECTED &&
+    isTaximeterConnected
+and
+val totalizersEnabled = isTaximeterConnected && hasTotalizers
+Then store it in `OpenPartialButtonsState`.
+1. a full `OpenPartialComposable` wired into `NavHost`
+2. a Koin module for the Compose `ViewModel`
+3. a more exact Material-style clone of your `CustomButton` and `CustomDialog` XML visuals

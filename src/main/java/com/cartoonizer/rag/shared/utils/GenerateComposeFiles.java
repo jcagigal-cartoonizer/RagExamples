@@ -106,10 +106,6 @@ public class GenerateComposeFiles {
             }
 //            System.out.println("*** currentFile = " + currentFile);
 //            System.out.println("=== outputPath = " + outputPath);
-            if (outputPath != null && outputPath.contains("MessageDetailScreen")) {
-                System.out.println("printAlways = " + printAlways + " isEnd = " + isEnd + " " + line);
-                
-            }
             if (printAlways) {
 // R.string. navigate -> btn_navegar
                 if (line.contains("R.string.btn_notifications")) {
@@ -302,7 +298,7 @@ public class GenerateComposeFiles {
 //                if (shouldIgnore(line)) {
 //                    line = "// " + line;
 //                }
-                if (answerProcessor.blocksList[i].replaceAll("// ", "").contains(line.replaceAll("// ", ""))) {
+                if (answerProcessor.blocksList[i].trim().equals(line.trim())) {
 //                    line = "// " + line;
                     if (answerProcessor.blockFilesList[i] != null && openFiles.get(answerProcessor.blockFilesList[i]) != null) {
                         continue;
@@ -339,7 +335,7 @@ public class GenerateComposeFiles {
 
         private void print(String line) {
             // print in second pass
-            if (shouldIgnore(line) || line.trim().startsWith("#") || line.trim().startsWith("// ") || (line.trim().startsWith("package ") && packageSet)) {
+            if (shouldIgnore(line) || line.trim().startsWith("#") || (line.trim().startsWith("package ") && packageSet)) {
                 return;
             }
             if (line.trim().startsWith("package ")) {

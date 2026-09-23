@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 5-1: import android.app.Application
 import android.content.Context
 import android.media.AudioManager
 import android.provider.Settings

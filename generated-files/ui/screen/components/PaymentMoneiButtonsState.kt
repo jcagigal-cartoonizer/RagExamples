@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 566-4: import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
@@ -101,17 +102,3 @@ fun PaymentMoneiCustomDialog(
         containerColor = Color.White
     )
 }
-import ifac.td.taxi.domain.model.Trip
-data class MainActivitySharedUiModel(
-    val trip: Trip? = null
-)
-In the fragment version you used:
-In Compose, keep that behavior by passing lambdas from your navigation host or activity:
-PaymentMoneiScreen(
-    viewModel = paymentViewModel,
-    sharedViewModel = sharedUiModel,
-    onNavigateBack = { navController.popBackStack() },
-    onNavigateHome = { navController.navigate("home") },
-    onPrintTicket = { ticket -> sharedViewModel.printTicket(ticket) },
-    showHeader = { visible -> mainActivity.showHeader(visible) }
-)

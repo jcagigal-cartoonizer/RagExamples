@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 114-2: import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import ifac.td.taxi.domain.usecase.DispatchUseCase
@@ -100,8 +101,10 @@ class DispatchReceivedComposeViewModel(
         }
     }
     fun stopCallTimer() {
+        // keep your existing timer stop implementation here
     }
     fun isNumberPhoneIn() {
+        // keep your existing implementation here
     }
     fun checkIsDirRecogidaAceptaDespacho() {
         viewModelScope.launch {

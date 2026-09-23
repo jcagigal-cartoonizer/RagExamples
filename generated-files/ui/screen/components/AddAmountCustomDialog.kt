@@ -50,6 +50,7 @@ fun AddAmountCustomDialog(
         }
     }
 }
+// # Block 599-7: import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 @Composable
 fun stringResourceCompat(resId: Int): String {
@@ -69,6 +70,7 @@ class AddAmountComposeFragment : Fragment() {
                     findNavController().navigateUp()
                 },
                 onShowDialog = { dialogState ->
+                    // optional external dialog handling if needed
                 }
             )
         }

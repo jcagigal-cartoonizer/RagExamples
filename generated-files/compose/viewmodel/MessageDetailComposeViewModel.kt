@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 87-2: import android.app.Application
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.bravocomm.models.freetextmessage.FreeTextMessageRequest
 import ifac.td.taxi.domain.usecase.CountdownManagerUseCase

@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 14-1: import androidx.activity.compose.BackHandler
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,12 +25,14 @@ fun InformationMessageScreen(
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // One-off effects: show dialog, navigate, toast, etc.
     LaunchedEffect(Unit) {
         viewModel.effects.collect { effect ->
             when (effect) {
                 InformationMessageUiEffect.NavigateBack -> onBack()
                 InformationMessageUiEffect.NavigateBackAfterSend -> onNavigateBackAfterSend()
                 is InformationMessageUiEffect.ShowToast -> {
+                    // Hook your own toast mechanism here if needed
                 }
             }
         }
@@ -40,9 +43,11 @@ fun InformationMessageScreen(
     BackHandler(enabled = true) {
         viewModel.onCancelPressed()
     }
+    // Initial load, equivalent to initVM()
     LaunchedEffect(Unit) {
         viewModel.initVM()
     }
+    // Observe dialog state via state holder
     uiState.selectedInformationMessage?.let { selected ->
         if (uiState.dialogVisible) {
             InformationMessageDialog(
@@ -59,6 +64,7 @@ fun InformationMessageScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
+            // XML had hidden header, so typically no top bar here.
         },
         bottomBar = {
             InformationMessageBottomBar(

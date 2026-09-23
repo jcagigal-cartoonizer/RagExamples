@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 93-2: import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView
@@ -48,6 +49,7 @@ class ChangeDriverPinComposeViewModel(
             ChangeDriverPinUiEvent.AcceptClicked -> handleAccept()
             ChangeDriverPinUiEvent.CancelClicked -> emitEffect(ChangeDriverPinUiEffect.NavigateBack)
             ChangeDriverPinUiEvent.DialogConfirmed -> {
+                // Used after success dialog ACCEPT
                 emitEffect(ChangeDriverPinUiEffect.NavigateBack)
             }
             ChangeDriverPinUiEvent.DialogDismissed -> Unit
@@ -115,6 +117,7 @@ class ChangeDriverPinComposeViewModel(
             )
         )
         if (navigateBackOnConfirm) {
+            // handled by UI dialog callback by using the effect state
         }
     }
     fun emitEffect(effect: ChangeDriverPinUiEffect) {

@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 128-3: import android.app.Application
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -45,6 +46,7 @@ class LightsTestComposeViewModel(
     fun handleUvClicked() {
         val state = _uiState.value
         if (!state.buttonsState.uvButton.enabled) return
+        // Optional dialog support example:
         _uiState.update { it.copy(dialog = LightsTestDialogState.ConfirmUvLight) }
     }
     fun handleCourtesyClicked() {

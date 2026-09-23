@@ -4,58 +4,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 317-5: import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-@Composable
-fun OpenPartialScreen(
-    state: OpenPartialUiState,
-    onEvent: (OpenPartialUiEvent) -> Unit,
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            if (state.isLoading) {
-                CircularProgressIndicator(modifier = Modifier.padding(24.dp))
-            } else {
-                TicketViewer(
-                    content = state.ticketContent,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            OpenPartialButtons(
-                buttons = state.buttons,
-                onEvent = onEvent,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        state.dialog?.let { dialog ->
-            OpenPartialCustomDialog(
-                state = dialog,
-                onDismiss = { onEvent(OpenPartialUiEvent.OnDialogDismissed) },
-                onAccept = { onEvent(OpenPartialUiEvent.OnDialogAccepted) },
-            )
-        }
-    }
-}
-@Composable
-fun TicketViewer(
-    content: String,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState())
-    ) {
-        Text(text = content)
-    }
-}
-import androidx.compose.runtime.Composable
 @Composable
 fun OpenPartialButtons(
     buttons: OpenPartialButtonsState,
@@ -98,5 +52,43 @@ fun OpenPartialButtons(
                 modifier = Modifier.weight(1f)
             )
         }
+    }
+}
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.graphics.Color
+@Composable
+fun StyledButton(
+    text: String,
+    state: ButtonUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = if (state.style == ButtonStyle.ENABLE) {
+        ButtonDefaults.buttonColors(
+            containerColor = Color(0xFF1E88E5),
+            contentColor = Color.White,
+            disabledContainerColor = Color(0xFF90A4AE),
+            disabledContentColor = Color.White
+        )
+    } else {
+        ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFB0BEC5),
+            contentColor = Color.White,
+            disabledContainerColor = Color(0xFFB0BEC5),
+            disabledContentColor = Color.White
+        )
+    }
+    OutlinedButton(
+        onClick = onClick,
+        enabled = state.enabled,
+        modifier = modifier.height(48.dp),
+        colors = colors,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (state.enabled) Color(0xFF1565C0) else Color(0xFF90A4AE)
+        )
+    ) {
+        Text(text = text)
     }
 }

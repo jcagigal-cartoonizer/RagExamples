@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 198-4: import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.bravocomm.ifConstants
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 class InfoDispatchComposeViewModel(
     application: Application,
+    // inject your existing dependencies here
 ) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(InfoDispatchUiState())
     val uiState: StateFlow<InfoDispatchUiState> = _uiState.asStateFlow()
@@ -127,6 +129,7 @@ class InfoDispatchComposeViewModel(
     }
     fun selectTab(index: Int) {
         val dispatch = _uiState.value.multiDispatch.getOrNull(index) ?: return
+        // update selected dispatch in repo/use case
         updateState { it.copy(selectedTabIndex = index) }
     }
     fun buildDispatchDescription(dispatch: InfoDispatchUiModel): String =

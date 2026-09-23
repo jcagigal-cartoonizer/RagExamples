@@ -4,67 +4,103 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 509-4: import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.ui.screen.components.*
+import ifac.td.taxi.viewmodel.FixedPriceComposeViewModel
+import ifac.td.taxi.viewmodel.FixedPriceUiEffect
+import ifac.td.taxi.viewmodel.FixedPriceUiEvent
+import ifac.td.taxi.viewmodel.FixedPriceDialogState
+import kotlinx.coroutines.flow.collectLatest
 @Composable
-fun FixedPriceCustomDialog(
-    title: String,
-    message: String,
-    positiveText: String,
-    negativeText: String? = null,
-    onPositive: () -> Unit,
-    onNegative: (() -> Unit)? = null,
-    onDismiss: () -> Unit,
+fun FixedPriceMapScreen(
+    navController: NavController,
+    viewModel: FixedPriceComposeViewModel,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0x80000000))
-            .clickable(onClick = onDismiss),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier
-                .padding(24.dp)
-                .fillMaxWidth()
-                .background(Color.White, RoundedCornerShape(16.dp))
-                .clickable(enabled = false) {}
-                .padding(20.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                color = Color(0xFF212121)
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF424242)
-            )
-            Spacer(Modifier.height(20.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                if (negativeText != null && onNegative != null) {
-                    Button(onClick = onNegative) {
-                        Text(negativeText)
-                    }
-                    Spacer(Modifier.width(12.dp))
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState = remember(uiState) { FixedPriceButtonsState.fromUiState(uiState) }
+    var dialogState by remember { mutableStateOf<FixedPriceDialogState?>(null) }
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is FixedPriceUiEffect.ShowToast -> {
+                    // Handle in host if needed
                 }
-                Button(onClick = onPositive) {
-                    Text(positiveText)
+                is FixedPriceUiEffect.UpdateMapPickup -> {
+                    // Hook map update here
+                }
+                is FixedPriceUiEffect.UpdateMapDropOff -> {
+                    // Hook map update here
+                }
+                is FixedPriceUiEffect.OpenDialog -> dialogState = effect.dialog
+                FixedPriceUiEffect.CloseDialog -> dialogState = null
+                FixedPriceUiEffect.HideKeyboard -> {
+                    // host should hide keyboard
+                }
+                FixedPriceUiEffect.NavigateBack -> {
+                    navController.popBackStack()
                 }
             }
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            TextField(
+                value = uiState.query,
+                onValueChange = { viewModel.onEvent(FixedPriceUiEvent.QueryChanged(it)) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                placeholder = { Text("Search drop off") }
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = uiState.isPoiSearch,
+                    onClick = { viewModel.onEvent(FixedPriceUiEvent.PoiSearchChanged(!uiState.isPoiSearch)) },
+                    label = { Text("POI") }
+                )
+            }
+            if (buttonsState.suggestionsVisible) {
+                SuggestionList(
+                    items = uiState.suggestions,
+                    onClick = { viewModel.onEvent(FixedPriceUiEvent.SuggestionClicked(it)) }
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            FixedPriceBottomSheet(
+                buttonsState = buttonsState,
+                uiState = uiState,
+                onClose = { viewModel.onEvent(FixedPriceUiEvent.CloseClicked) },
+                onRetry = { viewModel.onEvent(FixedPriceUiEvent.RetryPrices) }
+            )
+        }
+        dialogState?.let { dialog ->
+            FixedPriceCustomDialog(
+                title = dialog.title,
+                message = dialog.message,
+                positiveText = dialog.positiveText,
+                negativeText = dialog.negativeText,
+                onPositive = {
+                    dialogState = null
+                },
+                onNegative = {
+                    dialogState = null
+                },
+                onDismiss = {
+                    dialogState = null
+                }
+            )
         }
     }
 }

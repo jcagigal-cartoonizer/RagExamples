@@ -111,11 +111,15 @@ class DispatchReceivedComposeFragment : Fragment() {
                     )
                 },
                 onCloseDialog = { tag ->
+                    // bridge to your existing activity/dialog system
                     (activity as? YourMainActivityInterface)?.closeDialog(tag)
                 },
                 onOpenDialog = { dialog ->
+                    // bridge to your existing custom dialog manager
+                    // open dialog in Compose or forward to activity
                 },
                 onRequestPhonePermission = {
+                    // bridge to permission request flow
                 }
             )
         }

@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 273-3: import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Color
 data class DispatchReceivedButtonsState(
     val acceptVisible: Boolean = true,
@@ -38,53 +39,4 @@ object DispatchReceivedButtonStyles {
     val CancelContent = Color.White
     val DisabledContainer = Color(0xFFBDBDBD)
     val DisabledContent = Color(0xFFEEEEEE)
-}
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.ui.screen.compose.state.DispatchReceivedButtonStyles
-import ifac.td.taxi.ui.screen.compose.state.DispatchReceivedButtonsState
-@Composable
-fun DispatchReceivedButtons(
-    state: DispatchReceivedButtonsState,
-    onAccept: () -> Unit,
-    onCancel: () -> Unit,
-    onRequestRejectConfirmation: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (state.acceptVisible) {
-            Button(
-                onClick = onAccept,
-                enabled = state.acceptEnabled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.acceptEnabled)
-                        state.acceptContainerColor else DispatchReceivedButtonStyles.DisabledContainer,
-                    contentColor = if (state.acceptEnabled)
-                        state.acceptContentColor else DispatchReceivedButtonStyles.DisabledContent
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(text = "Aceptar")
-            }
-        }
-        if (state.cancelVisible) {
-            Button(
-                onClick = {
-                    if (state.useCancelConfirmationDialog) onRequestRejectConfirmation() else onCancel()
-                },
-                enabled = state.cancelEnabled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.cancelEnabled)
-                        state.cancelContainerColor else DispatchReceivedButtonStyles.DisabledContainer,
-                    contentColor = if (state.cancelEnabled)
-                        state.cancelContentColor else DispatchReceivedButtonStyles.DisabledContent
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(text = "Cancelar")
-            }
-        }
-    }
 }

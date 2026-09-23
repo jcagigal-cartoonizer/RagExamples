@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 328-3: import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +48,7 @@ fun OnlineInvoiceScreen(
                 when (effect) {
                     OnlineInvoiceUiEffect.NavigateBack -> navController.popBackStack()
                     is OnlineInvoiceUiEffect.ShowToast -> {
+                        // Hook this up from your Fragment/Activity if needed
                     }
                     is OnlineInvoiceUiEffect.OpenDialog -> {
                         viewModelStateDialogBridge(viewModel, effect.dialogState)
@@ -132,4 +134,6 @@ fun viewModelStateDialogBridge(
     viewModel: OnlineInvoiceComposeViewModel,
     dialogState: OnlineInvoiceDialogState
 ) {
+    // If you prefer, route effect -> state here.
+    // For pure state-driven dialogs, set dialog state from the VM directly.
 }

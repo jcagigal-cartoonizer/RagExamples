@@ -5,68 +5,116 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
+// # Block 487-5: import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import ifac.td.taxi.repository.room.entities.message.MessageEntity
-import ifac.td.taxi.viewmodel.MainActivityViewModel
-import ifac.td.taxi.viewmodel.MessageDetailComposeViewModel
-import kotlinx.coroutines.flow.collectLatest
 @Composable
-fun MessageDetailRoute(
-    navController: NavController,
-    viewModel: MessageDetailComposeViewModel,
-    sharedViewModel: MainActivityViewModel,
-    messageId: Int,
-    skipAutoClose: Boolean,
-    onNavigateToPredefinedMessages: (messageId: Int) -> Unit,
+fun MessageDetailCustomDialog(
+    state: MessageDetailDialogState,
+    onDismiss: () -> Unit,
+    onResult: (MessageDetailDialogResult) -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    LaunchedEffect(messageId, skipAutoClose) {
-        viewModel.initVM(messageId, skipAutoClose)
-    }
-    LaunchedEffect(Unit) {
-        viewModel.uiEffect.collectLatest { effect ->
-            when (effect) {
-                is MessageDetailUiEffect.NavigateBack -> navController.popBackStack()
-                is MessageDetailUiEffect.OpenPredefinedMessages -> {
-                    uiState.message?.let { onNavigateToPredefinedMessages(it.id) }
+    var input by remember(state) { mutableStateOf(TextFieldValue("")) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(state.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                state.description?.let { Text(it) }
+                state.message?.let { Text(it) }
+                state.messageOptions?.let { options ->
+                    Column {
+                        options.forEach { option ->
+                            TextButton(
+                                onClick = {
+                                    input = TextFieldValue(option)
+                                }
+                            ) {
+                                Text(option)
+                            }
+                        }
+                    }
                 }
-                is MessageDetailUiEffect.ShowDeleteConfirmDialog -> {}
-                is MessageDetailUiEffect.ShowWriteCustomMessageDialog -> {}
-                is MessageDetailUiEffect.PrintMessage -> {}
-                is MessageDetailUiEffect.DeleteMessage -> {}
-                is MessageDetailUiEffect.StopAutoClose -> viewModel.stopAutoCloseMessage()
-                is MessageDetailUiEffect.SendMessage -> viewModel.sendMessage(effect.response, effect.dispatchNumber)
+                if (state.hint != null) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        label = { Text(state.hint) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
-        }
-    }
-    MessageDetailScreen(
-        uiState = uiState,
-        ticketContent = viewModel.buildTicketContent(uiState.message, context),
-        onAnswer = { viewModel.stopAutoCloseMessage(); viewModel.onAnswerClicked() },
-        onPrint = { viewModel.stopAutoCloseMessage(); viewModel.onPrintClicked(messageId) },
-        onDelete = { viewModel.stopAutoCloseMessage(); viewModel.onDeleteClicked(messageId) },
-        onAccept = { viewModel.stopAutoCloseMessage(); viewModel.onAcceptClicked() },
-        onPredefined = { viewModel.stopAutoCloseMessage(); viewModel.onPredefinedClicked() },
-        onNewMessage = { viewModel.stopAutoCloseMessage(); viewModel.onNewMessageClicked() },
-        onDialogResult = { dialogResult ->
-            when (dialogResult) {
-                is MessageDetailDialogResult.DeleteAccepted -> {
-                    viewModel.confirmDelete(messageId)
-                    navController.popBackStack()
+        },
+        confirmButton = {
+            when {
+                state.buttons.contains(MessageDetailDialogButtonType.ACCEPT) -> {
+                    TextButton(onClick = {
+                        onResult(MessageDetailDialogResult.Accept(input.text))
+                    }) { Text("Accept") }
                 }
-                is MessageDetailDialogResult.SendCustomMessage -> {
-                    viewModel.sendMessage(dialogResult.text, sharedViewModel.dispatchFlow.value?.dispatchNumber)
+                state.buttons.contains(MessageDetailDialogButtonType.SEND) -> {
+                    TextButton(onClick = {
+                        onResult(MessageDetailDialogResult.SendCustomMessage(input.text))
+                    }) { Text("Send") }
                 }
-                else -> Unit
+            }
+        },
+        dismissButton = {
+            if (state.buttons.contains(MessageDetailDialogButtonType.CANCEL)) {
+                TextButton(onClick = { onDismiss() }) { Text("Cancel") }
             }
         }
     )
 }
+sealed interface MessageDetailDialogResult {
+    data object Dismiss : MessageDetailDialogResult
+    data class Accept(val text: String) : MessageDetailDialogResult
+    data class SendCustomMessage(val text: String) : MessageDetailDialogResult
+    data object DeleteAccepted : MessageDetailDialogResult
+}
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
+import ifac.td.taxi.ui.screen.compose.MessageDetailRoute
+import org.koin.androidx.viewmodel.ext.android.activityViewModel
+import org.koin.androidx.viewmodel.ext.android.viewModel
+class MessageDetailComposeFragment : Fragment(R.layout.fragment_message_detail_compose) {
+    private val vModel: ifac.td.taxi.viewmodel.MessageDetailComposeViewModel by viewModel()
+    private val sharedViewModel: ifac.td.taxi.viewmodel.MainActivityViewModel by activityViewModel()
+    override fun onViewCreated(view: android.view.View, savedInstanceState: android.os.Bundle?) {
+        val args = MessageDetailFragmentArgs.fromBundle(requireArguments())
+        view.findViewById<ComposeView>(R.id.composeView).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent {
+                MessageDetailRoute(
+                    navController = findNavController(),
+                    viewModel = vModel,
+                    sharedViewModel = sharedViewModel,
+                    messageId = args.messageId,
+                    skipAutoClose = args.skipAutoClose,
+                    onNavigateToPredefinedMessages = { messageId ->
+                        findNavController().navigate(
+                            MessageDetailComposeFragmentDirections.actionMessageDetailFragmentToPredefinedMessageFragment(
+                                messageId,
+                                true
+                            )
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+`fragment_message_detail_compose.xml` can be as simple as:
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.compose.ui.platform.ComposeView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/composeView"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+The code above is intentionally close to the fragment logic. In a production Compose migration, you would likely also want:

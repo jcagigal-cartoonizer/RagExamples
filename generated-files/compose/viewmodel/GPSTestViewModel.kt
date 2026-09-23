@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 118-4: import android.app.Application
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper

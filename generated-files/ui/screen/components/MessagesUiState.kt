@@ -4,6 +4,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
+// # Block 11-1: import ifac.td.taxi.repository.room.entities.message.MessageEntity
 import ifac.td.taxi.repository.room.entities.message.MessageEntity
 data class MessagesUiState(
     val messages: List<MessageEntity> = emptyList(),

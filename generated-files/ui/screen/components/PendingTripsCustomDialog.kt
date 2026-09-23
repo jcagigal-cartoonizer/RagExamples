@@ -5,144 +5,108 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import ifac.td.taxi.R
 import androidx.compose.ui.window.Dialog
+// # Block 453-5: import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.viewmodel.PendingTripsUiEffect
-import ifac.td.taxi.viewmodel.PendingTripsUiEvent
-import ifac.td.taxi.viewmodel.PendingTripsUiState
-import ifac.td.taxi.viewmodel.PendingTripsViewModel
-import kotlinx.coroutines.flow.collectLatest
+import ifac.td.taxi.viewmodel.PendingTripsDialogButton
+import ifac.td.taxi.viewmodel.PendingTripsDialogButtonsState
 @Composable
-fun PendingTripsScreen(
-    viewModel: PendingTripsComposeViewModel,
-    onNavigateBack: () -> Unit,
-    onShowHeader: (Boolean) -> Unit = {},
+fun PendingTripsCustomDialog(
+    title: String,
+    description: String,
+    buttonsState: PendingTripsDialogButtonsState,
+    onDismissRequest: () -> Unit,
+    onButtonClick: (PendingTripsDialogButton) -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var dialogState by remember { mutableStateOf<PendingTripsDialogState?>(null) }
-    LaunchedEffect(Unit) {
-        viewModel.effects.collectLatest { effect ->
-            when (effect) {
-                PendingTripsUiEffect.NavigateBack -> onNavigateBack()
-                is PendingTripsUiEffect.ShowToast -> {
-                }
-                is PendingTripsUiEffect.OpenConfirmDialog -> {
-                    dialogState = PendingTripsDialogState(
-                        title = effect.title,
-                        description = effect.description,
-                        pendingTrip = effect.pendingTrip
-                    )
-                }
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text(text = title) },
+        text = { Text(text = description) },
+        confirmButton = {
+            if (buttonsState.acceptVisible) {
+                DialogButton(
+                    text = "Accept",
+                    enabled = buttonsState.acceptEnabled,
+                    containerColor = buttonsState.acceptContainerColor,
+                    contentColor = buttonsState.acceptContentColor,
+                    onClick = { onButtonClick(PendingTripsDialogButton.ACCEPT) }
+                )
             }
-        }
-    }
-    LaunchedEffect(Unit) {
-        onShowHeader(true)
-        viewModel.onScreenStarted()
-    }
-    DisposableEffect(Unit) {
-        onDispose {
-            viewModel.onScreenStopped()
-        }
-    }
-    PendingTripsContent(
-        uiState = uiState,
-        buttonsState = uiState.buttonsState,
-        onTripClick = { tripId ->
-            viewModel.onTripClicked(tripId)
         },
-        onButtonClick = { buttonAction ->
-            viewModel.onButtonAction(buttonAction)
+        dismissButton = {
+            if (buttonsState.cancelVisible) {
+                DialogButton(
+                    text = "Cancel",
+                    enabled = buttonsState.cancelEnabled,
+                    containerColor = buttonsState.cancelContainerColor,
+                    contentColor = buttonsState.cancelContentColor,
+                    onClick = { onButtonClick(PendingTripsDialogButton.CANCEL) }
+                )
+            }
         }
     )
-    dialogState?.let { state ->
-        PendingTripsCustomDialog(
-            title = state.title,
-            description = state.description,
-            buttonsState = uiState.buttonsState.dialogButtonsState,
-            onDismissRequest = { dialogState = null },
-            onButtonClick = { button ->
-                dialogState?.pendingTrip?.let { trip ->
-                    when (button) {
-                        PendingTripsDialogButton.CANCEL -> {
-                            dialogState = null
-                        }
-                        PendingTripsDialogButton.ACCEPT -> {
-                            viewModel.onConfirmRequestTrip(trip)
-                            dialogState = null
-                        }
-                    }
-                }
-            }
-        )
-    }
 }
 @Composable
-fun PendingTripsContent(
-    uiState: PendingTripsUiState,
-    buttonsState: PendingTripsButtonsState,
-    onTripClick: (String) -> Unit,
-    onButtonClick: (PendingTripsScreenButtonAction) -> Unit,
-) {
-    Scaffold(
-        topBar = {
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            PendingTripsButtonsRow(
-                state = buttonsState,
-                onButtonClick = onButtonClick
-            )
-            if (uiState.pendingTrips.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
-                ) {
-                    Text(text = "No trips")
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(uiState.pendingTrips, key = { it.tripID ?: it.hashCode().toString() }) { trip ->
-                        PendingTripRow(
-                            tripId = trip.tripID.orEmpty(),
-                            pickupAddress = trip.pickupAddress.orEmpty(),
-                            onClick = { onTripClick(trip.tripID.orEmpty()) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-@Composable
-fun PendingTripRow(
-    tripId: String,
-    pickupAddress: String,
+fun DialogButton(
+    text: String,
+    enabled: Boolean,
+    containerColor: androidx.compose.ui.graphics.Color,
+    contentColor: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit
 ) {
-    ElevatedCard(
+    TextButton(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth()
+        enabled = enabled,
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+            disabledContainerColor = containerColor,
+            disabledContentColor = contentColor
+        )
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(text = "Trip ID: $tripId", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(4.dp))
-            Text(text = pickupAddress.ifBlank { "No address" })
+        Text(text)
+    }
+}
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+data class PendingTripsDialogState(
+    val title: String,
+    val description: String,
+    val pendingTrip: PendingTrip
+)
+To preserve Jetpack Views navigation semantics, use callbacks from the host `Fragment` or `Activity` when embedding Compose:
+@Composable
+fun PendingTripsRoute(
+    viewModel: PendingTripsComposeViewModel,
+    navigateBack: () -> Unit,
+    showHeader: (Boolean) -> Unit
+) {
+    PendingTripsScreen(
+        viewModel = viewModel,
+        onNavigateBack = navigateBack,
+        onShowHeader = showHeader
+    )
+}
+class PendingTripsComposeFragment : Fragment() {
+    private val viewModel: PendingTripsViewModel by viewModel()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ) = ComposeView(requireContext()).apply {
+        setContent {
+            PendingTripsRoute(
+                viewModel = viewModel,
+                navigateBack = { findNavController().navigateUp() },
+                showHeader = { /* iMainActivity.showHeader(it) */ }
+            )
         }
     }
 }
+Original fragment responsibilities now mapped to:
+1. a **fully integrated `NavHost` example** for this screen,  
+2. a **Material3 theme-matching custom button component**, or  
+3. a **more exact XML-to-Compose port** if you paste `custom_dialog.xml` and `CustomButton` implementation.

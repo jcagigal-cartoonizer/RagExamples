@@ -1,6 +1,8 @@
 package com.cartoonizer.rag.shared.utils;
 
 import com.cartoonizer.rag.openai.OpenAiChat;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FIRST_PREFIX;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAST_PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
@@ -14,12 +16,12 @@ public class FragmentQuestionsProcessor {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if (!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) {
+            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
                 continue;
             }
             new FragmentQuestionsProcessor("./example-files").askQuestions();
             try {
-                Thread.sleep(10000);
+                Thread.sleep(5000);
             } catch (InterruptedException ex) {
             }
         }
@@ -75,9 +77,9 @@ public class FragmentQuestionsProcessor {
             "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
             "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
             "6. provide a full `" + PREFIX + "ButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<" + PREFIX + "UiEffect>` instead of multiple event types\n" +
-            "7. Provide a compose CustomDialog implementation based on the custom_dialog.xml file and the dialog implemented in the CustomDialog.kt file " +
-            "8. Provide also a `" + PREFIX + "ButtonsState` with exact Compose button styling helpers matching the custom button component more closely" +
-            "\nUse only android and jetpack compose references"
+            "7. Provide a compose CustomDialog implementation based on the custom_dialog.xml file and the dialog implemented in the CustomDialog.kt file \n" +
+            "8. Provide also a `" + PREFIX + "ButtonsState` with exact Compose button styling helpers matching the custom button component more closely \n" +
+            "Use only android and jetpack compose references\n"
 
             };
             return questions;

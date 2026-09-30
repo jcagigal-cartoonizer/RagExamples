@@ -1,23 +1,136 @@
-Below is a Compose-based rewrite that keeps the original navigation behavior, replaces the fragment button logic with state holders, uses a `UiState + SharedFlow<UiEffect>` pattern, and provides a Compose dialog equivalent to the existing custom dialog.
+Below is a Compose-first replacement for the `ChooseOptionFragment` + `ChooseOptionViewModel` flow, while preserving the same navigation behavior and the same confirm-dialog interaction pattern.
 
-I’ll split it into:
+I’m providing:
 
-1. `ChooseOptionViewModel` with `UiState + UiEffect`
-2. `ChooseOptionButtonsState` + styling helpers
-3. `ChooseOptionScreen` composable
-4. `CustomDialog` Compose implementation
-5. Navigation host usage notes
+1. A `ChooseOptionScreen` composable that replaces the fragment UI  
+2. A Compose-friendly `ChooseOptionViewModel` using `UiState + UiEvent + SharedFlow<ChooseOptionUiEffect>`  
+3. Dialog state handling with lifecycle-aware collection  
+4. A Compose `CustomDialog` implementation inspired by the existing XML/fragment dialog behavior  
+5. A `ChooseOptionButtonsState` with button visibility/color/style helpers matching the old custom button behavior as closely as possible with Compose + Android/Material references only  
+6. Navigation preserved through callbacks so it can be used from a Fragment, NavHost, or Activity wrapper
 
 ---
 
-## 1) Compose-friendly `ChooseOptionViewModel`
-
-This version exposes:
-- `StateFlow<ChooseOptionUiState>` for UI state
-- `SharedFlow<ChooseOptionUiEffect>` for one-off actions like dialog open/close/navigation
+## 1) UI contract: state, events, effects
 
 ```kotlin
-package ifac.td.taxi.viewmodel
+package ifac.td.taxi.ui.screen.chooseoption
+
+import androidx.compose.runtime.Immutable
+
+@Immutable
+data class ChooseOptionUiState(
+    val title: String = "",
+    val options: List<ChooseOptionOptionItem> = emptyList(),
+    val isDialogVisible: Boolean = false,
+    val dialogState: ChooseOptionDialogState? = null,
+    val isLoading: Boolean = false,
+)
+
+@Immutable
+data class ChooseOptionOptionItem(
+    val id: String,
+    val label: String,
+)
+
+@Immutable
+data class ChooseOptionDialogState(
+    val title: String,
+    val description: String,
+    val buttons: ChooseOptionButtonsState,
+    val selectedId: String,
+    val selectedLabel: String,
+)
+
+sealed interface ChooseOptionUiEvent {
+    data object BackPressed : ChooseOptionUiEvent
+    data class OptionClicked(val id: String, val label: String) : ChooseOptionUiEvent
+    data object DialogAcceptClicked : ChooseOptionUiEvent
+    data object DialogCancelClicked : ChooseOptionUiEvent
+}
+
+sealed interface ChooseOptionUiEffect {
+    data object NavigateBack : ChooseOptionUiEffect
+    data class ShowDialog(val dialog: ChooseOptionDialogState) : ChooseOptionUiEffect
+    data object HideDialog : ChooseOptionUiEffect
+    data object CloseScreenAndGoBack : ChooseOptionUiEffect
+}
+```
+
+---
+
+## 2) Button state with exact visibility/style intent
+
+This replaces the fragment/button logic with a state holder.
+
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+
+enum class ChooseOptionButtonType {
+    CANCEL,
+    ACCEPT
+}
+
+@Immutable
+data class ChooseOptionButtonStyle(
+    val backgroundColor: Color,
+    val contentColor: Color,
+    val borderColor: Color? = null,
+    val visible: Boolean = true,
+)
+
+@Immutable
+data class ChooseOptionButtonsState(
+    val cancel: ChooseOptionButtonStyle = ChooseOptionButtonStyle(
+        backgroundColor = Color(0xFFE0E0E0),
+        contentColor = Color(0xFF1C1C1C),
+        visible = true
+    ),
+    val accept: ChooseOptionButtonStyle = ChooseOptionButtonStyle(
+        backgroundColor = Color(0xFF2E7D32),
+        contentColor = Color.White,
+        visible = true
+    ),
+) {
+    companion object {
+        /**
+         * Mirrors the fragment dialog:
+         * buttons = arrayListOf(ButtonType.CANCEL, ButtonType.ACCEPT)
+         */
+        fun confirmCancelAccept(): ChooseOptionButtonsState = ChooseOptionButtonsState(
+            cancel = ChooseOptionButtonStyle(
+                backgroundColor = Color(0xFFE0E0E0),
+                contentColor = Color(0xFF1C1C1C),
+                visible = true
+            ),
+            accept = ChooseOptionButtonStyle(
+                backgroundColor = Color(0xFF2E7D32),
+                contentColor = Color.White,
+                visible = true
+            )
+        )
+    }
+}
+```
+
+If you have exact XML colors from `custom_button.xml`, replace the colors above with those exact values.
+
+---
+
+## 3) Compose-friendly ViewModel
+
+This keeps the original business actions:
+- send selected shift answer
+- login driver
+- log off driver
+
+But exposes state/effects cleanly for Compose.
+
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -31,40 +144,13 @@ import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
 import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
 import ifac.td.taxi.framework.util.Logs
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
-
-data class ChooseOptionUiState(
-    val options: List<ChooseOptionItem> = emptyList(),
-    val buttonsState: ChooseOptionButtonsState = ChooseOptionButtonsState.default(),
-    val dialogState: ChooseOptionDialogState = ChooseOptionDialogState.Hidden,
-    val isLoading: Boolean = false,
-)
-
-data class ChooseOptionItem(
-    val id: String,
-    val label: String,
-)
-
-sealed interface ChooseOptionDialogState {
-    data object Hidden : ChooseOptionDialogState
-    data class ConfirmSelection(
-        val selectedId: String,
-        val selectedLabel: String,
-    ) : ChooseOptionDialogState
-}
-
-sealed interface ChooseOptionUiEffect {
-    data object NavigateBack : ChooseOptionUiEffect
-    data object RequestCloseDialog : ChooseOptionUiEffect
-    data object RequestOpenDialog : ChooseOptionUiEffect
-    data object FinishSelectionAndLogin : ChooseOptionUiEffect
-}
 
 class ChooseOptionViewModel(
     application: Application,
@@ -83,48 +169,76 @@ class ChooseOptionViewModel(
     private val _uiEffect = MutableSharedFlow<ChooseOptionUiEffect>(extraBufferCapacity = 1)
     val uiEffect: SharedFlow<ChooseOptionUiEffect> = _uiEffect.asSharedFlow()
 
-    fun setOptions(ids: List<String>, labels: List<String>) {
-        val items = ids.zip(labels).map { (id, label) -> ChooseOptionItem(id, label) }
+    fun initOptions(ids: List<String>, labels: List<String>) {
         _uiState.value = _uiState.value.copy(
-            options = items,
-            buttonsState = ChooseOptionButtonsState.fromCount(items.size)
+            options = ids.zip(labels).map { (id, label) ->
+                ChooseOptionOptionItem(id = id, label = label)
+            }
         )
     }
 
-    fun onOptionClick(item: ChooseOptionItem) {
-        _uiState.value = _uiState.value.copy(
-            dialogState = ChooseOptionDialogState.ConfirmSelection(
-                selectedId = item.id,
-                selectedLabel = item.label
-            )
-        )
-        _uiEffect.tryEmit(ChooseOptionUiEffect.RequestOpenDialog)
-    }
+    fun onEvent(event: ChooseOptionUiEvent) {
+        when (event) {
+            ChooseOptionUiEvent.BackPressed -> goBackCancellingShift()
 
-    fun onDialogDismiss() {
-        _uiState.value = _uiState.value.copy(dialogState = ChooseOptionDialogState.Hidden)
-        _uiEffect.tryEmit(ChooseOptionUiEffect.RequestCloseDialog)
-    }
-
-    fun onDialogAccept() {
-        val dialog = _uiState.value.dialogState
-        if (dialog is ChooseOptionDialogState.ConfirmSelection) {
-            viewModelScope.launch {
-                Logs.d(TAG, "sendShiftSelectedAnswer: selectedId = ${dialog.selectedId}")
-                shiftStatusUseCase.sendShiftSelectedAnswer(
-                    dialog.selectedId,
-                    W2CLocation.getZoning()?.version ?: "00"
+            is ChooseOptionUiEvent.OptionClicked -> {
+                _uiState.value = _uiState.value.copy(
+                    isDialogVisible = true,
+                    dialogState = ChooseOptionDialogState(
+                        title = "Warning",
+                        description = "Are you sure you want to select option: ${event.label}?",
+                        buttons = ChooseOptionButtonsState.confirmCancelAccept(),
+                        selectedId = event.id,
+                        selectedLabel = event.label
+                    )
                 )
-                loginDriver()
-                _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
-                _uiState.value = _uiState.value.copy(dialogState = ChooseOptionDialogState.Hidden)
+                _uiEffect.tryEmit(ChooseOptionUiEffect.ShowDialog(_uiState.value.dialogState!!))
+            }
+
+            ChooseOptionUiEvent.DialogCancelClicked -> {
+                _uiState.value = _uiState.value.copy(isDialogVisible = false, dialogState = null)
+                _uiEffect.tryEmit(ChooseOptionUiEffect.HideDialog)
+            }
+
+            ChooseOptionUiEvent.DialogAcceptClicked -> {
+                val dialog = _uiState.value.dialogState ?: return
+                viewModelScope.launch {
+                    sendShiftSelectedAnswer(dialog.selectedId)
+                    loginDriver()
+                    _uiState.value = _uiState.value.copy(isDialogVisible = false, dialogState = null)
+                    _uiEffect.emit(ChooseOptionUiEffect.CloseScreenAndGoBack)
+                }
             }
         }
     }
 
-    fun cancelSelectionAndLogoff() {
+    fun sendShiftSelectedAnswer(selectedId: String) {
+        viewModelScope.launch {
+            Logs.d(TAG, "sendShiftSelectedAnswer: selectedId = $selectedId")
+            shiftStatusUseCase.sendShiftSelectedAnswer(
+                selectedId,
+                W2CLocation.getZoning()?.version ?: "00"
+            )
+        }
+    }
+
+    fun loginDriver() {
+        viewModelScope.launch {
+            sessionUseCase.getSession()?.let {
+                it.numDriver?.let { numDriver ->
+                    loginDriverUseCase.loginDriver(
+                        numDriver,
+                        it.pwdDriver ?: "",
+                        it.reinforcement
+                    )
+                }
+            }
+        }
+    }
+
+    fun logoffDriver() {
         viewModelScope.launch(Dispatchers.IO) {
-            Logs.d(TAG, "cancelSelectionAndLogoff: cancelling shift selection")
+            Logs.d(TAG, "logoffDriver: cancelling shift selection")
             endShiftUseCase.endShift()
             bravoCentralUseCase.logoff()
             shiftStatusUseCase.setStatus(ifConstants.STATE_DISCONNECTED, false)
@@ -132,146 +246,23 @@ class ChooseOptionViewModel(
         }
     }
 
-    private fun loginDriver() {
-        viewModelScope.launch {
-            sessionUseCase.getSession()?.let { session ->
-                session.numDriver?.let { numDriver ->
-                    loginDriverUseCase.loginDriver(
-                        numDriver,
-                        session.pwdDriver ?: "",
-                        session.reinforcement
-                    )
-                }
-            }
-        }
+    private fun goBackCancellingShift() {
+        logoffDriver()
     }
 }
 ```
 
 ---
 
-## 2) `ChooseOptionButtonsState` + button styling helpers
+## 4) Compose screen preserving fragment navigation
 
-This replaces the old fragment/button behavior and keeps the “visible/colored/disabled” logic centralized.
-
-```kotlin
-package ifac.td.taxi.viewmodel
-
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
-
-@Immutable
-data class ChooseOptionButtonsState(
-    val primaryVisible: Boolean,
-    val secondaryVisible: Boolean,
-    val tertiaryVisible: Boolean,
-    val primaryEnabled: Boolean = true,
-    val secondaryEnabled: Boolean = true,
-    val tertiaryEnabled: Boolean = true,
-    val primaryStyle: ChooseOptionButtonStyle,
-    val secondaryStyle: ChooseOptionButtonStyle,
-    val tertiaryStyle: ChooseOptionButtonStyle,
-) {
-    companion object {
-        fun default() = fromCount(0)
-
-        fun fromCount(count: Int): ChooseOptionButtonsState {
-            return when (count) {
-                0 -> ChooseOptionButtonsState(
-                    primaryVisible = false,
-                    secondaryVisible = false,
-                    tertiaryVisible = false,
-                    primaryStyle = ChooseOptionButtonStyle.primary(),
-                    secondaryStyle = ChooseOptionButtonStyle.secondary(),
-                    tertiaryStyle = ChooseOptionButtonStyle.tertiary(),
-                )
-
-                1 -> ChooseOptionButtonsState(
-                    primaryVisible = true,
-                    secondaryVisible = false,
-                    tertiaryVisible = false,
-                    primaryStyle = ChooseOptionButtonStyle.primary(),
-                    secondaryStyle = ChooseOptionButtonStyle.secondary(hidden = true),
-                    tertiaryStyle = ChooseOptionButtonStyle.tertiary(hidden = true),
-                )
-
-                2 -> ChooseOptionButtonsState(
-                    primaryVisible = true,
-                    secondaryVisible = true,
-                    tertiaryVisible = false,
-                    primaryStyle = ChooseOptionButtonStyle.primary(),
-                    secondaryStyle = ChooseOptionButtonStyle.secondary(),
-                    tertiaryStyle = ChooseOptionButtonStyle.tertiary(hidden = true),
-                )
-
-                else -> ChooseOptionButtonsState(
-                    primaryVisible = true,
-                    secondaryVisible = true,
-                    tertiaryVisible = true,
-                    primaryStyle = ChooseOptionButtonStyle.primary(),
-                    secondaryStyle = ChooseOptionButtonStyle.secondary(),
-                    tertiaryStyle = ChooseOptionButtonStyle.tertiary(),
-                )
-            }
-        }
-    }
-}
-
-@Immutable
-data class ChooseOptionButtonStyle(
-    val backgroundColor: Color,
-    val contentColor: Color,
-    val borderColor: Color?,
-    val visible: Boolean,
-) {
-    companion object {
-        fun primary(hidden: Boolean = false) = ChooseOptionButtonStyle(
-            backgroundColor = Color(0xFF1E88E5),
-            contentColor = Color.White,
-            borderColor = null,
-            visible = !hidden
-        )
-
-        fun secondary(hidden: Boolean = false) = ChooseOptionButtonStyle(
-            backgroundColor = Color(0xFFFFFFFF),
-            contentColor = Color(0xFF1E88E5),
-            borderColor = Color(0xFF1E88E5),
-            visible = !hidden
-        )
-
-        fun tertiary(hidden: Boolean = false) = ChooseOptionButtonStyle(
-            backgroundColor = Color(0xFFF2F2F2),
-            contentColor = Color(0xFF333333),
-            borderColor = Color(0xFFBDBDBD),
-            visible = !hidden
-        )
-    }
-}
-```
-
----
-
-## 3) Compose screen: `ChooseOptionScreen`
-
-This preserves the behavior:
-- shows header/bottom bar via callbacks or host integration
-- back press cancels selection and logs off
-- selecting an option opens a confirmation dialog
-- accepting sends answer, logs in again, then navigates back
+This version assumes you still receive the lists from navigation args or a wrapper fragment.  
+You can call `onBack` to preserve the old navigation behavior.
 
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen.chooseoption
 
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -279,271 +270,270 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.viewmodel.*
 import kotlinx.coroutines.flow.collectLatest
 
 @Composable
 fun ChooseOptionScreen(
     viewModel: ChooseOptionViewModel,
     onNavigateBack: () -> Unit,
-    onShowBottomBar: (Boolean) -> Unit,
-    onShowHeader: (Boolean) -> Unit,
-    onSetChooseOptionFragmentActive: (Boolean) -> Unit,
+    onCloseScreenAndGoBack: () -> Unit,
+    onSetFragmentActive: (Boolean) -> Unit,
+    title: String = "Choose Option",
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
-        onShowBottomBar(true)
-        onShowHeader(true)
-        onSetChooseOptionFragmentActive(true)
-    }
-
-    BackHandler {
-        onSetChooseOptionFragmentActive(false)
-        viewModel.cancelSelectionAndLogoff()
-    }
-
-    LaunchedEffect(viewModel) {
         viewModel.uiEffect.collectLatest { effect ->
             when (effect) {
                 ChooseOptionUiEffect.NavigateBack -> {
-                    onSetChooseOptionFragmentActive(false)
+                    onSetFragmentActive(false)
                     onNavigateBack()
                 }
-                ChooseOptionUiEffect.RequestCloseDialog -> Unit
-                ChooseOptionUiEffect.RequestOpenDialog -> Unit
-                ChooseOptionUiEffect.FinishSelectionAndLogin -> Unit
+
+                ChooseOptionUiEffect.HideDialog -> Unit
+
+                is ChooseOptionUiEffect.ShowDialog -> Unit
+
+                ChooseOptionUiEffect.CloseScreenAndGoBack -> {
+                    onSetFragmentActive(false)
+                    onCloseScreenAndGoBack()
+                }
             }
         }
     }
 
-    ChooseOptionContent(
-        uiState = uiState,
-        onOptionClick = viewModel::onOptionClick,
-        onDialogDismiss = viewModel::onDialogDismiss,
-        onDialogAccept = viewModel::onDialogAccept
-    )
-}
+    BackHandler {
+        viewModel.onEvent(ChooseOptionUiEvent.BackPressed)
+    }
 
-@Composable
-private fun ChooseOptionContent(
-    uiState: ChooseOptionUiState,
-    onOptionClick: (ChooseOptionItem) -> Unit,
-    onDialogDismiss: () -> Unit,
-    onDialogAccept: () -> Unit,
-) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(uiState.options) { item ->
-                OptionRow(item = item, onClick = { onOptionClick(item) })
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.padding(16.dp)
+            )
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(uiState.options) { option ->
+                    ChooseOptionOptionRow(
+                        label = option.label,
+                        onClick = {
+                            viewModel.onEvent(
+                                ChooseOptionUiEvent.OptionClicked(
+                                    id = option.id,
+                                    label = option.label
+                                )
+                            )
+                        }
+                    )
+                }
             }
         }
 
-        ChooseOptionButtons(
-            state = uiState.buttonsState,
-            options = uiState.options,
-            onOptionClick = onOptionClick
-        )
-    }
-
-    if (uiState.dialogState is ChooseOptionDialogState.ConfirmSelection) {
-        val dialog = uiState.dialogState as ChooseOptionDialogState.ConfirmSelection
-        ChooseOptionDialog(
-            title = "Warning",
-            description = "Do you want to send option: ${dialog.selectedLabel} ?",
-            onDismiss = onDialogDismiss,
-            onAccept = onDialogAccept,
-        )
+        if (uiState.isDialogVisible) {
+            uiState.dialogState?.let { dialogState ->
+                ChooseOptionCustomDialog(
+                    state = dialogState,
+                    onDismissRequest = { viewModel.onEvent(ChooseOptionUiEvent.DialogCancelClicked) },
+                    onCancel = { viewModel.onEvent(ChooseOptionUiEvent.DialogCancelClicked) },
+                    onAccept = { viewModel.onEvent(ChooseOptionUiEvent.DialogAcceptClicked) }
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun OptionRow(item: ChooseOptionItem, onClick: () -> Unit) {
-    Surface(
+private fun ChooseOptionOptionRow(
+    label: String,
+    onClick: () -> Unit
+) {
+    ElevatedButton(
+        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .clickable(onClick = onClick),
-        tonalElevation = 1.dp
+            .height(56.dp)
     ) {
-        Text(
-            text = item.label,
-            modifier = Modifier.padding(16.dp),
-            style = MaterialTheme.typography.bodyLarge
-        )
-    }
-}
-
-@Composable
-private fun ChooseOptionButtons(
-    state: ChooseOptionButtonsState,
-    options: List<ChooseOptionItem>,
-    onOptionClick: (ChooseOptionItem) -> Unit,
-) {
-    val visibleOptions = options.take(3)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        visibleOptions.getOrNull(0)?.let {
-            if (state.primaryVisible) StyledButton(it, state.primaryStyle, onOptionClick)
-        }
-        visibleOptions.getOrNull(1)?.let {
-            if (state.secondaryVisible) StyledButton(it, state.secondaryStyle, onOptionClick)
-        }
-        visibleOptions.getOrNull(2)?.let {
-            if (state.tertiaryVisible) StyledButton(it, state.tertiaryStyle, onOptionClick)
-        }
-    }
-}
-
-@Composable
-private fun StyledButton(
-    item: ChooseOptionItem,
-    style: ChooseOptionButtonStyle,
-    onOptionClick: (ChooseOptionItem) -> Unit,
-) {
-    val colors = ButtonDefaults.buttonColors(
-        containerColor = style.backgroundColor,
-        contentColor = style.contentColor
-    )
-
-    val border = style.borderColor?.let { BorderStroke(1.dp, it) }
-
-    Button(
-        onClick = { onOptionClick(item) },
-        enabled = style.visible,
-        colors = colors,
-        border = border,
-        modifier = Modifier
-            .weight(1f)
-            .height(48.dp)
-    ) {
-        Text(item.label)
+        Text(text = label)
     }
 }
 ```
 
 ---
 
-## 4) Compose `CustomDialog` equivalent
+## 5) Compose dialog based on the existing `CustomDialog`
 
-This is a Compose dialog styled to behave like a classic custom XML dialog. It supports title, description, and buttons.
+This is the Compose equivalent of `CustomDialog.CustomDialogModel` with `CANCEL` + `ACCEPT`.
 
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen.chooseoption
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun ChooseOptionDialog(
-    title: String,
-    description: String,
-    onDismiss: () -> Unit,
-    onAccept: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Color.White,
-        title = {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                color = Color(0xFF212121)
-            )
-        },
-        text = {
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFF424242)
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onAccept) {
-                Text("ACCEPT")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("CANCEL")
-            }
-        },
-        shape = RoundedCornerShape(16.dp)
-    )
-}
-```
-
-If you want it closer to a custom XML dialog layout, use this manual version:
-
-```kotlin
-@Composable
-fun CustomDialogCompose(
-    title: String,
-    description: String,
-    acceptText: String = "ACCEPT",
-    cancelText: String = "CANCEL",
-    onAccept: () -> Unit,
+fun ChooseOptionCustomDialog(
+    state: ChooseOptionDialogState,
+    onDismissRequest: () -> Unit,
     onCancel: () -> Unit,
+    onAccept: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onCancel) {
-        Surface(
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x66000000)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
             shape = RoundedCornerShape(16.dp),
-            tonalElevation = 8.dp,
-            color = Color.White
+            modifier = Modifier
+                .padding(24.dp)
+                .fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Color.Black
+                    text = state.title,
+                    style = MaterialTheme.typography.titleLarge
                 )
+
                 Spacer(modifier = Modifier.height(12.dp))
+
                 Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.DarkGray
+                    text = state.description,
+                    style = MaterialTheme.typography.bodyMedium
                 )
-                Spacer(modifier = Modifier.height(20.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onCancel) { Text(cancelText) }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(onClick = onAccept) { Text(acceptText) }
-                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                DialogButtonsRow(
+                    buttons = state.buttons,
+                    onCancel = onCancel,
+                    onAccept = onAccept
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun DialogButtonsRow(
+    buttons: ChooseOptionButtonsState,
+    onCancel: () -> Unit,
+    onAccept: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (buttons.cancel.visible) {
+            ChooseOptionDialogButton(
+                text = "Cancel",
+                style = buttons.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancel
+            )
+        }
+        if (buttons.accept.visible) {
+            ChooseOptionDialogButton(
+                text = "Accept",
+                style = buttons.accept,
+                modifier = Modifier.weight(1f),
+                onClick = onAccept
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChooseOptionDialogButton(
+    text: String,
+    style: ChooseOptionButtonStyle,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(48.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = style.backgroundColor,
+            contentColor = style.contentColor
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(text = text)
     }
 }
 ```
 
 ---
 
-## 5) Preserving Jetpack Views navigation
+## 6) Better styling helpers for the custom button component
 
-If your app still uses Fragment navigation, you can host this composable inside a fragment using `ComposeView`.
+If you want the button styling to more closely mimic your existing `CustomButton` component, use a helper like this:
 
 ```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun chooseOptionButtonColors(style: ChooseOptionButtonStyle): ButtonColors {
+    return ButtonDefaults.buttonColors(
+        containerColor = style.backgroundColor,
+        contentColor = style.contentColor,
+        disabledContainerColor = style.backgroundColor.copy(alpha = 0.4f),
+        disabledContentColor = style.contentColor.copy(alpha = 0.4f)
+    )
+}
+
+fun chooseOptionButtonBorder(style: ChooseOptionButtonStyle): BorderStroke? {
+    return style.borderColor?.let { BorderStroke(1.dp, it) }
+}
+
+fun chooseOptionButtonShape() = RoundedCornerShape(12.dp)
+```
+
+You can then use these in `ChooseOptionDialogButton`.
+
+---
+
+## 7) Optional wrapper Fragment to preserve current navigation exactly
+
+If you need to keep your current Fragment navigation entry point and only replace the UI with Compose, use a fragment wrapper:
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.compose.ui.platform.ComposeView
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.navArgs
+import ifac.td.taxi.ui.screen.chooseoption.ChooseOptionScreen
+
 class ChooseOptionComposeFragment : Fragment() {
 
-    private val viewModel: ChooseOptionViewModel by viewModel()
+    private val args: ChooseOptionFragmentArgs by navArgs()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -552,12 +542,14 @@ class ChooseOptionComposeFragment : Fragment() {
     ): View {
         return ComposeView(requireContext()).apply {
             setContent {
+                // Obtain your VM via Koin/Hilt/manual factory as needed.
+                // Here only the Compose UI is shown.
                 ChooseOptionScreen(
-                    viewModel = viewModel,
-                    onNavigateBack = { findNavController().navigateUp() },
-                    onShowBottomBar = { visible -> (activity as? MainActivityHost)?.showBottomBar(visible) },
-                    onShowHeader = { visible -> (activity as? MainActivityHost)?.showHeader(visible) },
-                    onSetChooseOptionFragmentActive = { active -> (activity as? MainActivityHost)?.setChooseOptionFragmentActive(active) }
+                    viewModel = TODO("Provide ChooseOptionViewModel"),
+                    onNavigateBack = { parentFragmentManager.popBackStack() },
+                    onCloseScreenAndGoBack = { parentFragmentManager.popBackStack() },
+                    onSetFragmentActive = { /* call activity method here */ },
+                    title = "Choose Option"
                 )
             }
         }
@@ -567,23 +559,49 @@ class ChooseOptionComposeFragment : Fragment() {
 
 ---
 
-## Notes about exact XML behavior
+## 8) Notes on exact XML parity
 
-Since the XML and `CustomButton` / `CustomDialog` source are not fully shown, the code above matches the fragment behavior and provides a close Compose equivalent. If you want a truly pixel-identical conversion, you’d need to replicate:
-- exact paddings/margins
-- colors from the XML
-- text sizes/fonts
-- elevation, corner radii
-- visibility rules from the original `ClassicAdapter` item layout and `CustomButton`
+To match the original XML behavior exactly, you’ll want to copy over these details from your XML/custom views:
+- button height
+- corner radius
+- button background colors
+- text sizes
+- margins/padding
+- dialog width and shape
+- typography from `custom_dialog.xml`
+- any icons in the header or top bar
 
-The most important behavior from the fragment is preserved:
-- selecting an option opens confirmation dialog
-- accept sends selected answer, logs in, and navigates back
-- back press logs off and navigates back
-- dialog handling is state-driven
-- one-off actions use `SharedFlow<ChooseOptionUiEffect>`
+The structure above is intentionally organized so you can swap in your exact values without changing the architecture.
+
+---
+
+## 9) How the flow maps from the old Fragment
+
+Old flow:
+- user taps option
+- fragment opens `CustomDialog`
+- if ACCEPT:
+  - send shift selected answer
+  - login driver
+  - navigate back
+- if BACK:
+  - logoff driver
+  - navigate back
+
+Compose flow:
+- user taps option
+- ViewModel emits dialog state
+- Compose shows dialog
+- if ACCEPT:
+  - ViewModel sends shift selected answer
+  - ViewModel logs in driver
+  - emits close/navigation effect
+- if BACK:
+  - ViewModel logs off driver
+  - emits navigate-back effect
+
+---
 
 If you want, I can also provide:
-1. a `ClassicAdapter`-to-Compose item conversion,
-2. a fragment wrapper that fully mirrors your current `BaseFragment` integration,
-3. or a more exact `CustomButton` style implementation with colors/borders/shapes mapped from XML.
+1. a full `custom_dialog.xml`-matched Compose dialog with header image, rounded shadow, and XML-like spacing, or  
+2. a `ChooseOptionFragment` using `ComposeView` plus Koin injection so you can drop it into your existing navigation graph with minimal changes.

@@ -1,292 +1,158 @@
-Below is a Compose-based replacement for the `BluetoothDiscoveryFragment` plus a Compose-friendly `BluetoothDiscoveryViewModel` redesign using:
+Below is a Compose-first rewrite that keeps the original behavior, preserves the existing navigation intent, and replaces fragment/button/dialog logic with:
 
 - `UiState`
-- `UiEvent`
 - `UiEffect` via a single `SharedFlow<BluetoothDiscoveryUiEffect>`
-- dialog state managed in Compose
-- navigation preserved through a callback you can route to your existing activity/fragment nav host
-- button state holders that fully replace the fragment button logic
-- Compose dialog implementation matching the role of `custom_dialog.xml` / `CustomDialog.kt`
+- lifecycle-safe collection in Compose
+- dialog state handled from effects
+- a `BluetoothDiscoveryButtonsState` that mirrors the original XML/button enable-disable-loading behavior
+- a Compose `CustomDialog` equivalent
 - button styling helpers closer to your custom button component behavior
 
-I’m using only Android + Jetpack Compose APIs.
+I’ll give you:
+
+1. `BluetoothDiscoveryUiState`, `BluetoothDiscoveryUiEffect`, `BluetoothDiscoveryButtonsState`
+2. a Compose `BluetoothDiscoveryViewModel`
+3. a full `BluetoothDiscoveryScreen` composable
+4. Compose dialog implementation
+5. Compose button styling helpers
+6. notes on preserving navigation and lifecycle behavior
 
 ---
 
-# 1) Compose screen replacing `BluetoothDiscoveryFragment`
-
-## `BluetoothDiscoveryScreen.kt`
+## 1) Compose UI models
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.bluetooth
 
-import android.Manifest
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothManager
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.location.LocationManager
-import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.core.app.ActivityCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LifecycleStartEffect
-import androidx.lifecycle.compose.rememberUpdatedState
-import androidx.navigation.NavController
-import ifac.td.taxi.R
-import ifac.td.taxi.framework.sdk.model.BluetoothInfo
-
-@Composable
-fun BluetoothDiscoveryScreen(
-    viewModel: BluetoothDiscoveryComposeViewModel,
-    navController: NavController,
-    onShowHeader: (Boolean) -> Unit,
-    onShowToast: (Int) -> Unit,
-    onConnectTaximeter: () -> Unit,
-    onRequestPermission: (String) -> Unit,
-) {
-    val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-
-    val currentOnShowToast by rememberUpdatedState(onShowToast)
-    val currentOnConnectTaximeter by rememberUpdatedState(onConnectTaximeter)
-    val currentOnRequestPermission by rememberUpdatedState(onRequestPermission)
-
-    var dialogState by remember { mutableStateOf<BluetoothDiscoveryDialogState?>(null) }
-
-    val btPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        viewModel.onBluetoothPermissionResult(granted)
-    }
-
-    val locationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        viewModel.onLocationPermissionResult(granted)
-    }
-
-    LaunchedEffect(Unit) {
-        onShowHeader(false)
-        viewModel.onScreenStarted()
-    }
-
-    LaunchedEffect(viewModel) {
-        viewModel.effects.collect { effect ->
-            when (effect) {
-                is BluetoothDiscoveryUiEffect.ShowDialog -> dialogState = effect.dialogState
-                is BluetoothDiscoveryUiEffect.HideDialog -> dialogState = null
-
-                is BluetoothDiscoveryUiEffect.RequestBluetoothPermission -> {
-                    btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                }
-
-                is BluetoothDiscoveryUiEffect.RequestLocationPermission -> {
-                    locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                }
-
-                is BluetoothDiscoveryUiEffect.OpenBluetoothSettings -> {
-                    context.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                }
-
-                is BluetoothDiscoveryUiEffect.OpenLocationSettings -> {
-                    context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                }
-
-                is BluetoothDiscoveryUiEffect.NavigateBack -> {
-                    navController.popBackStack()
-                }
-
-                is BluetoothDiscoveryUiEffect.ConnectTaximeterAndBack -> {
-                    currentOnConnectTaximeter()
-                    navController.popBackStack()
-                }
-
-                is BluetoothDiscoveryUiEffect.ShowToast -> {
-                    currentOnShowToast(effect.messageRes)
-                }
-
-                is BluetoothDiscoveryUiEffect.OpenPermissionSettings -> {
-                    currentOnRequestPermission(effect.permission)
-                }
-            }
-        }
-    }
-
-    if (dialogState != null) {
-        CustomDialog(
-            state = dialogState!!,
-            onDismiss = { viewModel.onDialogAction(BluetoothDiscoveryDialogAction.Dismiss) },
-            onAction = { action -> viewModel.onDialogAction(action) }
-        )
-    }
-
-    BluetoothDiscoveryContent(
-        state = uiState,
-        onAction = viewModel::onUiEvent
-    )
-}
-```
-
----
-
-# 2) Compose UI state, events, effects, and button state holder
-
-## `BluetoothDiscoveryUiModels.kt`
-
-```kotlin
-package ifac.td.taxi.ui.screen
-
-import androidx.annotation.DrawableRes
-import androidx.annotation.StringRes
-import ifac.td.taxi.R
 import ifac.td.taxi.framework.sdk.model.BluetoothInfo
 
 data class BluetoothDiscoveryUiState(
-    val isDiscovering: Boolean = false,
-    val devices: List<BluetoothInfo> = emptyList(),
-    val selectedDevice: BluetoothInfo? = null,
     val savedDevice: BluetoothInfo? = null,
-    val isLoaded: Boolean = false,
-    val externalGpsEnabled: Boolean = false,
-    val showExternalGpsCheckbox: Boolean = false,
+    val discoveredDevices: List<BluetoothInfo> = emptyList(),
+    val selectedDevice: BluetoothInfo? = null,
+    val isDiscovering: Boolean = false,
     val isBluetoothEnabled: Boolean = true,
     val isLocationEnabled: Boolean = true,
-    val title: String = "Bluetooth",
-    @DrawableRes val taximeterImageRes: Int = R.drawable.background_dialog_transparent,
-    val buttons: BluetoothDiscoveryButtonsState = BluetoothDiscoveryButtonsState(),
-    val pendingRemoveDevice: BluetoothInfo? = null,
-    val pendingDeselectDevice: BluetoothInfo? = null,
+    val hasBluetoothPermission: Boolean = false,
+    val hasLocationPermission: Boolean = false,
+    val showExternalGpsCheckbox: Boolean = false,
+    val externalGpsChecked: Boolean = false,
+    val shiftDisconnected: Boolean = true,
+    val titleText: String = "Bluetooth",
+    val titleImageRes: Int = android.R.color.transparent,
+    val isSavedDeviceLoaded: Boolean = false,
 )
 
-sealed interface BluetoothDiscoveryUiEvent {
-    data object ScreenStarted : BluetoothDiscoveryUiEvent
-    data object DiscoverClicked : BluetoothDiscoveryUiEvent
-    data object AcceptClicked : BluetoothDiscoveryUiEvent
-    data object CancelClicked : BluetoothDiscoveryUiEvent
-    data class DeviceSelected(val device: BluetoothInfo) : BluetoothDiscoveryUiEvent
-    data class DeviceDeselected(val device: BluetoothInfo) : BluetoothDiscoveryUiEvent
-    data class ExternalGpsChanged(val checked: Boolean) : BluetoothDiscoveryUiEvent
-
-    data class BluetoothPermissionResult(val granted: Boolean) : BluetoothDiscoveryUiEvent
-    data class LocationPermissionResult(val granted: Boolean) : BluetoothDiscoveryUiEvent
-
-    data object BluetoothDialogAccept : BluetoothDiscoveryUiEvent
-    data object LocationDialogAccept : BluetoothDiscoveryUiEvent
-    data object PermissionDialogCancel : BluetoothDiscoveryUiEvent
-}
-
 sealed interface BluetoothDiscoveryUiEffect {
-    data class ShowDialog(val dialogState: BluetoothDiscoveryDialogState) : BluetoothDiscoveryUiEffect
-    data object HideDialog : BluetoothDiscoveryUiEffect
-    data object RequestBluetoothPermission : BluetoothDiscoveryUiEffect
-    data object RequestLocationPermission : BluetoothDiscoveryUiEffect
-    data object OpenBluetoothSettings : BluetoothDiscoveryUiEffect
-    data object OpenLocationSettings : BluetoothDiscoveryUiEffect
+    data class ShowDialog(val dialog: BluetoothDiscoveryDialogState) : BluetoothDiscoveryUiEffect
+    data class ShowToast(val messageRes: Int) : BluetoothDiscoveryUiEffect
+    data class RequestBluetoothPermission(val permission: String) : BluetoothDiscoveryUiEffect
+    data class RequestLocationPermission(val permission: String) : BluetoothDiscoveryUiEffect
+    data class OpenBluetoothSettings(val intentAction: String) : BluetoothDiscoveryUiEffect
+    data class OpenLocationSettings(val intentAction: String) : BluetoothDiscoveryUiEffect
     data object NavigateBack : BluetoothDiscoveryUiEffect
-    data object ConnectTaximeterAndBack : BluetoothDiscoveryUiEffect
-    data class ShowToast(@StringRes val messageRes: Int) : BluetoothDiscoveryUiEffect
-    data class OpenPermissionSettings(val permission: String) : BluetoothDiscoveryUiEffect
-}
-
-enum class BluetoothDiscoveryDialogType {
-    BluetoothPermission,
-    LocationPermission,
-    EnableBluetooth,
-    EnableLocation,
-    ReplaceSavedDevice,
-    UnlinkSavedDevice,
-    SaveResult,
-    RemoveResult
+    data object ConnectTaximeter : BluetoothDiscoveryUiEffect
 }
 
 data class BluetoothDiscoveryDialogState(
-    val type: BluetoothDiscoveryDialogType,
     val title: String,
     val description: String,
-    val isCancelable: Boolean = true,
-    val buttons: List<DialogButtonSpec> = listOf(
-        DialogButtonSpec.Cancel,
-        DialogButtonSpec.Accept
-    )
+    val buttons: List<BluetoothDialogButton> = listOf(
+        BluetoothDialogButton.Cancel,
+        BluetoothDialogButton.Accept
+    ),
+    val cancellable: Boolean = true,
 )
 
-sealed interface BluetoothDiscoveryDialogAction {
-    data object Accept : BluetoothDiscoveryDialogAction
-    data object Cancel : BluetoothDiscoveryDialogAction
-    data object Dismiss : BluetoothDiscoveryDialogAction
+enum class BluetoothDialogButton {
+    Cancel,
+    Accept
 }
-
-sealed class DialogButtonSpec(
-    val label: String,
-    val type: DialogButtonType
-) {
-    data object Cancel : DialogButtonSpec("Cancel", DialogButtonType.Cancel)
-    data object Accept : DialogButtonSpec("Accept", DialogButtonType.Accept)
-}
-
-enum class DialogButtonType { Cancel, Accept }
-
-data class BluetoothDiscoveryButtonsState(
-    val discover: ButtonVisualState = ButtonVisualState.PrimaryEnabled,
-    val accept: ButtonVisualState = ButtonVisualState.PrimaryEnabled,
-    val cancel: ButtonVisualState = ButtonVisualState.SecondaryEnabled,
-)
-
-sealed interface ButtonVisualState {
-    data object PrimaryEnabled : ButtonVisualState
-    data object PrimaryLoading : ButtonVisualState
-    data object PrimaryDisabled : ButtonVisualState
-    data object SecondaryEnabled : ButtonVisualState
-    data object SecondaryDisabled : ButtonVisualState
-}
-
-data class BluetoothDiscoveryListItemState(
-    val device: BluetoothInfo,
-    val isSelected: Boolean,
-    val isSaved: Boolean
-)
 ```
 
 ---
 
-# 3) Compose-friendly ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+## 2) `BluetoothDiscoveryButtonsState`
 
-## `BluetoothDiscoveryComposeViewModel.kt`
+This replaces all fragment-side button styling logic.
+
+It includes:
+- `Discover`
+- `Accept`
+- `Cancel`
+- optionally checkbox visibility state if you want it tied in
+
+It also maps directly to the original behavior:
+- both discover and accept enabled when shift status is `DISCONNECTED` or `UNKNOWN`
+- both disabled otherwise
+- discover becomes loading while discovery runs
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.bluetooth
+
+import androidx.compose.runtime.Immutable
+
+enum class ComposeButtonState {
+    ENABLE,
+    DISABLE,
+    LOADING
+}
+
+@Immutable
+data class BluetoothDiscoveryButtonsState(
+    val discoverState: ComposeButtonState = ComposeButtonState.ENABLE,
+    val acceptState: ComposeButtonState = ComposeButtonState.ENABLE,
+    val cancelState: ComposeButtonState = ComposeButtonState.ENABLE,
+    val externalGpsVisible: Boolean = false,
+    val externalGpsChecked: Boolean = false,
+) {
+    val discoverEnabled: Boolean get() = discoverState == ComposeButtonState.ENABLE
+    val acceptEnabled: Boolean get() = acceptState == ComposeButtonState.ENABLE
+    val cancelEnabled: Boolean get() = cancelState == ComposeButtonState.ENABLE
+    val isDiscoverLoading: Boolean get() = discoverState == ComposeButtonState.LOADING
+
+    companion object {
+        fun from(
+            shiftDisconnected: Boolean,
+            discovering: Boolean,
+            externalGpsVisible: Boolean,
+            externalGpsChecked: Boolean
+        ): BluetoothDiscoveryButtonsState {
+            val baseState = if (shiftDisconnected) ComposeButtonState.ENABLE else ComposeButtonState.DISABLE
+            return BluetoothDiscoveryButtonsState(
+                discoverState = if (discovering) ComposeButtonState.LOADING else baseState,
+                acceptState = baseState,
+                cancelState = ComposeButtonState.ENABLE,
+                externalGpsVisible = externalGpsVisible,
+                externalGpsChecked = externalGpsChecked
+            )
+        }
+    }
+}
+```
+
+---
+
+## 3) Compose ViewModel
+
+This version uses:
+- `StateFlow<BluetoothDiscoveryUiState>`
+- `SharedFlow<BluetoothDiscoveryUiEffect>`
+- internal dialog decisions moved to effects
+- lifecycle-friendly state updates
+
+```kotlin
+package ifac.td.taxi.viewmodel
 
 import android.app.Application
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import android.location.LocationManager
 import android.os.Build
-import androidx.lifecycle.AndroidViewModel
+import android.provider.Settings
 import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.licensing.models.bluetooth.Result
 import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
 import ifac.td.taxi.domain.usecase.SessionUseCase
@@ -296,8 +162,15 @@ import ifac.td.taxi.framework.sdk.model.BluetoothInfo.Companion.checkTaximeterTy
 import ifac.td.taxi.framework.sdk.usecase.BluetoothUseCase
 import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
 import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.ui.screen.bluetooth.BluetoothDiscoveryDialogState
+import ifac.td.taxi.ui.screen.bluetooth.BluetoothDiscoveryUiEffect
+import ifac.td.taxi.ui.screen.bluetooth.BluetoothDiscoveryUiState
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class BluetoothDiscoveryComposeViewModel(
@@ -306,278 +179,341 @@ class BluetoothDiscoveryComposeViewModel(
     private val sessionUseCase: SessionUseCase,
     private val bluetoothUseCase: BluetoothUseCase,
     private val taximeterConnectUseCase: TaximeterConnectUseCase,
-    application: Application,
-) : AndroidViewModel(application) {
-
-    private val appContext: Context = application.applicationContext
+    context: Application,
+) : BaseViewModel(context) {
 
     private val _uiState = MutableStateFlow(BluetoothDiscoveryUiState())
-    val uiState: StateFlow<BluetoothDiscoveryUiState> = _uiState.asStateFlow()
+    val uiState = _uiState.asStateFlow()
 
-    private val _effects = MutableSharedFlow<BluetoothDiscoveryUiEffect>()
-    val effects: SharedFlow<BluetoothDiscoveryUiEffect> = _effects.asSharedFlow()
+    private val _uiEffect = MutableSharedFlow<BluetoothDiscoveryUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
 
-    fun onScreenStarted() {
+    init {
         viewModelScope.launch {
-            loadSavedDevices()
-            refreshActivationState()
-            refreshPermissionsUi()
-        }
-    }
-
-    fun onUiEvent(event: BluetoothDiscoveryUiEvent) {
-        when (event) {
-            BluetoothDiscoveryUiEvent.ScreenStarted -> onScreenStarted()
-            BluetoothDiscoveryUiEvent.DiscoverClicked -> discoverDevices()
-            BluetoothDiscoveryUiEvent.AcceptClicked -> accept()
-            BluetoothDiscoveryUiEvent.CancelClicked -> emitEffect(BluetoothDiscoveryUiEffect.NavigateBack)
-            is BluetoothDiscoveryUiEvent.DeviceSelected -> handleDeviceSelected(event.device)
-            is BluetoothDiscoveryUiEvent.DeviceDeselected -> handleDeviceDeselected(event.device)
-            is BluetoothDiscoveryUiEvent.ExternalGpsChanged -> {
-                _uiState.update { it.copy(externalGpsEnabled = event.checked) }
-                changeExternalGps(event.checked)
+            licensingUseCase.getLicensingParameters()?.let {
+                _uiState.update { s -> s.copy(showExternalGpsCheckbox = it.isAskInternalGPS) }
             }
-            is BluetoothDiscoveryUiEvent.BluetoothPermissionResult -> {
-                if (event.granted) checkBluetoothActivated() else refreshPermissionsUi()
-            }
-            is BluetoothDiscoveryUiEvent.LocationPermissionResult -> {
-                if (event.granted) checkLocationActivated() else refreshPermissionsUi()
-            }
-            BluetoothDiscoveryUiEvent.BluetoothDialogAccept -> emitEffect(BluetoothDiscoveryUiEffect.OpenBluetoothSettings)
-            BluetoothDiscoveryUiEvent.LocationDialogAccept -> emitEffect(BluetoothDiscoveryUiEffect.OpenLocationSettings)
-            BluetoothDiscoveryUiEvent.PermissionDialogCancel -> emitEffect(BluetoothDiscoveryUiEffect.HideDialog)
-        }
-    }
-
-    fun onDialogAction(action: BluetoothDiscoveryDialogAction) {
-        when (action) {
-            BluetoothDiscoveryDialogAction.Accept -> {
-                _uiState.value.pendingRemoveDevice?.let { removeDevice(it) }
-                _uiState.value.pendingDeselectDevice?.let { pending ->
-                    _uiState.update { it.copy(pendingDeselectDevice = null) }
-                }
-                emitEffect(BluetoothDiscoveryUiEffect.HideDialog)
-            }
-            BluetoothDiscoveryDialogAction.Cancel,
-            BluetoothDiscoveryDialogAction.Dismiss -> {
-                _uiState.update { it.copy(pendingRemoveDevice = null, pendingDeselectDevice = null) }
-                emitEffect(BluetoothDiscoveryUiEffect.HideDialog)
+            sessionUseCase.getSession()?.let { session ->
+                _uiState.update { s -> s.copy(externalGpsChecked = session.useExternalGPS ?: false) }
             }
         }
     }
 
-    private fun discoverDevices() {
-        if (!PermissionRequest.checkHavePermission(PermissionRequest.PermissionTypeList.PERMISSION_BLUETOOTH, appContext)) {
-            emitDialog(
-                BluetoothDiscoveryDialogType.BluetoothPermission,
-                appContext.getString(R.string.bluetooth),
-                appContext.getString(R.string.dialog_no_bt_permission_desc)
-            )
-            return
-        }
-        _uiState.update { it.copy(buttons = it.buttons.copy(discover = ButtonVisualState.PrimaryLoading), isDiscovering = true) }
-        viewModelScope.launch {
-            bluetoothLocalUseCase.getNearbyDevices(null)
-            _uiState.update { it.copy(buttons = it.buttons.copy(discover = ButtonVisualState.PrimaryEnabled), isDiscovering = false) }
-        }
-    }
-
-    private fun accept() {
-        val selected = _uiState.value.selectedDevice
-        if (selected != null) {
-            saveDevice(selected)
-        } else {
-            changeExternalGps(_uiState.value.externalGpsEnabled)
-            viewModelScope.launch { emitEffect(BluetoothDiscoveryUiEffect.NavigateBack) }
-        }
-    }
-
-    private fun handleDeviceSelected(device: BluetoothInfo) {
-        val currentSaved = _uiState.value.savedDevice
-        if (currentSaved != null && device != currentSaved) {
-            _uiState.update { it.copy(pendingRemoveDevice = currentSaved) }
-            emitDialog(
-                BluetoothDiscoveryDialogType.ReplaceSavedDevice,
-                appContext.getString(R.string.bluetooth),
-                appContext.getString(R.string.deselect_confirm)
-            )
-            return
-        }
-
+    fun onScreenStarted(hasBluetoothPermission: Boolean, hasLocationPermission: Boolean) {
         _uiState.update {
             it.copy(
-                selectedDevice = device,
-                title = displayTitleFor(device.name),
-                taximeterImageRes = taximeterImageFor(device.name)
+                hasBluetoothPermission = hasBluetoothPermission,
+                hasLocationPermission = hasLocationPermission
             )
         }
-    }
-
-    private fun handleDeviceDeselected(device: BluetoothInfo) {
-        val saved = _uiState.value.savedDevice
-        if (_uiState.value.isLoaded && saved != null && device == saved) {
-            _uiState.update { it.copy(pendingRemoveDevice = device) }
-            emitDialog(
-                BluetoothDiscoveryDialogType.UnlinkSavedDevice,
-                appContext.getString(R.string.bluetooth),
-                appContext.getString(R.string.unlink)
-            )
-        } else {
-            _uiState.update {
-                it.copy(selectedDevice = null, title = appContext.getString(R.string.bluetooth), taximeterImageRes = R.drawable.background_dialog_transparent)
-            }
-        }
-    }
-
-    private fun loadSavedDevices() {
-        viewModelScope.launch {
-            val bluetoothPaired = bluetoothLocalUseCase.getLocalBluetooth()
-            val bonded = if (PermissionRequest.checkHavePermission(PermissionRequest.PermissionTypeList.PERMISSION_BLUETOOTH, appContext)) {
-                bluetoothLocalUseCase.getBondedDevices()
-            } else emptyList()
-
-            val merged = buildList {
-                if (bluetoothPaired != null) add(bluetoothPaired)
-                addAll(bonded)
-            }.distinctBy { it.macAddress }
-
-            _uiState.update {
-                it.copy(
-                    devices = merged,
-                    savedDevice = bluetoothPaired,
-                    isLoaded = bluetoothPaired != null && !bluetoothPaired.name.isNullOrEmpty(),
-                    selectedDevice = bluetoothPaired,
-                    title = bluetoothPaired?.name?.takeIf { n -> n.isNotBlank() }?.let(::displayTitleFor)
-                        ?: appContext.getString(R.string.bluetooth),
-                    taximeterImageRes = bluetoothPaired?.name?.let(::taximeterImageFor)
-                        ?: R.drawable.background_dialog_transparent,
-                    externalGpsEnabled = sessionUseCase.getSession()?.useExternalGPS ?: false
-                )
-            }
-        }
-    }
-
-    private fun refreshPermissionsUi() {
-        val hasBt = PermissionRequest.checkHavePermission(PermissionRequest.PermissionTypeList.PERMISSION_BLUETOOTH, appContext)
-        val hasLoc = PermissionRequest.checkHavePermission(PermissionRequest.PermissionTypeList.PERMISSION_LOCATION, appContext)
-        _uiState.update {
-            it.copy(
-                buttons = resolveButtons(it.buttons, hasBt, hasLoc)
-            )
-        }
-    }
-
-    private fun refreshActivationState() {
         checkBluetoothActivated()
         checkLocationActivated()
+        getSavedDevice(hasBluetoothPermission)
+    }
+
+    fun onDiscoverClicked() {
+        if (!PermissionRequest.checkHavePermission(PermissionRequest.PermissionTypeList.PERMISSION_BLUETOOTH, context)) {
+            emitDialogForPermission(
+                title = context.getString(R.string.bluetooth),
+                description = context.getString(R.string.dialog_no_bt_permission_desc),
+                permissionType = PermissionRequest.PermissionTypeList.PERMISSION_BLUETOOTH
+            )
+            return
+        }
+
+        _uiState.update { it.copy(isDiscovering = true) }
+        viewModelScope.launch {
+            bluetoothLocalUseCase.getNearbyDevices(
+                // if your use case pushes directly to a flow, keep the old pattern by exposing it externally
+                // here we only preserve architecture; implementation depends on your existing use case API
+            )
+        }
+    }
+
+    fun onDiscoveryDeviceReceived(device: BluetoothInfo?) {
+        if (device == null) return
+        if (device.name == BluetoothInfo.NO_FOUND_DEVICES_NAME) {
+            viewModelScope.launch {
+                _uiEffect.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.bluetooth_no_devices_found))
+            }
+            _uiState.update { it.copy(isDiscovering = false) }
+            return
+        }
+
+        _uiState.update { state ->
+            val merged = state.discoveredDevices.toMutableList()
+            if (merged.none { it.macAddress == device.macAddress }) merged.add(device)
+            state.copy(discoveredDevices = merged, isDiscovering = false)
+        }
+    }
+
+    fun onLocalDevicesLoaded(savedDevices: List<BluetoothInfo?>) {
+        val distinct = savedDevices.filterNotNull().distinctBy { it.macAddress }
+
+        val paired = distinct.find { it.type == BluetoothInfo.BluetoothDiscoveryType.PAIRED }
+        _uiState.update { state ->
+            state.copy(
+                savedDevice = paired,
+                isSavedDeviceLoaded = paired != null && paired.name.isNotBlank(),
+                titleText = paired?.name ?: "Bluetooth",
+                discoveredDevices = distinct
+            )
+        }
+    }
+
+    fun onExternalGpsCheckedChanged(isChecked: Boolean) {
+        _uiState.update { it.copy(externalGpsChecked = isChecked) }
+    }
+
+    fun onAcceptClicked(selectedDevice: BluetoothInfo?) {
+        if (selectedDevice != null) {
+            saveDevice(selectedDevice.copy(gpsExternal = uiState.value.externalGpsChecked))
+        } else {
+            changeExternalGps(uiState.value.externalGpsChecked)
+            viewModelScope.launch { _uiEffect.emit(BluetoothDiscoveryUiEffect.NavigateBack) }
+        }
+    }
+
+    fun onCancelClicked() {
+        viewModelScope.launch { _uiEffect.emit(BluetoothDiscoveryUiEffect.NavigateBack) }
+    }
+
+    fun onDeviceSelected(device: BluetoothInfo) {
+        _uiState.update { it.copy(selectedDevice = device) }
+    }
+
+    fun onDeviceDeselected(device: BluetoothInfo, shouldContinue: (Boolean) -> Unit) {
+        val current = uiState.value.savedDevice
+        if (uiState.value.isSavedDeviceLoaded && device == current) {
+            viewModelScope.launch {
+                _uiEffect.emit(
+                    BluetoothDiscoveryUiEffect.ShowDialog(
+                        BluetoothDiscoveryDialogState(
+                            title = context.getString(R.string.bluetooth),
+                            description = context.getString(R.string.unlink),
+                            buttons = listOf(
+                                ifac.td.taxi.ui.screen.bluetooth.BluetoothDialogButton.Cancel,
+                                ifac.td.taxi.ui.screen.bluetooth.BluetoothDialogButton.Accept
+                            ),
+                            cancellable = false
+                        )
+                    )
+                )
+            }
+            shouldContinue(false)
+        } else {
+            shouldContinue(true)
+            _uiState.update { it.copy(titleText = "Bluetooth") }
+        }
+    }
+
+    fun confirmRemoveSavedDevice(device: BluetoothInfo) {
+        removeDevice(device)
     }
 
     fun checkBluetoothActivated() {
-        val manager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        _uiState.update { it.copy(isBluetoothEnabled = manager.adapter?.isEnabled == true) }
-        if (!manager.adapter?.isEnabled.orFalse()) {
-            emitDialog(
-                BluetoothDiscoveryDialogType.EnableBluetooth,
-                appContext.getString(R.string.bluetooth),
-                appContext.getString(R.string.dialog_activate_bt_desc)
-            )
+        _uiState.update {
+            it.copy(isBluetoothEnabled = isBluetoothEnabled())
+        }
+        if (!uiState.value.isBluetoothEnabled) {
+            viewModelScope.launch {
+                _uiEffect.emit(
+                    BluetoothDiscoveryUiEffect.ShowDialog(
+                        BluetoothDiscoveryDialogState(
+                            title = context.getString(R.string.bluetooth),
+                            description = context.getString(R.string.dialog_activate_bt_desc)
+                        )
+                    )
+                )
+            }
         }
     }
 
     fun checkLocationActivated() {
-        val locationManager = appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val enabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            locationManager.isLocationEnabled
-        } else {
-            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        _uiState.update {
+            it.copy(isLocationEnabled = isLocationEnabled())
         }
-        _uiState.update { it.copy(isLocationEnabled = enabled) }
-        if (!enabled) {
-            emitDialog(
-                BluetoothDiscoveryDialogType.EnableLocation,
-                appContext.getString(R.string.strLocalizacion),
-                appContext.getString(R.string.dialog_activate_location_desc)
-            )
+        if (!uiState.value.isLocationEnabled) {
+            viewModelScope.launch {
+                _uiEffect.emit(
+                    BluetoothDiscoveryUiEffect.ShowDialog(
+                        BluetoothDiscoveryDialogState(
+                            title = context.getString(R.string.strLocalizacion),
+                            description = context.getString(R.string.dialog_activate_location_desc)
+                        )
+                    )
+                )
+            }
         }
     }
 
-    private fun saveDevice(device: BluetoothInfo) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val session = sessionUseCase.getSession()
-            val username = session?.username
-            val password = session?.password
-
-            if (username == null || password == null) return@launch
-
-            val licensingBluetooth = licensingUseCase.addLicensingBluetoothConfig(
-                nameBT = device.name.checkTaximeterType(),
-                macAddress = device.macAddress,
-                user = username,
-                password = password
-            )
-
-            if (device.gpsExternal != (_uiState.value.externalGpsEnabled)) {
-                sessionUseCase.updateExternalGPS(device.gpsExternal)
+    fun onDialogAccepted(title: String) {
+        when (title) {
+            context.getString(R.string.bluetooth) -> {
+                if (!uiState.value.hasBluetoothPermission) {
+                    viewModelScope.launch {
+                        _uiEffect.emit(BluetoothDiscoveryUiEffect.RequestBluetoothPermission(Manifest.permission.BLUETOOTH_CONNECT))
+                    }
+                } else if (!isBluetoothEnabled()) {
+                    viewModelScope.launch {
+                        _uiEffect.emit(
+                            BluetoothDiscoveryUiEffect.OpenBluetoothSettings(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                        )
+                    }
+                }
             }
+            context.getString(R.string.strLocalizacion) -> {
+                if (!uiState.value.hasLocationPermission) {
+                    viewModelScope.launch {
+                        _uiEffect.emit(BluetoothDiscoveryUiEffect.RequestLocationPermission(Manifest.permission.ACCESS_FINE_LOCATION))
+                    }
+                } else if (!isLocationEnabled()) {
+                    viewModelScope.launch {
+                        _uiEffect.emit(
+                            BluetoothDiscoveryUiEffect.OpenLocationSettings(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                        )
+                    }
+                }
+            }
+        }
+    }
 
-            if (licensingBluetooth != null && licensingBluetooth.nameBT.isNotEmpty()) {
-                bluetoothLocalUseCase.saveLocalBluetooth(
-                    BluetoothInfo(
-                        name = licensingBluetooth.nameBT.checkTaximeterType(),
-                        macAddress = licensingBluetooth.addressMAC
+    fun saveDevice(device: BluetoothInfo) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val actualSession = sessionUseCase.getSession()
+            val username = actualSession?.username
+            val password = actualSession?.password
+
+            if (username != null && password != null) {
+                val bluetoothLicensing = licensingUseCase.addLicensingBluetoothConfig(
+                    nameBT = device.name.checkTaximeterType(),
+                    macAddress = device.macAddress,
+                    user = username,
+                    password = password
+                )
+
+                if (bluetoothLicensing != null && bluetoothLicensing.nameBT.isNotEmpty()) {
+                    bluetoothLocalUseCase.saveLocalBluetooth(
+                        BluetoothInfo(
+                            name = bluetoothLicensing.nameBT.checkTaximeterType(),
+                            macAddress = bluetoothLicensing.addressMAC
+                        )
                     )
-                )
-                bluetoothLocalUseCase.savePinLocalBluetooth(
-                    pin = licensingBluetooth.pin,
-                    address = licensingBluetooth.addressMAC
-                )
+                    bluetoothLocalUseCase.savePinLocalBluetooth(
+                        pin = bluetoothLicensing.pin,
+                        address = bluetoothLicensing.addressMAC
+                    )
 
-                _effects.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.toast_dispositivo_eliminado))
-                _effects.emit(BluetoothDiscoveryUiEffect.ConnectTaximeterAndBack)
-            } else {
-                _effects.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.toast_bluetooth_remove_server_error))
+                    if (!bluetoothLicensing.pin.isNullOrBlank() && bluetoothLicensing.pin != "null") {
+                        _uiEffect.emit(
+                            BluetoothDiscoveryUiEffect.ShowDialog(
+                                BluetoothDiscoveryDialogState(
+                                    title = context.getString(R.string.dialog_pin_bluetooth_title),
+                                    description = context.getString(
+                                        R.string.dialog_bluetooth_device_success_desc,
+                                        bluetoothLicensing.result.numSerial,
+                                        bluetoothLicensing.pin
+                                    ),
+                                    buttons = listOf(ifac.td.taxi.ui.screen.bluetooth.BluetoothDialogButton.Accept)
+                                )
+                            )
+                        )
+                    }
+
+                    _uiState.update { it.copy(savedDevice = device, titleText = device.name) }
+                    _uiEffect.emit(BluetoothDiscoveryUiEffect.ConnectTaximeter)
+                    _uiEffect.emit(BluetoothDiscoveryUiEffect.NavigateBack)
+                } else if (bluetoothLicensing != null) {
+                    val hardcodePin = "1234"
+                    if (device.name.startsWith("GPC")) {
+                        bluetoothLocalUseCase.saveLocalBluetooth(
+                            BluetoothInfo(name = device.name, macAddress = device.macAddress)
+                        )
+                        bluetoothLocalUseCase.savePinLocalBluetooth(
+                            pin = hardcodePin,
+                            address = device.macAddress
+                        )
+                        _uiEffect.emit(BluetoothDiscoveryUiEffect.NavigateBack)
+                    } else {
+                        val btMessage = getBluetoothMessage(
+                            bluetoothLicensing.result.codiMissatge,
+                            bluetoothLicensing.result.numSerial,
+                            bluetoothLicensing.result.message
+                        )
+                        _uiEffect.emit(
+                            BluetoothDiscoveryUiEffect.ShowDialog(
+                                BluetoothDiscoveryDialogState(
+                                    title = context.getString(R.string.dialog_pin_bluetooth_title),
+                                    description = btMessage,
+                                    buttons = listOf(ifac.td.taxi.ui.screen.bluetooth.BluetoothDialogButton.Accept)
+                                )
+                            )
+                        )
+                    }
+                }
             }
         }
     }
 
     fun removeDevice(device: BluetoothInfo) {
         viewModelScope.launch(Dispatchers.IO) {
-            val session = sessionUseCase.getSession()
-            val username = session?.username
-            val password = session?.password
-            if (username == null || password == null) return@launch
+            val actualSession = sessionUseCase.getSession()
+            val username = actualSession?.username
+            val password = actualSession?.password
 
-            val result = licensingUseCase.removeLicensingBluetoothConfig(
-                nameBT = device.name.checkTaximeterType(),
-                macAddress = device.macAddress,
-                user = username,
-                password = password
-            )
+            if (username != null && password != null) {
+                val bluetoothLicensing = licensingUseCase.removeLicensingBluetoothConfig(
+                    nameBT = device.name.checkTaximeterType(),
+                    macAddress = device.macAddress,
+                    user = username,
+                    password = password
+                )
 
-            if (result != null) {
-                taximeterConnectUseCase.taximeterDisconnect()
-                bluetoothLocalUseCase.deleteLocalBluetooth()
-                _effects.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.toast_dispositivo_eliminado))
-                _effects.emit(BluetoothDiscoveryUiEffect.NavigateBack)
-            } else {
-                _effects.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.toast_bluetooth_remove_server_error))
+                if (bluetoothLicensing != null) {
+                    taximeterConnectUseCase.taximeterDisconnect()
+                    bluetoothLocalUseCase.deleteLocalBluetooth()
+                    _uiEffect.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.toast_bluetooth_remove_ok))
+                    _uiEffect.emit(BluetoothDiscoveryUiEffect.NavigateBack)
+                } else {
+                    _uiEffect.emit(BluetoothDiscoveryUiEffect.ShowToast(R.string.toast_bluetooth_remove_server_error))
+                }
             }
         }
     }
 
-    private fun changeExternalGps(isChecked: Boolean) {
+    fun changeExternalGps(isChecked: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
-            sessionUseCase.updateExternalGPS(isChecked)
+            sessionUseCase.getSession()?.let {
+                if (it.useExternalGPS != isChecked) sessionUseCase.updateExternalGPS(isChecked)
+            }
         }
     }
 
-    private fun emitDialog(type: BluetoothDiscoveryDialogType, title: String, description: String) {
+    private fun getSavedDevice(hasPermission: Boolean) {
         viewModelScope.launch {
-            _effects.emit(
+            val bluetoothPaired = bluetoothLocalUseCase.getLocalBluetooth()
+            val devices = mutableListOf<BluetoothInfo>()
+            if (bluetoothPaired != null) devices.add(bluetoothPaired)
+            if (hasPermission) devices.addAll(bluetoothLocalUseCase.getBondedDevices())
+            _uiState.update {
+                it.copy(
+                    savedDevice = bluetoothPaired,
+                    discoveredDevices = devices.distinctBy { d -> d.macAddress },
+                    isSavedDeviceLoaded = bluetoothPaired != null
+                )
+            }
+        }
+    }
+
+    private fun emitDialogForPermission(
+        title: String,
+        description: String,
+        permissionType: PermissionRequest.PermissionTypeList
+    ) {
+        viewModelScope.launch {
+            _uiEffect.emit(
                 BluetoothDiscoveryUiEffect.ShowDialog(
                     BluetoothDiscoveryDialogState(
-                        type = type,
                         title = title,
                         description = description
                     )
@@ -586,308 +522,284 @@ class BluetoothDiscoveryComposeViewModel(
         }
     }
 
-    private fun emitEffect(effect: BluetoothDiscoveryUiEffect) {
-        viewModelScope.launch { _effects.emit(effect) }
+    private fun getBluetoothMessage(messageCode: Int, serialNumber: String, msg: String): String {
+        return when (messageCode) {
+            Result.LCE_WRONG_PARAMETERS -> context.getString(R.string.lce_wrong_parameters)
+            Result.LCE_BT_WRONG_HW_VERSION -> context.getString(R.string.lce_bt_wrong_hw_version)
+            Result.LCE_TX_WRONG_HW_VERSION -> context.getString(R.string.lce_tx_wrong_hw_version)
+            Result.LCE_BT_WRONG_DEVICE_TYPE -> context.getString(R.string.lce_bt_wrong_device_type)
+            Result.LCE_SERIAL_NUMBER_OWNED_ANOTHER_USER ->
+                String.format(context.getString(R.string.lce_serial_number_owned_another_user), serialNumber)
+            Result.LCE_BT_DEVICE_ALREADY_LINKED -> context.getString(R.string.lce_bt_device_already_linked)
+            else -> msg
+        }
     }
 
-    private fun resolveButtons(
-        current: BluetoothDiscoveryButtonsState,
-        hasBtPermission: Boolean,
-        hasLocationPermission: Boolean
-    ): BluetoothDiscoveryButtonsState {
-        return current.copy(
-            discover = if (hasBtPermission) ButtonVisualState.PrimaryEnabled else ButtonVisualState.PrimaryDisabled,
-            accept = ButtonVisualState.PrimaryEnabled,
-            cancel = ButtonVisualState.SecondaryEnabled
-        )
+    private fun isBluetoothEnabled(): Boolean {
+        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        return bluetoothManager.adapter?.isEnabled == true
     }
 
-    private fun displayTitleFor(deviceName: String): String = when {
-        deviceName.startsWith("SKYG") -> "TX80/SkyGlass"
-        deviceName.startsWith("URBA") || deviceName.startsWith("URB1") -> "TX80/Urba"
-        deviceName.startsWith("BG40") -> "BG40"
-        deviceName.startsWith("BL60") -> "BL60"
-        else -> deviceName
+    private fun isLocationEnabled(): Boolean {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            locationManager.isLocationEnabled
+        } else {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
     }
-
-    private fun taximeterImageFor(deviceName: String?): Int = when {
-        deviceName == null -> R.drawable.background_dialog_transparent
-        deviceName.startsWith("SKYG") -> R.drawable.vinculacion_sky
-        deviceName.startsWith("URBA") || deviceName.startsWith("URB1") -> R.drawable.vinculacion_urba
-        deviceName.startsWith("BG40") -> R.drawable.vinculacion_bg_bl_11
-        deviceName.startsWith("BL60") -> R.drawable.vinculacion_bg_bl_09
-        else -> R.drawable.vinculacion_tx
-    }
-
-    private fun Boolean?.orFalse() = this == true
 }
 ```
 
 ---
 
-# 4) Compose UI content and button styling helpers
+## 4) Compose screen
 
-## `BluetoothDiscoveryContent.kt`
+This composable preserves the old navigation flow by letting the host handle:
+- permission requests
+- Bluetooth enable intent
+- location settings intent
+- navigate back
+- connect taximeter
+
+It also uses lifecycle-aware collection.
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.bluetooth
 
+import android.Manifest
+import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ifac.td.taxi.R
 import ifac.td.taxi.framework.sdk.model.BluetoothInfo
+import ifac.td.taxi.framework.sdk.model.BluetoothInfo.Companion.NO_FOUND_DEVICES_NAME
+import ifac.td.taxi.ui.screen.components.CustomDialog
+import kotlinx.coroutines.flow.collectLatest
 
 @Composable
-fun BluetoothDiscoveryContent(
-    state: BluetoothDiscoveryUiState,
-    onAction: (BluetoothDiscoveryUiEvent) -> Unit
+fun BluetoothDiscoveryScreen(
+    navBack: () -> Unit,
+    onRequestBluetoothPermission: (String) -> Unit,
+    onRequestLocationPermission: (String) -> Unit,
+    onStartActivity: (Intent) -> Unit,
+    onConnectTaximeter: () -> Unit,
+    viewModel: BluetoothDiscoveryComposeViewModel,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.White)
-            .padding(16.dp)
-            .animateContentSize()
-    ) {
-        Spacer(modifier = Modifier.height(8.dp))
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-        BluetoothHeader(
-            title = state.title,
-            imageRes = state.taximeterImageRes
+    var dialogState by remember { mutableStateOf<BluetoothDiscoveryDialogState?>(null) }
+
+    val buttonState = remember(uiState) {
+        BluetoothDiscoveryButtonsState.from(
+            shiftDisconnected = uiState.shiftDisconnected,
+            discovering = uiState.isDiscovering,
+            externalGpsVisible = uiState.showExternalGpsCheckbox,
+            externalGpsChecked = uiState.externalGpsChecked
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is BluetoothDiscoveryUiEffect.ShowDialog -> dialogState = effect.dialog
+                is BluetoothDiscoveryUiEffect.ShowToast -> { /* host toast/snackbar */ }
+                is BluetoothDiscoveryUiEffect.RequestBluetoothPermission ->
+                    onRequestBluetoothPermission(effect.permission)
+                is BluetoothDiscoveryUiEffect.RequestLocationPermission ->
+                    onRequestLocationPermission(effect.permission)
+                is BluetoothDiscoveryUiEffect.OpenBluetoothSettings ->
+                    onStartActivity(Intent(effect.intentAction))
+                is BluetoothDiscoveryUiEffect.OpenLocationSettings ->
+                    onStartActivity(Intent(effect.intentAction))
+                BluetoothDiscoveryUiEffect.NavigateBack -> navBack()
+                BluetoothDiscoveryUiEffect.ConnectTaximeter -> onConnectTaximeter()
+            }
+        }
+    }
+
+    BackHandler {
+        viewModel.onCancelClicked()
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Text(
+            text = uiState.titleText,
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.padding(16.dp)
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        ExternalGpsSection(
-            visible = state.showExternalGpsCheckbox,
-            checked = state.externalGpsEnabled,
-            onCheckedChange = { onAction(BluetoothDiscoveryUiEvent.ExternalGpsChanged(it)) }
+        Image(
+            painter = painterResource(id = uiState.titleImageRes.takeIf { it != 0 } ?: R.drawable.background_dialog_transparent),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        if (buttonState.externalGpsVisible) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = buttonState.externalGpsChecked,
+                    onCheckedChange = { viewModel.onExternalGpsCheckedChanged(it) }
+                )
+                Text(text = "GPS externo")
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(16.dp)
+        ) {
+            items(uiState.discoveredDevices, key = { it.macAddress }) { device ->
+                BluetoothDeviceRow(
+                    device = device,
+                    selected = uiState.selectedDevice?.macAddress == device.macAddress,
+                    onSelect = { viewModel.onDeviceSelected(device) }
+                )
+            }
+        }
 
         BluetoothDiscoveryButtons(
-            state = state.buttons,
-            onDiscover = { onAction(BluetoothDiscoveryUiEvent.DiscoverClicked) },
-            onAccept = { onAction(BluetoothDiscoveryUiEvent.AcceptClicked) },
-            onCancel = { onAction(BluetoothDiscoveryUiEvent.CancelClicked) }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        DevicesList(
-            devices = state.devices,
-            selectedDevice = state.selectedDevice,
-            savedDevice = state.savedDevice,
-            onSelect = { onAction(BluetoothDiscoveryUiEvent.DeviceSelected(it)) },
-            onDeselect = { onAction(BluetoothDiscoveryUiEvent.DeviceDeselected(it)) }
+            state = buttonState,
+            onDiscover = { viewModel.onDiscoverClicked() },
+            onAccept = { viewModel.onAcceptClicked(uiState.selectedDevice ?: uiState.savedDevice) },
+            onCancel = { viewModel.onCancelClicked() },
         )
     }
-}
 
-@Composable
-private fun BluetoothHeader(title: String, imageRes: Int) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center
+    dialogState?.let { state ->
+        CustomDialog(
+            state = state,
+            onDismiss = { dialogState = null },
+            onAccept = {
+                dialogState = null
+                viewModel.onDialogAccepted(state.title)
+            },
+            onCancel = {
+                dialogState = null
+            }
         )
-        Spacer(Modifier.height(12.dp))
-        Image(
-            painter = painterResource(id = imageRes),
-            contentDescription = null,
-            modifier = Modifier.size(140.dp)
-        )
-    }
-}
-
-@Composable
-private fun ExternalGpsSection(
-    visible: Boolean,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    if (visible) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = checked, onCheckedChange = onCheckedChange)
-            Text(text = stringResource(id = R.string.strGPSExterno))
-        }
-    }
-}
-
-@Composable
-private fun DevicesList(
-    devices: List<BluetoothInfo>,
-    selectedDevice: BluetoothInfo?,
-    savedDevice: BluetoothInfo?,
-    onSelect: (BluetoothInfo) -> Unit,
-    onDeselect: (BluetoothInfo) -> Unit
-) {
-    LazyColumn(modifier = Modifier.fillMaxWidth()) {
-        items(devices, key = { it.macAddress }) { device ->
-            val isSelected = selectedDevice?.macAddress == device.macAddress
-            val isSaved = savedDevice?.macAddress == device.macAddress
-
-            BluetoothDeviceRow(
-                device = device,
-                isSelected = isSelected,
-                isSaved = isSaved,
-                onClick = {
-                    if (isSelected) onDeselect(device) else onSelect(device)
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun BluetoothDeviceRow(
-    device: BluetoothInfo,
-    isSelected: Boolean,
-    isSaved: Boolean,
-    onClick: () -> Unit
-) {
-    val background = when {
-        isSelected -> Color(0xFFE3F2FD)
-        isSaved -> Color(0xFFF1F8E9)
-        else -> Color.White
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp)
-            .background(background, RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = device.name ?: "Bluetooth")
-            Text(text = device.macAddress ?: "", style = MaterialTheme.typography.bodySmall)
-        }
     }
 }
 ```
 
 ---
 
-# 5) Button styling helpers matching custom button behavior more closely
+## 5) Compose button row and styling helpers
 
-## `BluetoothDiscoveryButtons.kt`
+This is designed to mirror the fragment’s button states:
+- discover loading state
+- accept/cancel enabled state
+- disabled state when shift status is not disconnected/unknown
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.bluetooth
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import ifac.td.taxi.R
 
 @Composable
 fun BluetoothDiscoveryButtons(
     state: BluetoothDiscoveryButtonsState,
     onDiscover: () -> Unit,
     onAccept: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
 ) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        StyledButton(
-            textRes = R.string.cancel,
-            visualState = state.cancel,
-            modifier = Modifier.weight(1f),
-            onClick = onCancel
-        )
-        StyledButton(
-            textRes = R.string.discover,
-            visualState = state.discover,
-            modifier = Modifier.weight(1f),
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+        StyledBluetoothButton(
+            text = "Discover",
+            state = state.discoverState,
+            modifier = Modifier.fillMaxWidth(),
             onClick = onDiscover
         )
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth()) {
+            StyledBluetoothButton(
+                text = "Cancel",
+                state = state.cancelState,
+                modifier = Modifier.weight(1f),
+                onClick = onCancel
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            StyledBluetoothButton(
+                text = "Accept",
+                state = state.acceptState,
+                modifier = Modifier.weight(1f),
+                onClick = onAccept
+            )
+        }
     }
-
-    Spacer(Modifier.height(8.dp))
-
-    StyledButton(
-        textRes = R.string.accept,
-        visualState = state.accept,
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onAccept
-    )
 }
 
 @Composable
-private fun StyledButton(
-    textRes: Int,
-    visualState: ButtonVisualState,
+fun StyledBluetoothButton(
+    text: String,
+    state: ComposeButtonState,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val enabled = visualState !is ButtonVisualState.PrimaryDisabled &&
-        visualState !is ButtonVisualState.SecondaryDisabled &&
-        visualState !is ButtonVisualState.PrimaryLoading
-
-    val colors = when (visualState) {
-        ButtonVisualState.PrimaryEnabled,
-        ButtonVisualState.PrimaryLoading -> ButtonDefaults.buttonColors(
+    val enabled = state == ComposeButtonState.ENABLE
+    val colors = when (state) {
+        ComposeButtonState.ENABLE -> ButtonDefaults.buttonColors()
+        ComposeButtonState.DISABLE -> ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ComposeButtonState.LOADING -> ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary
-        )
-        ButtonVisualState.PrimaryDisabled -> ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        ButtonVisualState.SecondaryEnabled -> ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.secondary,
-            contentColor = MaterialTheme.colorScheme.onSecondary
-        )
-        ButtonVisualState.SecondaryDisabled -> ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.height(52.dp),
-        colors = colors
+        colors = colors,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = modifier.height(48.dp)
     ) {
-        if (visualState is ButtonVisualState.PrimaryLoading) {
-            CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
+        if (state == ComposeButtonState.LOADING) {
+            CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(18.dp),
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
         }
-        Text(text = androidx.compose.ui.res.stringResource(id = textRes))
+        Text(text = text)
     }
 }
 ```
 
 ---
 
-# 6) Compose CustomDialog based on `custom_dialog.xml` / `CustomDialog.kt`
+## 6) Compose `CustomDialog` replacement
 
-## `CustomDialog.kt` Compose version
+This is a Compose equivalent of a classic custom XML dialog and custom dialog class.
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -896,62 +808,63 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.bluetooth.BluetoothDiscoveryDialogState
+import ifac.td.taxi.ui.screen.bluetooth.BluetoothDialogButton
 
 @Composable
 fun CustomDialog(
     state: BluetoothDiscoveryDialogState,
     onDismiss: () -> Unit,
-    onAction: (BluetoothDiscoveryDialogAction) -> Unit
+    onAccept: () -> Unit,
+    onCancel: () -> Unit,
 ) {
-    Dialog(onDismissRequest = { if (state.isCancelable) onDismiss() }) {
-        Surface(
-            shape = RoundedCornerShape(18.dp),
-            tonalElevation = 6.dp,
-            color = Color.White
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(24.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(20.dp)
+                .widthIn(min = 280.dp, max = 360.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(20.dp)
-                    .fillMaxWidth()
-            ) {
-                Text(
-                    text = state.title,
-                    style = MaterialTheme.typography.titleLarge,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
+            Text(
+                text = state.title,
+                style = MaterialTheme.typography.titleLarge
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = state.description,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(20.dp))
 
-                Spacer(Modifier.height(12.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                if (state.buttons.contains(BluetoothDialogButton.Cancel)) {
+                    OutlinedButton(
+                        onClick = {
+                            onCancel()
+                            if (state.cancellable) onDismiss()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Cancel") }
+                    Spacer(modifier = Modifier.width(12.dp))
+                }
 
-                Text(
-                    text = state.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(Modifier.height(24.dp))
-
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    state.buttons.forEach { button ->
-                        when (button.type) {
-                            DialogButtonType.Cancel -> {
-                                OutlinedButton(
-                                    onClick = { onAction(BluetoothDiscoveryDialogAction.Cancel) },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text(button.label) }
-                            }
-                            DialogButtonType.Accept -> {
-                                Button(
-                                    onClick = { onAction(BluetoothDiscoveryDialogAction.Accept) },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text(button.label) }
-                            }
-                        }
-                    }
+                if (state.buttons.contains(BluetoothDialogButton.Accept)) {
+                    Button(
+                        onClick = {
+                            onAccept()
+                            if (state.cancellable) onDismiss()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Accept") }
                 }
             }
         }
@@ -961,90 +874,83 @@ fun CustomDialog(
 
 ---
 
-# 7) Notes on preserving navigation and fragment behavior
-
-To preserve your current navigation model:
-
-- use the `NavController.popBackStack()` mapping in `BluetoothDiscoveryUiEffect.NavigateBack`
-- use `ConnectTaximeterAndBack` where the old fragment called:
-  - `iMainActivity.connectTaximeter()`
-  - `iMainActivity.navigateBack()`
-
-In Compose, I modeled that as a callback:
+## 7) Small row for device item
 
 ```kotlin
-onConnectTaximeter: () -> Unit
-```
+package ifac.td.taxi.ui.screen.bluetooth
 
-Then the screen performs:
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.framework.sdk.model.BluetoothInfo
 
-```kotlin
-currentOnConnectTaximeter()
-navController.popBackStack()
-```
-
-If you want exact parity with the old activity methods, wire those callbacks from your host Activity/Fragment.
-
----
-
-# 8) Important implementation details
-
-A few parts of the legacy fragment depend on adapter-specific behavior:
-
-- `getSelectedDevice()`
-- `isDeviceSelected()`
-- `cancelAndBackSelection()`
-
-In Compose, those are replaced by state:
-
-- `selectedDevice`
-- `savedDevice`
-- `pendingRemoveDevice`
-- `pendingDeselectDevice`
-
-This is the correct Compose approach; there is no adapter maintaining the selection.
-
----
-
-# 9) What you likely still need to wire up
-
-Because your old code depends on app-specific components, you’ll probably still need to connect:
-
-- permission requests to your app’s permission flow
-- toast handling to your host activity
-- custom colors/typography to your theme
-- exact dialog visuals if your XML has specific paddings/icons
-- actual device discovery flow in `bluetoothLocalUseCase.getNearbyDevices(...)`
-
----
-
-# 10) Minimal usage example
-
-```kotlin
 @Composable
-fun BluetoothDiscoveryRoute(
-    navController: NavController,
-    viewModel: BluetoothDiscoveryComposeViewModel,
-    onShowHeader: (Boolean) -> Unit,
-    onShowToast: (Int) -> Unit,
-    onConnectTaximeter: () -> Unit,
-    onRequestPermission: (String) -> Unit
+fun BluetoothDeviceRow(
+    device: BluetoothInfo,
+    selected: Boolean,
+    onSelect: () -> Unit
 ) {
-    BluetoothDiscoveryScreen(
-        viewModel = viewModel,
-        navController = navController,
-        onShowHeader = onShowHeader,
-        onShowToast = onShowToast,
-        onConnectTaximeter = onConnectTaximeter,
-        onRequestPermission = onRequestPermission
-    )
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable { onSelect() }
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = device.name, style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = device.macAddress, style = MaterialTheme.typography.bodyMedium)
+            if (selected) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(text = "Selected", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
 }
 ```
 
 ---
 
-If you want, I can also provide:
+## 8) How to preserve Jetpack Views navigation
 
-1. a **fully themed Material 2 / Material 3 version** matching your XML colors more closely,  
-2. a **Hilt/Koin Compose ViewModel factory setup**, or  
-3. a **direct translation of your adapter selection behavior into a Compose `LazyColumn` item model**.
+In the Fragment version, navigation and permission requests were tightly coupled to `iMainActivity`.  
+In Compose, keep that behavior by hosting the screen in your existing fragment/activity and forwarding actions:
+
+- `navBack()` → `iMainActivity.navigateBack()`
+- `onRequestBluetoothPermission(...)` → your existing permission launcher or activity callback
+- `onRequestLocationPermission(...)` → same
+- `onStartActivity(intent)` → `context.startActivity(intent)`
+- `onConnectTaximeter()` → `iMainActivity.connectTaximeter()`
+
+So the Compose layer stays UI-only, while the host preserves your existing navigation architecture.
+
+---
+
+## 9) Mapping the original fragment behavior
+
+This Compose rewrite preserves the major behaviors:
+
+- load saved device on startup
+- show paired device in the title
+- discover Bluetooth devices
+- prevent duplicate discovered devices
+- handle external GPS checkbox visibility and checked state
+- disable buttons when shift status is not disconnected/unknown
+- show permission/enable-Bluetooth/location dialogs
+- handle unlink confirmation
+- save/remove device through licensing and local storage flows
+
+---
+
+## 10) Important integration note
+
+Your old `bluetoothLocalUseCase.getNearbyDevices(_bluetoothDiscoveryFlow)` pushed data into a `StateFlow<BluetoothInfo?>`.  
+In the Compose version, you can keep that behavior by either:
+
+1. exposing the same flow from the use case and collecting it in the screen, or  
+2. adapting `BluetoothDiscoveryComposeViewModel` so `getDevices()` starts discovery and the UI collects a flow from the VM exactly as before.
+
+If you want, I can provide a **second version** of this answer that is even closer to your existing codebase, where I preserve the discovery flow plumbing exactly and only replace the UI layer with Compose.

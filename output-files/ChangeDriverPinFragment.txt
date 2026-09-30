@@ -1,167 +1,138 @@
-Below is a Compose-first rewrite of your `ChangeDriverPinFragment` and `ChangeDriverPinViewModel`, using:
+Below is a Compose-based rewrite of the screen, ViewModel, dialog handling, and button-state modeling for `ChangeDriverPinFragment`, using only Android + Jetpack Compose APIs and preserving the original navigation behavior.
 
-- `UiState + UiEvent + UiEffect`
-- `SharedFlow<ChangeDriverPinUiEffect>` for one-off navigation/dialog actions
-- dialog state handled from Compose
-- lifecycle-aware collection
-- navigation preserved via `NavController`
-- button state holders replacing fragment button logic
-- a Compose `CustomDialog` inspired by your `custom_dialog.xml` / `CustomDialog.kt`
-- Compose button styling helpers closer to your custom button component
+I’ll structure this into:
 
-I’m keeping everything in **Android + Jetpack Compose + Lifecycle** only.
+1. Compose UI screen
+2. Compose-friendly ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+3. Button state holder that replaces fragment button logic
+4. Compose `CustomDialog` equivalent
+5. Custom button styling helpers matching the XML-style component more closely
+6. Notes on preserving navigation and lifecycle collection
 
 ---
 
-## 1) Compose UI state, events, effects, and button state
+# 1) Compose screen: `ChangeDriverPinScreen`
+
+This screen replaces the fragment UI and handles:
+- input fields
+- validation
+- button actions
+- dialog state
+- effect collection for navigation/dialogs
+- preserving back navigation behavior
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.compose
 
-import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Stable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.ChangeDriverPinUiEffect
+import ifac.td.taxi.viewmodel.ChangeDriverPinUiEvent
+import ifac.td.taxi.viewmodel.ChangeDriverPinUiState
+import ifac.td.taxi.viewmodel.ChangeDriverPinViewModel
 
-@Immutable
-data class ChangeDriverPinUiState(
-    val currentDriverNumber: String = "",
-    val currentPin: String = "",
-    val newPin: String = "",
-    val repeatNewPin: String = "",
-    val isLoading: Boolean = false,
-    val buttonsState: ChangeDriverPinButtonsState = ChangeDriverPinButtonsState()
-)
-
-sealed interface ChangeDriverPinUiEvent {
-    data class CurrentDriverNumberChanged(val value: String) : ChangeDriverPinUiEvent
-    data class CurrentPinChanged(val value: String) : ChangeDriverPinUiEvent
-    data class NewPinChanged(val value: String) : ChangeDriverPinUiEvent
-    data class RepeatNewPinChanged(val value: String) : ChangeDriverPinUiEvent
-
-    data object AcceptClicked : ChangeDriverPinUiEvent
-    data object CancelClicked : ChangeDriverPinUiEvent
-
-    data object DialogConfirmed : ChangeDriverPinUiEvent
-    data object DialogDismissed : ChangeDriverPinUiEvent
-}
-
-sealed interface ChangeDriverPinUiEffect {
-    data object NavigateBack : ChangeDriverPinUiEffect
-
-    data class ShowDialog(
-        val dialog: CustomDialogState
-    ) : ChangeDriverPinUiEffect
-
-    data object RequestUserPresenter : ChangeDriverPinUiEffect
-    data class ChangePin(
-        val driverNumber: String,
-        val oldPin: String,
-        val newPin: String
-    ) : ChangeDriverPinUiEffect
-}
-
-@Immutable
-data class ChangeDriverPinButtonsState(
-    val accept: ButtonVisualState = ButtonVisualState.primary(),
-    val cancel: ButtonVisualState = ButtonVisualState.secondary()
-)
-
-@Immutable
-data class ButtonVisualState(
-    val text: String,
-    val enabled: Boolean = true,
-    val visible: Boolean = true,
-    val backgroundColor: Long,
-    val contentColor: Long,
-    val borderColor: Long? = null
+@Composable
+fun ChangeDriverPinScreen(
+    viewModel: ChangeDriverPinViewModel,
+    onNavigateBack: () -> Unit,
+    onShowToast: (String) -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
-    companion object {
-        fun primary(
-            text: String = "Accept",
-            enabled: Boolean = true,
-            visible: Boolean = true
-        ) = ButtonVisualState(
-            text = text,
-            enabled = enabled,
-            visible = visible,
-            backgroundColor = 0xFF1E88E5,
-            contentColor = 0xFFFFFFFF,
-            borderColor = null
-        )
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-        fun secondary(
-            text: String = "Cancel",
-            enabled: Boolean = true,
-            visible: Boolean = true
-        ) = ButtonVisualState(
-            text = text,
-            enabled = enabled,
-            visible = visible,
-            backgroundColor = 0xFFFFFFFF,
-            contentColor = 0xFF1E88E5,
-            borderColor = 0xFF1E88E5
+    var dialogState by remember { mutableStateOf<CustomDialogState?>(null) }
+
+    // Collect one-shot effects in a lifecycle-safe way
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                ChangeDriverPinUiEffect.NavigateBack -> onNavigateBack()
+
+                is ChangeDriverPinUiEffect.ShowDialog -> {
+                    dialogState = effect.dialogState
+                }
+
+                is ChangeDriverPinUiEffect.ShowToast -> {
+                    onShowToast(effect.message)
+                }
+            }
+        }
+    }
+
+    if (dialogState != null) {
+        CustomDialog(
+            state = dialogState!!,
+            onDismiss = { dialogState = null },
+            onButtonClick = { button ->
+                // Forward dialog action to ViewModel
+                viewModel.onDialogButtonClicked(button)
+                dialogState = null
+            }
         )
     }
-}
 
-@Immutable
-data class CustomDialogState(
-    val title: String,
-    val buttons: List<DialogButtonType> = listOf(DialogButtonType.Accept)
-)
-
-enum class DialogButtonType {
-    Accept,
-    Cancel
+    ChangeDriverPinContent(
+        state = state,
+        buttonsState = state.buttonsState,
+        onEvent = viewModel::onEvent,
+        modifier = modifier
+    )
 }
 ```
 
 ---
 
-## 2) Compose ViewModel using `StateFlow` + `SharedFlow<UiEffect>`
+# 2) UiState + UiEvent + UiEffect ViewModel
 
-This preserves the original logic but makes it Compose-friendly.
+This ViewModel fully replaces the fragment logic while keeping the same behavior:
+- validation
+- user presenter fetching
+- change PIN call
+- success/failure responses
+- dialogs
+- navigation back after success dialog accept
+
+It uses:
+- `StateFlow<ChangeDriverPinUiState>`
+- `SharedFlow<ChangeDriverPinUiEffect>`
+- `UiEvent` for all user actions
 
 ```kotlin
 package ifac.td.taxi.viewmodel
 
 import android.app.Application
-import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView
 import com.interfacom.sdk.taximeter.licensing.rest.user.UserModule
 import com.interfacom.sdk.taximeter.licensing.rest.user.UserPresenter
 import ifac.td.taxi.R
-import ifac.td.taxi.ui.screen.ChangeDriverPinButtonsState
-import ifac.td.taxi.ui.screen.ChangeDriverPinUiEffect
-import ifac.td.taxi.ui.screen.ChangeDriverPinUiEvent
-import ifac.td.taxi.ui.screen.ChangeDriverPinUiState
-import ifac.td.taxi.ui.screen.CustomDialogState
-import ifac.td.taxi.ui.screen.DialogButtonType
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-class ChangeDriverPinViewModel(
-    context: Application
-) : AndroidViewModel(context) {
-
-    private val app = context
+class ChangeDriverPinViewModel(context: Application) : BaseViewModel(context) {
 
     private val _uiState = MutableStateFlow(ChangeDriverPinUiState())
-    val uiState = _uiState.asStateFlow()
+    val uiState: StateFlow<ChangeDriverPinUiState> = _uiState.asStateFlow()
 
-    private val _uiEffect = MutableSharedFlow<ChangeDriverPinUiEffect>(extraBufferCapacity = 1)
-    val uiEffect = _uiEffect.asSharedFlow()
+    private val _uiEffect = MutableSharedFlow<ChangeDriverPinUiEffect>()
+    val uiEffect: SharedFlow<ChangeDriverPinUiEffect> = _uiEffect.asSharedFlow()
 
-    private var cachedUserPresenter: UserPresenter? = null
+    private val _pendingDialogAction = MutableStateFlow<PendingDialogAction?>(null)
 
     fun onEvent(event: ChangeDriverPinUiEvent) {
         when (event) {
-            is ChangeDriverPinUiEvent.CurrentDriverNumberChanged -> {
-                _uiState.update { it.copy(currentDriverNumber = event.value) }
+            is ChangeDriverPinUiEvent.DriverNumberChanged -> {
+                _uiState.update { it.copy(driverNumber = event.value) }
             }
 
             is ChangeDriverPinUiEvent.CurrentPinChanged -> {
@@ -172,518 +143,588 @@ class ChangeDriverPinViewModel(
                 _uiState.update { it.copy(newPin = event.value) }
             }
 
-            is ChangeDriverPinUiEvent.RepeatNewPinChanged -> {
-                _uiState.update { it.copy(repeatNewPin = event.value) }
+            is ChangeDriverPinUiEvent.RepeatPinChanged -> {
+                _uiState.update { it.copy(repeatPin = event.value) }
             }
 
-            ChangeDriverPinUiEvent.AcceptClicked -> handleAccept()
+            ChangeDriverPinUiEvent.AcceptClicked -> handleAcceptClicked()
             ChangeDriverPinUiEvent.CancelClicked -> emitEffect(ChangeDriverPinUiEffect.NavigateBack)
 
-            ChangeDriverPinUiEvent.DialogConfirmed -> {
-                // Used after success dialog ACCEPT
-                emitEffect(ChangeDriverPinUiEffect.NavigateBack)
-            }
-
-            ChangeDriverPinUiEvent.DialogDismissed -> Unit
-        }
-    }
-
-    private fun handleAccept() {
-        val state = _uiState.value
-
-        when {
-            state.currentDriverNumber.isBlank() ||
-                state.currentPin.isBlank() ||
-                state.newPin.isBlank() ||
-                state.repeatNewPin.isBlank() -> {
-                emitDialog(app.getString(R.string.dialog_fill_inputs))
-            }
-
-            state.newPin != state.repeatNewPin -> {
-                emitDialog(app.getString(R.string.dialog_no_match_pin))
-            }
-
-            state.currentPin == state.newPin -> {
-                emitDialog(app.getString(R.string.dialog_equal_pin))
-            }
-
-            else -> {
-                emitEffect(ChangeDriverPinUiEffect.RequestUserPresenter)
+            is ChangeDriverPinUiEvent.DialogButtonClicked -> {
+                handleDialogButton(event.buttonType)
             }
         }
     }
 
-    fun onUserPresenterReady() {
-        val presenter = cachedUserPresenter
+    fun onDialogButtonClicked(buttonType: ButtonType) {
+        onEvent(ChangeDriverPinUiEvent.DialogButtonClicked(buttonType))
+    }
+
+    private fun handleAcceptClicked() {
         val state = _uiState.value
 
-        if (presenter == null) {
-            emitDialog(app.getString(R.string.dialog_user_error), navigateBackOnConfirm = true)
+        val validationError = validate(state)
+        if (validationError != null) {
+            viewModelScope.launch {
+                emitEffect(
+                    ChangeDriverPinUiEffect.ShowDialog(
+                        CustomDialogState(
+                            title = validationError,
+                            description = null,
+                            buttons = listOf(ButtonType.ACCEPT),
+                            cancelable = false
+                        )
+                    )
+                )
+            }
             return
         }
 
-        emitEffect(
-            ChangeDriverPinUiEffect.ChangePin(
-                driverNumber = state.currentDriverNumber.trim(),
-                oldPin = state.currentPin.trim(),
-                newPin = state.newPin.trim()
-            )
-        )
-    }
-
-    fun getUserPresenter(view: ChangePasswordPinView) {
         viewModelScope.launch {
-            cachedUserPresenter = UserModule.provideUserPresenter(view, app)
-            onUserPresenterReady()
+            val userPresenter = UserModule.provideUserPresenter(
+                object : ChangePasswordPinView {
+                    override fun updateSuccess() {
+                        _pendingDialogAction.value = PendingDialogAction.SuccessNavigateBack
+                        viewModelScope.launch {
+                            emitEffect(
+                                ChangeDriverPinUiEffect.ShowDialog(
+                                    CustomDialogState(
+                                        title = getStringResource(R.string.dialog_change_pin),
+                                        description = null,
+                                        buttons = listOf(ButtonType.ACCEPT),
+                                        cancelable = false
+                                    )
+                                )
+                            )
+                        }
+                    }
+
+                    override fun updateFailure() {
+                        _pendingDialogAction.value = PendingDialogAction.NoOp
+                        viewModelScope.launch {
+                            emitEffect(
+                                ChangeDriverPinUiEffect.ShowDialog(
+                                    CustomDialogState(
+                                        title = getStringResource(R.string.dialog_error_change_pin),
+                                        description = null,
+                                        buttons = listOf(ButtonType.ACCEPT),
+                                        cancelable = false
+                                    )
+                                )
+                            )
+                        }
+                    }
+                },
+                context
+            )
+
+            if (userPresenter != null) {
+                _uiState.update { it.copy(isLoading = true) }
+
+                changeDriverPin(
+                    userPresenter = userPresenter,
+                    driverNumber = state.driverNumber.trim(),
+                    oldPin = state.currentPin.trim(),
+                    newPin = state.newPin.trim()
+                )
+
+                _uiState.update { it.copy(isLoading = false) }
+            } else {
+                emitEffect(
+                    ChangeDriverPinUiEffect.ShowDialog(
+                        CustomDialogState(
+                            title = getStringResource(R.string.dialog_user_error),
+                            description = null,
+                            buttons = listOf(ButtonType.ACCEPT),
+                            cancelable = false
+                        )
+                    )
+                )
+            }
         }
     }
 
-    fun changeDriverPin(
-        userPresenter: UserPresenter,
-        driverNumber: String,
-        oldPin: String,
-        newPin: String
-    ) {
-        userPresenter.changeDriverPin(driverNumber, oldPin, newPin, app)
-    }
+    private fun handleDialogButton(buttonType: ButtonType) {
+        when (_pendingDialogAction.value) {
+            PendingDialogAction.SuccessNavigateBack -> {
+                if (buttonType == ButtonType.ACCEPT) {
+                    _pendingDialogAction.value = null
+                    viewModelScope.launch {
+                        emitEffect(ChangeDriverPinUiEffect.NavigateBack)
+                    }
+                }
+            }
 
-    private fun emitDialog(
-        title: String,
-        navigateBackOnConfirm: Boolean = false
-    ) {
-        emitEffect(
-            ChangeDriverPinUiEffect.ShowDialog(
-                CustomDialogState(
-                    title = title,
-                    buttons = listOf(DialogButtonType.Accept)
-                )
-            )
-        )
-        if (navigateBackOnConfirm) {
-            // handled by UI dialog callback by using the effect state
+            PendingDialogAction.NoOp -> {
+                _pendingDialogAction.value = null
+            }
+
+            null -> Unit
         }
     }
 
-    private fun emitEffect(effect: ChangeDriverPinUiEffect) {
-        _uiEffect.tryEmit(effect)
+    fun changeDriverPin(userPresenter: UserPresenter, driverNumber: String, oldPin: String, newPin: String) {
+        userPresenter.changeDriverPin(driverNumber, oldPin, newPin, context)
     }
 
-    fun onPinChangeSuccess() {
-        emitEffect(
-            ChangeDriverPinUiEffect.ShowDialog(
-                CustomDialogState(
-                    title = app.getString(R.string.dialog_change_pin),
-                    buttons = listOf(DialogButtonType.Accept)
-                )
-            )
+    private fun validate(state: ChangeDriverPinUiState): String? {
+        return when {
+            state.driverNumber.isBlank() ||
+                state.currentPin.isBlank() ||
+                state.newPin.isBlank() ||
+                state.repeatPin.isBlank() ->
+                getStringResource(R.string.dialog_fill_inputs)
+
+            state.newPin != state.repeatPin ->
+                getStringResource(R.string.dialog_no_match_pin)
+
+            state.currentPin == state.newPin ->
+                getStringResource(R.string.dialog_equal_pin)
+
+            else -> null
+        }
+    }
+
+    private suspend fun emitEffect(effect: ChangeDriverPinUiEffect) {
+        _uiEffect.emit(effect)
+    }
+
+    private fun getStringResource(resId: Int): String {
+        return context.getString(resId)
+    }
+}
+
+private enum class PendingDialogAction {
+    SuccessNavigateBack,
+    NoOp
+}
+```
+
+---
+
+# 3) State / Event / Effect models
+
+These fully replace the fragment button logic and support dialog handling via state/effects.
+
+## UiState
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class ChangeDriverPinUiState(
+    val driverNumber: String = "",
+    val currentPin: String = "",
+    val newPin: String = "",
+    val repeatPin: String = "",
+    val isLoading: Boolean = false,
+    val buttonsState: ChangeDriverPinButtonsState = ChangeDriverPinButtonsState()
+)
+```
+
+## UiEvent
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+sealed interface ChangeDriverPinUiEvent {
+    data class DriverNumberChanged(val value: String) : ChangeDriverPinUiEvent
+    data class CurrentPinChanged(val value: String) : ChangeDriverPinUiEvent
+    data class NewPinChanged(val value: String) : ChangeDriverPinUiEvent
+    data class RepeatPinChanged(val value: String) : ChangeDriverPinUiEvent
+
+    data object AcceptClicked : ChangeDriverPinUiEvent
+    data object CancelClicked : ChangeDriverPinUiEvent
+
+    data class DialogButtonClicked(val buttonType: ButtonType) : ChangeDriverPinUiEvent
+}
+```
+
+## UiEffect
+
+Using a single `SharedFlow<ChangeDriverPinUiEffect>` as requested.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+sealed interface ChangeDriverPinUiEffect {
+    data class ShowDialog(val dialogState: CustomDialogState) : ChangeDriverPinUiEffect
+    data class ShowToast(val message: String) : ChangeDriverPinUiEffect
+    data object NavigateBack : ChangeDriverPinUiEffect
+}
+```
+
+---
+
+# 4) ChangeDriverPinButtonsState with exact XML-like behavior
+
+This state replaces `setButtons()` and should be used by the composable.
+
+Because we don’t have the XML file itself, I’m modeling behavior to match the fragment:
+- Accept button triggers validation + change flow
+- Cancel button always navigates back
+- both visible
+- styles reflect typical custom component defaults
+
+If your XML had specific visibility/color rules, you can map them here without changing the screen logic.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class ChangeDriverPinButtonsState(
+    val accept: ButtonSpec = ButtonSpec(
+        type = ButtonType.ACCEPT,
+        text = "ACEPTAR",
+        visible = true,
+        enabled = true,
+        containerColor = Color(0xFF1E88E5),
+        contentColor = Color.White,
+        borderColor = Color.Transparent
+    ),
+    val cancel: ButtonSpec = ButtonSpec(
+        type = ButtonType.CANCEL,
+        text = "CANCELAR",
+        visible = true,
+        enabled = true,
+        containerColor = Color.White,
+        contentColor = Color(0xFF1E88E5),
+        borderColor = Color(0xFF1E88E5)
+    )
+)
+
+data class ButtonSpec(
+    val type: ButtonType,
+    val text: String,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val containerColor: Color,
+    val contentColor: Color,
+    val borderColor: Color
+)
+```
+
+---
+
+# 5) Compose content with fully state-driven buttons
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.ChangeDriverPinButtonsState
+import ifac.td.taxi.viewmodel.ChangeDriverPinUiEvent
+import ifac.td.taxi.viewmodel.ChangeDriverPinUiState
+
+@Composable
+fun ChangeDriverPinContent(
+    state: ChangeDriverPinUiState,
+    buttonsState: ChangeDriverPinButtonsState,
+    onEvent: (ChangeDriverPinUiEvent) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.Top
+    ) {
+        OutlinedTextField(
+            value = state.driverNumber,
+            onValueChange = { onEvent(ChangeDriverPinUiEvent.DriverNumberChanged(it)) },
+            label = { Text("Número conductor") },
+            modifier = Modifier.fillMaxWidth()
         )
-    }
 
-    fun onPinChangeFailure() {
-        emitEffect(
-            ChangeDriverPinUiEffect.ShowDialog(
-                CustomDialogState(
-                    title = app.getString(R.string.dialog_error_change_pin),
-                    buttons = listOf(DialogButtonType.Accept)
-                )
-            )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = state.currentPin,
+            onValueChange = { onEvent(ChangeDriverPinUiEvent.CurrentPinChanged(it)) },
+            label = { Text("PIN actual") },
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
         )
-    }
 
-    fun updateButtonsState(state: ChangeDriverPinButtonsState) {
-        _uiState.update { it.copy(buttonsState = state) }
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = state.newPin,
+            onValueChange = { onEvent(ChangeDriverPinUiEvent.NewPinChanged(it)) },
+            label = { Text("Nuevo PIN") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = state.repeatPin,
+            onValueChange = { onEvent(ChangeDriverPinUiEvent.RepeatPinChanged(it)) },
+            label = { Text("Repetir PIN") },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        ChangeDriverPinButtons(
+            buttonsState = buttonsState,
+            onAcceptClick = { onEvent(ChangeDriverPinUiEvent.AcceptClicked) },
+            onCancelClick = { onEvent(ChangeDriverPinUiEvent.CancelClicked) }
+        )
     }
 }
 ```
 
 ---
 
-## 3) Compose screen replacing the fragment
+# 6) Compose button styling helpers closer to CustomButton
 
-This screen:
-- collects state and effects lifecycle-aware
-- shows/hides a dialog from state
-- triggers presenter creation and pin update
-- preserves back navigation with `NavController.popBackStack()`
+This approximates the custom button component using Material3, while keeping explicit styling and visibility semantics.
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.compose
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.viewmodel.ButtonSpec
+import ifac.td.taxi.viewmodel.ChangeDriverPinButtonsState
+
+@Composable
+fun ChangeDriverPinButtons(
+    buttonsState: ChangeDriverPinButtonsState,
+    onAcceptClick: () -> Unit,
+    onCancelClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (buttonsState.cancel.visible) {
+            StyledCustomButton(
+                spec = buttonsState.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+        }
+
+        if (buttonsState.accept.visible) {
+            StyledCustomButton(
+                spec = buttonsState.accept,
+                modifier = Modifier.weight(1f),
+                onClick = onAcceptClick
+            )
+        }
+    }
+}
+
+@Composable
+fun StyledCustomButton(
+    spec: ButtonSpec,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    if (spec.borderColor.value == 0f) {
+        Button(
+            onClick = onClick,
+            enabled = spec.enabled,
+            modifier = modifier.height(48.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = spec.containerColor,
+                contentColor = spec.contentColor,
+                disabledContainerColor = spec.containerColor.copy(alpha = 0.5f),
+                disabledContentColor = spec.contentColor.copy(alpha = 0.5f)
+            )
+        ) {
+            Text(spec.text)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            enabled = spec.enabled,
+            modifier = modifier.height(48.dp),
+            border = BorderStroke(1.dp, spec.borderColor),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = spec.containerColor,
+                contentColor = spec.contentColor,
+                disabledContainerColor = spec.containerColor.copy(alpha = 0.5f),
+                disabledContentColor = spec.contentColor.copy(alpha = 0.5f)
+            )
+        ) {
+            Text(spec.text)
+        }
+    }
+}
+```
+
+---
+
+# 7) Compose CustomDialog implementation
+
+This is a Compose version of the `custom_dialog.xml` / `CustomDialog.kt` concept:
+- title
+- optional description
+- button list
+- returns which button was pressed
+- can be reused for success/error dialogs
+
+```kotlin
+package ifac.td.taxi.ui.screen.compose
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.navigation.NavController
-import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView
-import com.interfacom.sdk.taximeter.licensing.rest.user.UserPresenter
-import ifac.td.taxi.viewmodel.ChangeDriverPinViewModel
-import kotlinx.coroutines.launch
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class CustomDialogState(
+    val title: String,
+    val description: String? = null,
+    val buttons: List<ButtonType> = listOf(ButtonType.ACCEPT),
+    val cancelable: Boolean = true
+)
 
 @Composable
-fun ChangeDriverPinRoute(
-    navController: NavController,
-    viewModel: ChangeDriverPinViewModel
+fun CustomDialog(
+    state: CustomDialogState,
+    onDismiss: () -> Unit,
+    onButtonClick: (ButtonType) -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val lifecycleOwner = LocalLifecycleOwner.current
+    Dialog(
+        onDismissRequest = { if (state.cancelable) onDismiss() }
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = state.title,
+                    style = MaterialTheme.typography.titleMedium
+                )
 
-    var dialogState by remember { mutableStateOf<CustomDialogState?>(null) }
+                if (!state.description.isNullOrBlank()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = state.description,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
 
-    LaunchedEffect(Unit) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                viewModel.uiEffect.collect { effect ->
-                    when (effect) {
-                        ChangeDriverPinUiEffect.NavigateBack -> {
-                            navController.popBackStack()
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    state.buttons.forEach { type ->
+                        val label = when (type) {
+                            ButtonType.ACCEPT -> "ACEPTAR"
+                            ButtonType.CANCEL -> "CANCELAR"
+                            else -> type.name
                         }
 
-                        is ChangeDriverPinUiEffect.ShowDialog -> {
-                            dialogState = effect.dialog
-                        }
-
-                        ChangeDriverPinUiEffect.RequestUserPresenter -> {
-                            val presenterView = object : ChangePasswordPinView {
-                                override fun updateSuccess() {
-                                    viewModel.onPinChangeSuccess()
-                                }
-
-                                override fun updateFailure() {
-                                    viewModel.onPinChangeFailure()
-                                }
-                            }
-                            viewModel.getUserPresenter(presenterView)
-                        }
-
-                        is ChangeDriverPinUiEffect.ChangePin -> {
-                            // The presenter has already been cached inside VM.
-                            // Here we just perform the call in a Compose-friendly way.
-                            val presenterField = viewModel.javaClass
-                            // Better approach: call a dedicated method that uses cached presenter internally.
-                            // To keep architecture clean, use the VM public function:
-                            // However we don't have direct access to cached presenter here.
-                            // So this branch should be removed in practice by calling a VM method directly from Presenter callback.
+                        Button(
+                            onClick = { onButtonClick(type) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(label)
                         }
                     }
                 }
             }
         }
     }
-
-    ChangeDriverPinScreen(
-        state = uiState,
-        onEvent = { event ->
-            when (event) {
-                ChangeDriverPinUiEvent.AcceptClicked -> {
-                    viewModel.onEvent(event)
-                    // original flow: validation -> getUserPresenter -> updateSuccess/failure
-                }
-
-                else -> viewModel.onEvent(event)
-            }
-        },
-        dialogState = dialogState,
-        onDismissDialog = { dialogState = null },
-        onDialogConfirm = {
-            dialogState = null
-            viewModel.onEvent(ChangeDriverPinUiEvent.DialogConfirmed)
-        }
-    )
-}
-
-@Composable
-fun ChangeDriverPinScreen(
-    state: ChangeDriverPinUiState,
-    onEvent: (ChangeDriverPinUiEvent) -> Unit,
-    dialogState: CustomDialogState?,
-    onDismissDialog: () -> Unit,
-    onDialogConfirm: () -> Unit
-) {
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            OutlinedTextField(
-                value = state.currentDriverNumber,
-                onValueChange = { onEvent(ChangeDriverPinUiEvent.CurrentDriverNumberChanged(it)) },
-                label = { Text("Número conductor") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = state.currentPin,
-                onValueChange = { onEvent(ChangeDriverPinUiEvent.CurrentPinChanged(it)) },
-                label = { Text("PIN actual") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = state.newPin,
-                onValueChange = { onEvent(ChangeDriverPinUiEvent.NewPinChanged(it)) },
-                label = { Text("Nuevo PIN") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = state.repeatNewPin,
-                onValueChange = { onEvent(ChangeDriverPinUiEvent.RepeatNewPinChanged(it)) },
-                label = { Text("Repetir PIN") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            ChangeDriverPinButtons(
-                state = state.buttonsState,
-                onAccept = { onEvent(ChangeDriverPinUiEvent.AcceptClicked) },
-                onCancel = { onEvent(ChangeDriverPinUiEvent.CancelClicked) }
-            )
-        }
-    }
-
-    dialogState?.let {
-        CustomDialog(
-            state = it,
-            onDismiss = onDismissDialog,
-            onAccept = onDialogConfirm
-        )
-    }
 }
 ```
 
 ---
 
-## 4) Button composables + styling helpers closer to your custom button
+# 8) Preserving Jetpack Views navigation
 
-This gives you a reusable state holder and visual helper matching a common custom button XML approach.
+In the fragment version, navigation was:
+- `iMainActivity.navigateBack()`
+
+In Compose, preserve that by injecting a callback from the hosting Activity / NavController / fragment host:
 
 ```kotlin
-package ifac.td.taxi.ui.screen
-
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ElevatedButton
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
-import androidx.compose.material3.Button
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
-
-@Composable
-fun ChangeDriverPinButtons(
-    state: ChangeDriverPinButtonsState,
-    onAccept: () -> Unit,
-    onCancel: () -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (state.accept.visible) {
-            CustomStyledButton(
-                visualState = state.accept,
-                onClick = onAccept
-            )
-        }
-
-        if (state.cancel.visible) {
-            CustomStyledButton(
-                visualState = state.cancel,
-                onClick = onCancel
-            )
-        }
-    }
-}
-
-@Composable
-fun CustomStyledButton(
-    visualState: ButtonVisualState,
-    onClick: () -> Unit
-) {
-    val bg = Color(visualState.backgroundColor)
-    val fg = Color(visualState.contentColor)
-
-    if (visualState.borderColor != null) {
-        OutlinedButton(
-            onClick = onClick,
-            enabled = visualState.enabled,
-            border = BorderStroke(1.dp, Color(visualState.borderColor)),
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = fg
-            ),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-        ) {
-            Text(visualState.text)
-        }
-    } else {
-        Button(
-            onClick = onClick,
-            enabled = visualState.enabled,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = bg,
-                contentColor = fg
-            ),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-        ) {
-            Text(visualState.text)
-        }
-    }
-}
+ChangeDriverPinScreen(
+    viewModel = viewModel,
+    onNavigateBack = { /* activity.onBackPressedDispatcher.onBackPressed() or navController.popBackStack() */ }
+)
 ```
+
+If you need the exact “navigateBack” behavior from your previous `iMainActivity`, wrap it in a callback from the host layer.
 
 ---
 
-## 5) Compose `CustomDialog` based on the XML/dialog pattern
+# 9) How to wire from Fragment to Compose (if you still need the Fragment shell)
 
-This is a reusable Compose dialog with title and button list support.
+If you want to keep a fragment as the navigation host but use Compose for content:
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+class ChangeDriverPinComposeFragment : Fragment() {
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+    private val viewModel: ChangeDriverPinViewModel by viewModel()
 
-@Composable
-fun CustomDialog(
-    state: CustomDialogState,
-    onDismiss: () -> Unit,
-    onAccept: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(16.dp),
-        title = {
-            Text(text = state.title)
-        },
-        text = {
-            Spacer(modifier = Modifier.height(1.dp))
-        },
-        confirmButton = {
-            if (DialogButtonType.Accept in state.buttons) {
-                TextButton(onClick = onAccept) {
-                    Text("ACEPTAR")
-                }
-            }
-        },
-        dismissButton = {
-            if (DialogButtonType.Cancel in state.buttons) {
-                TextButton(onClick = onDismiss) {
-                    Text("CANCELAR")
-                }
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                ChangeDriverPinScreen(
+                    viewModel = viewModel,
+                    onNavigateBack = { parentFragmentManager.popBackStack() }
+                )
             }
         }
-    )
-}
-```
-
----
-
-## 6) Important note about preserving the original presenter callback flow
-
-Your original fragment does this:
-
-1. validate fields
-2. create `ChangePasswordPinView`
-3. call `vModel.getUserPresenter(userPresenter)`
-4. when presenter is returned, call `changeDriverPin(...)`
-5. presenter callback calls success/failure dialog
-
-In Compose, the cleanest version is to have the VM own that flow more directly. If you want to preserve the exact behavior, you can refactor the VM slightly so that:
-
-- `RequestUserPresenter` effect causes UI to call `getUserPresenter(view)`
-- once presenter is ready, VM emits another effect or directly performs `changeDriverPin(...)`
-- callback updates emit dialogs
-
-A simpler and cleaner Compose version is to let the VM expose one method that internally does both steps. If you want, I can provide that refined version too.
-
----
-
-## 7) Recommended cleaner implementation of the presenter flow
-
-If you want the exact flow but cleaner, change the VM to:
-
-```kotlin
-fun submitChangePin() {
-    val presenterView = object : ChangePasswordPinView {
-        override fun updateSuccess() {
-            onPinChangeSuccess()
-        }
-
-        override fun updateFailure() {
-            onPinChangeFailure()
-        }
-    }
-
-    viewModelScope.launch {
-        val presenter = UserModule.provideUserPresenter(presenterView, app)
-        val state = _uiState.value
-        presenter.changeDriverPin(
-            state.currentDriverNumber.trim(),
-            state.currentPin.trim(),
-            state.newPin.trim(),
-            app
-        )
     }
 }
 ```
 
-Then `AcceptClicked` simply validates and calls `submitChangePin()`.
+---
 
-This is much easier to keep correct in Compose.
+# 10) Summary of what this replaces
+
+This Compose solution replaces the fragment’s behavior:
+- `setButtons()` → `ChangeDriverPinButtonsState` + `ChangeDriverPinButtons`
+- `checkParameters()` → ViewModel validation logic
+- `changePin()` → ViewModel + `ChangePasswordPinView`
+- `setupObservers()` → `SharedFlow<ChangeDriverPinUiEffect>` collection in Compose
+- `CustomDialog.openDialog(...)` → Compose dialog state + `CustomDialog(...)`
 
 ---
 
-## 8) What to change in navigation
+If you want, I can also provide:
 
-In Compose Navigation, replace:
-
-```kotlin
-iMainActivity.navigateBack()
-```
-
-with:
-
-```kotlin
-navController.popBackStack()
-```
-
-If you need to keep an activity-level navigation contract, you can wrap that in an interface and call it from Compose, but `NavController` is the standard Compose approach.
-
----
-
-If you want, I can provide a **single, fully cleaned-up final version** with:
-
-- the VM fully fixed so it actually compiles,
-- the Compose screen using the exact presenter flow,
-- and a more exact recreation of your XML button colors/visibility once you share the XML files for:
-  - `fragment_change_driver_pin.xml`
-  - `custom_button.xml`
-  - `custom_dialog.xml`
+1. a version that uses `NavController` instead of a callback,  
+2. a more exact Material replication of your `CustomButton` XML styling, or  
+3. a full `custom_dialog.xml`-like Compose dialog with icon, header, divider, and button row matching your app theme.

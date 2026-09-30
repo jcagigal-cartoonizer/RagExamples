@@ -1,6 +1,8 @@
 package com.cartoonizer.rag.shared.utils;
 
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FILE_NAME;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FIRST_PREFIX;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAST_PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUT;
@@ -23,7 +25,7 @@ public class GenerateComposeFiles {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if (!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) {
+            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
                 continue;
             }
             FILE_NAME = PREFIX + "Fragment.txt";
@@ -132,34 +134,33 @@ public class GenerateComposeFiles {
                 if (line.trim().startsWith("fun composeButtonColors(")) {
                     line = "@Composable\n" + line;
                 }
-                    if (outputPath != null && outputPath.contains(PREFIX + "ComposeViewModel")) {
-                        if (line.trim().startsWith("fun canOpenPendingTrips()")) {
-                            canOpenPendingTrips = true;
-                        }
-                        if (canOpenPendingTrips) {
-                            doPrint = false;
-                        }
-                        if (line.contains("fun onPendingClick() = canOpenPendingTrips()")) {
-                            line = line.replaceAll(Pattern.quote("fun onPendingClick() = canOpenPendingTrips()"), "fun onPendingClick() = emitNav(HomeUiEvent.OpenPendingTrips)");
-                        }
+                if (outputPath != null && outputPath.contains(PREFIX + "ComposeViewModel")) {
+                    if (line.trim().startsWith("fun canOpenPendingTrips()")) {
+                        canOpenPendingTrips = true;
+                    }
+                    if (canOpenPendingTrips) {
+                        doPrint = false;
+                    }
+                    if (line.contains("fun onPendingClick() = canOpenPendingTrips()")) {
+                        line = line.replaceAll(Pattern.quote("fun onPendingClick() = canOpenPendingTrips()"), "fun onPendingClick() = emitNav(HomeUiEvent.OpenPendingTrips)");
+                    }
                 }
                 if (outputPath != null && outputPath.contains("DialogState.")) {
-                        if (line.contains("dialogState?.let")) {
-                            insideDialogStateLet = true;
-                        }
-                    if (insideDialogStateLet && (line.contains("dialogState?.let") || line.contains("CustomDialog(") || 
-                            line.contains("state = dialog,") || line.contains("onDismiss = { dialogState") || 
-                            line.trim().equals(")") || line.trim().equals("}"))
-                            ) {
-                            doPrint = false;
-                        }
+                    if (line.contains("dialogState?.let")) {
+                        insideDialogStateLet = true;
+                    }
+                    if (insideDialogStateLet && (line.contains("dialogState?.let") || line.contains("CustomDialog(")
+                            || line.contains("state = dialog,") || line.contains("onDismiss = { dialogState")
+                            || line.trim().equals(")") || line.trim().equals("}"))) {
+                        doPrint = false;
+                    }
                 }
                 if (outputPath != null && outputPath.contains(PREFIX + "ComposeViewModel")) {
-                        if (canOpenPendingTrips && line.trim().startsWith("fun changeStateHiredManual")) {
-                            canOpenPendingTrips = false;
-                            doPrint = true;
-                        }
+                    if (canOpenPendingTrips && line.trim().startsWith("fun changeStateHiredManual")) {
+                        canOpenPendingTrips = false;
+                        doPrint = true;
                     }
+                }
                 if (outputPath != null && outputPath.contains("DialogState.") && line.trim().equals("}")) {
                     doPrint = true;
                     insideDialogStateLet = false;
@@ -178,6 +179,10 @@ public class GenerateComposeFiles {
         @Override
         public void end() {
             super.end();
+            if (errorFound) {
+                System.out.println("ERROR found in " + outputPath + " blocks " + answerProcessor.blocks.size() + " blockFiles " + answerProcessor.blockFiles.size());
+
+            }
             if (writer != null) {
                 closeFile();
             } else {
@@ -197,6 +202,7 @@ public class GenerateComposeFiles {
             for (Map.Entry<String, String> entry : answerProcessor.blockFiles.entrySet()) {
                 System.out.println("    " + entry.getKey() + " -> " + entry.getValue());
             }
+            errorFound = false;
         }
 
         private void closeFile() {
@@ -224,17 +230,45 @@ public class GenerateComposeFiles {
         }
 
         private void printOtherImports(String path) {
-            print("import androidx.compose.runtime.getValue");
-            print("import androidx.compose.runtime.setValue");
-            print("import androidx.compose.runtime.mutableStateOf");
-            print("import androidx.compose.runtime.remember");
-            print("import ifac.td.taxi.R");
-//            if (path.contains("ViewModel")) {
-//                print("import ifac.td.taxi.domain.usecase.PendingTripsUseCaseImpl");
-//                print("import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip");
-//            }
+            print("import  ifac.td.taxi.R");
+            print("import ifac.td.taxi.repository.connections.service.model.*");
+            print("import androidx.annotation.StringRes");
+            print("import androidx.compose.material3.*");
+            print("import androidx.compose.runtime.*");
+            print("import androidx.compose.ui.res.stringResource");
+            print("import ifac.td.taxi.compose.viewmodel.*");
+            print("import androidx.navigation.NavController");
+            print("import ifac.td.taxi.viewmodel.MainActivityViewModel");
+            print("import androidx.compose.foundation.*");
+            print("import androidx.compose.foundation.interaction.*");
+            print("import androidx.compose.foundation.layout.*");
+            print("import androidx.compose.foundation.shape.*");
+            print("import androidx.compose.ui.*");
+            print("import androidx.compose.ui.draw.*");
+            print("import androidx.compose.ui.graphics.*");
+            print("import androidx.compose.ui.text.style.*");
+            print("import androidx.compose.ui.unit.*");
+            print("import androidx.lifecycle.compose.LocalLifecycleOwner");
+            print("import androidx.compose.ui.platform.*");
+            print("import androidx.core.net.toUri");
+            print("import androidx.navigation.*");
+            print("import ifac.td.taxi.ui.screen.components.*");
+            print("import androidx.compose.ui.window.Dialog");
+            print("import androidx.lifecycle.*");
+            print("import com.interfacom.sdk.taximeter.bravocomm.*");
+            print("import ifac.td.taxi.domain.model.*");
+            print("import ifac.td.taxi.domain.usecase.*");
+            print("import ifac.td.taxi.framework.sdk.bravocentral.usecase.*");
+            print("import ifac.td.taxi.framework.sdk.usecase.*");
+            print("import ifac.td.taxi.repository.room.entities.*");
+            print("import ifac.td.taxi.repository.room.entities.countdown.*");
+            print("import ifac.td.taxi.repository.room.entities.message.*");
+            print("import ifac.td.taxi.viewmodel.model.*");
+            print("import kotlinx.coroutines.*");
+            print("import kotlinx.coroutines.flow.*");
+            print("import androidx.lifecycle.compose.collectAsStateWithLifecycle");
             if (path.contains("CustomDialog")) {
-                print("import androidx.compose.ui.window.Dialog");
+                print("import  androidx.compose.ui.window.Dialog");
             }
 
         }
@@ -261,7 +295,7 @@ public class GenerateComposeFiles {
                     orderedLines.clear();
                     print("package " + packageName);
                     if (path.endsWith("ViewModel.kt")) {
-                        print("import android.app.Application");
+                        print("import  android.app.Application");
                     }
                     for (Map.Entry<String, String> entry : secondPass.internalImports.entrySet()) {
                         print(entry.getKey());
@@ -289,6 +323,7 @@ public class GenerateComposeFiles {
                 lines.put(line, line);
             }
         }
+        private boolean errorFound = false;
 
         private String processBlocks(IGeneralBlocks iface, String line) {
             if (iface == null) {
@@ -296,11 +331,11 @@ public class GenerateComposeFiles {
             }
             if (answerProcessor.blockFilesList.length == answerProcessor.blocksList.length) {
                 for (int i = 0; i < answerProcessor.blocksList.length; i++) {
-    //                if (shouldIgnore(line)) {
-    //                    line = "// " + line;
-    //                }
+                    //                if (shouldIgnore(line)) {
+                    //                    line = "// " + line;
+                    //                }
                     if (answerProcessor.blocksList[i].trim().equals(line.trim())) {
-    //                    line = "// " + line;
+                        //                    line = "// " + line;
                         if (answerProcessor.blockFilesList[i] != null && openFiles.get(answerProcessor.blockFilesList[i]) != null) {
                             continue;
                         }
@@ -316,21 +351,26 @@ public class GenerateComposeFiles {
                     }
                 }
             } else {
-                System.out.println("ERROR: GenerateComposeFiles processBlocks " + answerProcessor.origen.getName() + " -> blocksList.length " + answerProcessor.blocksList.length + " != " + answerProcessor.blockFilesList.length);
+                errorFound = true;
+//                System.out.println("ERROR: GenerateComposeFiles processBlocks " + answerProcessor.origen.getName() + " -> blocksList.length " + answerProcessor.blocksList.length + " != " + answerProcessor.blockFilesList.length);
             }
             return line;
         }
     }
+
     public static class SecondPass {
+
         private PrintWriter writer;
         private String outputPath;
         private HashMap<String, String> addedImports = new HashMap<>();
         private HashMap<String, String> internalImports = new HashMap<>();
         private GenerateFiles generateFiles;
         public boolean packageSet = false;
+
         private SecondPass() {
 
         }
+
         public SecondPass(GenerateFiles generateFiles, PrintWriter writer, String outputPath) {
             this.writer = writer;
             this.outputPath = outputPath;
@@ -366,26 +406,26 @@ public class GenerateComposeFiles {
                 if (line.startsWith("import ") || line.startsWith("//")) {
                     continue;
                 }
-                if (line.contains(PREFIX + "Ui") || line.contains(PREFIX + "Button") || line.contains(PREFIX + "Ui") ||
-                        line.contains(PREFIX + "Custom") || line.contains(PREFIX + "Screen")) {
+                if (line.contains(PREFIX + "Ui") || line.contains(PREFIX + "Button") || line.contains(PREFIX + "Ui")
+                        || line.contains(PREFIX + "Custom") || line.contains(PREFIX + "Screen")) {
                     int idx = line.indexOf(PREFIX);
                     if (idx > 0) {
                         String name = line.substring(idx);
-                            System.out.println("GenerateComposeFiles addImportForInternalVars BEFORE name = " + name);
+//                            System.out.println("GenerateComposeFiles addImportForInternalVars BEFORE name = " + name);
 //                        if (!name.contains(".")) {
-                            name = name.replaceAll("`", "");
-                            idx = name.indexOf("(");
+                        name = name.replaceAll("`", "");
+                        idx = name.indexOf("(");
+                        if (idx < 0) {
+                            idx = name.indexOf(")");
                             if (idx < 0) {
-                                idx = name.indexOf(")");
+                                idx = name.indexOf("?");
                                 if (idx < 0) {
-                                    idx = name.indexOf("?");
+                                    idx = name.indexOf(">");
                                     if (idx < 0) {
-                                        idx = name.indexOf(">");
-                                        if (idx < 0) {
-                                            idx = name.indexOf("<");
-                                        }
+                                        idx = name.indexOf("<");
                                     }
                                 }
+                            }
 //                            }
                         }
                         if (idx > 0) {
@@ -399,7 +439,7 @@ public class GenerateComposeFiles {
                                 }
                             }
                             String lineImport = "import ifac.td.taxi.ui.screen.components." + name;
-                            System.out.println("GenerateComposeFiles addImportForInternalVars AFTER lineImport = " + lineImport);
+//                            System.out.println("GenerateComposeFiles addImportForInternalVars AFTER lineImport = " + lineImport);
                             internalImports.put(lineImport, lineImport);
                         }
                     }
@@ -413,7 +453,7 @@ public class GenerateComposeFiles {
         }
 
         private void printAll(HashMap<String, String> lines, ArrayList<String> orderedLines) {
-            addImportForInternalVars(lines, orderedLines);
+//            addImportForInternalVars(lines, orderedLines);
             System.out.println("*** printAll " + outputPath + " orderedLines  " + orderedLines.size());
             int linesPrinted = 0;
             boolean importsFound = false;

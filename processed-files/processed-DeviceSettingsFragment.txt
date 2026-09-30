@@ -1,159 +1,119 @@
-Because your fragment depends on custom XML views (`CustomSettingsSlider`, `CustomButton`, `custom_dialog.xml`), I’ve recreated their Compose equivalents as closely as possible from the logic shown.
+I’ll provide:
+1. **Compose `DeviceSettingsScreen`**
+2. **Compose `DeviceSettingsViewModel`** with `UiState + SharedFlow<DeviceSettingsUiEffect>`
+3. **`DeviceSettingsButtonsState`** with button visibility/coloring helpers
+4. **Compose `DeviceSettingsCustomButton.ktCustomDialog`** based on the `custom_dialog.xml` / `DeviceSettingsCustomButton.ktCustomDialog.kt` intent
+5. **Navigation-preserving host pattern**
+6. **State/event collection with lifecycle-aware `collectAsStateWithLifecycle` and `LaunchedEffect`**
 ---
-# 1) Compose ViewModel with `UiState + UiEvent + UiEffect`
+# 1) Compose ViewModel with `UiState + UiEffect`
 ```kotlin
-package ifac.td.taxi.viewmodel.compose
-// # Block 5-1: import android.app.Application
+package ifac.td.taxi.viewmodel
+// # Block 11-1: import android.app.Application
 import android.app.Application
+import android.app.NotificationManager
 import android.content.Context
 import android.media.AudioManager
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import ifac.td.taxi.framework.sdk.usecase.SoundManagerUseCase
+import ifac.td.taxi.framework.util.Logs
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+data class DeviceSettingsUiState(
+    val canWriteSettings: Boolean = false,
+    val isDndEnabled: Boolean = false,
+    val isSilentModeEnabled: Boolean = false,
+    val areVolumesLinked: Boolean? = null,
+    val showPermissionDialog: Boolean = false,
+    val showLinkedVolumesDialog: Boolean = false,
+    val showRingtoneTestDialog: Boolean = false,
+    val phoneCallVolume: Int = 0,
+    val systemVolume: Int = 0,
+    val notificationVolume: Int = 0,
+    val ringtoneVolume: Int = 0,
+    val brightness: Int = 0,
+    val minPhoneCallVolume: Int = 20
+)
+sealed interface DeviceSettingsUiEffect {
+    data class OpenSystemWriteSettings(val packageName: String) : DeviceSettingsUiEffect
+    data class ShowToast(val messageRes: Int) : DeviceSettingsUiEffect
+    data object RefreshSliders : DeviceSettingsUiEffect
+    data object OpenPermissionSettings : DeviceSettingsUiEffect
+    data object NavigateBack : DeviceSettingsUiEffect
+}
 class DeviceSettingsComposeViewModel(
-    application: Application,
     private val soundManagerUseCase: SoundManagerUseCase,
+    application: Application,
 ) : AndroidViewModel(application) {
-    companion object {
-        const val MIN_RINGTONE_VOLUME_PERCENT = 20
-    }
     private val appContext: Context get() = getApplication<Application>()
     private val _uiState = MutableStateFlow(DeviceSettingsUiState())
     val uiState = _uiState.asStateFlow()
     private val _uiEffect = MutableSharedFlow<DeviceSettingsUiEffect>(
-        replay = 0,
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val uiEffect: SharedFlow<DeviceSettingsUiEffect> = _uiEffect
-    fun onEvent(event: DeviceSettingsUiEvent) {
-        when (event) {
-            DeviceSettingsUiEvent.OnScreenResumed -> refreshState()
-            DeviceSettingsUiEvent.OnRequestWriteSettingsPermission -> emitEffect(DeviceSettingsUiEffect.OpenWriteSettings)
-            DeviceSettingsUiEvent.OnDismissDialog -> _uiState.update { it.copy(dialog = null) }
-            is DeviceSettingsUiEvent.OnPhoneCallVolumeChanged -> setPhoneCallVolume(event.volume)
-            is DeviceSettingsUiEvent.OnSystemVolumeChanged -> setSystemVolume(event.volume)
-            is DeviceSettingsUiEvent.OnNotificationVolumeChanged -> setNotificationVolume(event.volume)
-            is DeviceSettingsUiEvent.OnRingtoneVolumeChanged -> setRingtoneVolume(event.volume)
-            is DeviceSettingsUiEvent.OnBrightnessChanged -> setBrightness(event.brightness)
-            DeviceSettingsUiEvent.OnPhoneCallStopTracking -> handleStopTracking(stream = AudioManager.STREAM_VOICE_CALL)
-            DeviceSettingsUiEvent.OnSystemStopTracking -> handleStopTracking(stream = AudioManager.STREAM_MUSIC)
-            DeviceSettingsUiEvent.OnNotificationStopTracking -> handleStopTracking(stream = AudioManager.STREAM_NOTIFICATION)
-            DeviceSettingsUiEvent.OnRingtoneStopTracking -> {
-                testRingTone()
-                handleStopTracking(stream = AudioManager.STREAM_RING)
-            }
-            DeviceSettingsUiEvent.OnBrightnessStopTracking -> Unit
-            DeviceSettingsUiEvent.OnBackPressed -> emitEffect(DeviceSettingsUiEffect.NavigateBack)
-            DeviceSettingsUiEvent.OnOpenSystemWriteSettings -> emitEffect(DeviceSettingsUiEffect.OpenWriteSettings)
-        }
+    fun onScreenOpened() {
+        refreshSnapshot()
+        checkLinkedVolumes()
     }
-    fun refreshState() {
-        val canWrite = hasAudioPermissions()
-        val dnd = isDoNotDisturbModeEnabled()
-        val silent = isSilentModeEnabled()
-        val linked = areNotificationAndRingVolumesLinked()
-        val phone = getPhoneCallVolume()
-        val system = getSystemVolume()
-        val notification = getNotificationVolume(linked)
-        val ringtone = getRingtoneVolume()
-        val brightness = getBrightness()
-        _uiState.update {
-            it.copy(
-                canWriteSettings = canWrite,
-                isDndEnabled = dnd,
-                isSilentModeEnabled = silent,
-                linkedVolumes = linked,
-                phoneCallVolume = phone,
-                systemVolume = system,
-                notificationVolume = notification,
-                ringtoneVolume = ringtone,
-                brightness = brightness,
-                buttonsState = DeviceSettingsButtonsState.from(
-                    canWriteSettings = canWrite,
-                    isDndEnabled = dnd,
-                    isSilentModeEnabled = silent,
-                    linkedVolumes = linked
+    fun refreshSnapshot() {
+        _uiState.value = _uiState.value.copy(
+            canWriteSettings = Settings.System.canWrite(appContext),
+            isDndEnabled = isDoNotDisturbModeEnabled(),
+            isSilentModeEnabled = isSilentModeEnabled(),
+            phoneCallVolume = getPhoneCallVolume(),
+            systemVolume = getSystemVolume(),
+            notificationVolume = getNotificationVolume(),
+            ringtoneVolume = getRingtoneVolume(),
+            brightness = getBrightness(),
+            minPhoneCallVolume = getMinPhoneCallVolume()
+        )
+    }
+    fun onRequestWriteSettings() {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                DeviceSettingsUiEffect.OpenSystemWriteSettings(
+                    packageName = appContext.packageName
                 )
             )
         }
     }
-    fun hasAudioPermissions(): Boolean = Settings.System.canWrite(appContext)
-    fun emitEffect(effect: DeviceSettingsUiEffect) {
-        viewModelScope.launch { _uiEffect.emit(effect) }
-    }
-    fun handleStopTracking(stream: Int) {
-        if (!hasAudioPermissions()) {
-            emitEffect(DeviceSettingsUiEffect.ShowToast(DeviceSettingsToast.ErrorPermissionDenied))
-            emitEffect(DeviceSettingsUiEffect.OpenWriteSettings)
+    fun checkLinkedVolumes() {
+        viewModelScope.launch {
+            val linked = areNotificationAndRingVolumesLinked()
+            _uiState.value = _uiState.value.copy(areVolumesLinked = linked)
         }
     }
-    fun testRingTone() {
+    fun testRingtone() {
         viewModelScope.launch {
             try {
                 soundManagerUseCase.playTestSound()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Logs.e("DeviceSettingsComposeViewModel", "Error playing ringtone: ${e.message}")
+                _uiEffect.emit(DeviceSettingsUiEffect.ShowToast(android.R.string.untitled))
             }
         }
-    }
-    fun areNotificationAndRingVolumesLinked(): Boolean {
-        return try {
-            val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val notificationVolume = audioManager.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
-            val ringVolume = audioManager.getStreamVolume(AudioManager.STREAM_RING)
-            val testVolume = if (notificationVolume > 0) notificationVolume - 1 else notificationVolume + 1
-            val maxNotificationVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)
-            val safeTestVolume = testVolume.coerceIn(0, maxNotificationVolume)
-            audioManager.setStreamVolume(AudioManager.STREAM_NOTIFICATION, safeTestVolume, 0)
-            val newRingVolume = audioManager.getStreamVolume(AudioManager.STREAM_RING)
-            val areLinked = newRingVolume != ringVolume
-            audioManager.setStreamVolume(AudioManager.STREAM_NOTIFICATION, notificationVolume, 0)
-            audioManager.setStreamVolume(AudioManager.STREAM_RING, ringVolume, 0)
-            areLinked
-        } catch (_: Exception) {
-            false
-        }
-    }
-    fun getPhoneCallVolume(): Int = normalizeStream(AudioManager.STREAM_VOICE_CALL, min = true)
-    fun getSystemVolume(): Int = normalizeStream(AudioManager.STREAM_MUSIC)
-    fun getNotificationVolume(linked: Boolean): Int {
-        val value = normalizeStream(AudioManager.STREAM_NOTIFICATION)
-        return if (linked && value in 0 until MIN_RINGTONE_VOLUME_PERCENT) MIN_RINGTONE_VOLUME_PERCENT else value
-    }
-    fun getRingtoneVolume(): Int {
-        val value = normalizeStream(AudioManager.STREAM_RING)
-        return if (value in 0 until MIN_RINGTONE_VOLUME_PERCENT) MIN_RINGTONE_VOLUME_PERCENT else value
-    }
-    fun normalizeStream(stream: Int, min: Boolean = false): Int {
-        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val currentVolume = audioManager.getStreamVolume(stream)
-        val maxVolume = audioManager.getStreamMaxVolume(stream)
-        val normalized = if (maxVolume <= 0) 0 else ((currentVolume.toFloat() * 100) / maxVolume).toInt().coerceIn(0, 100)
-        return normalized
-    }
-    fun denormalizeVolume(normalizedVolume: Int, maxVolume: Int): Int {
-        if (maxVolume <= 0) return 0
-        return ((normalizedVolume.toFloat() * maxVolume) / 100).toInt().coerceIn(0, maxVolume)
     }
     fun setPhoneCallVolume(newVolume: Int) {
         if (isDoNotDisturbModeEnabled() || isSilentModeEnabled()) return
         try {
             val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            val minVolume = getMinPhoneCallVolume()
+            val adjusted = if (newVolume in 0 until minVolume) minVolume else newVolume
             audioManager.setStreamVolume(
                 AudioManager.STREAM_VOICE_CALL,
-                denormalizeVolume(newVolume.coerceAtLeast(MIN_RINGTONE_VOLUME_PERCENT), maxVolume),
+                denormalizeVolume(adjusted, maxVolume),
                 AudioManager.FLAG_SHOW_UI
             )
-            refreshState()
+            refreshSnapshot()
         } catch (_: Exception) {}
     }
     fun setSystemVolume(newVolume: Int) {
@@ -166,7 +126,7 @@ class DeviceSettingsComposeViewModel(
                 denormalizeVolume(newVolume, maxVolume),
                 AudioManager.FLAG_SHOW_UI
             )
-            refreshState()
+            refreshSnapshot()
         } catch (_: Exception) {}
     }
     fun setNotificationVolume(newVolume: Int) {
@@ -174,15 +134,12 @@ class DeviceSettingsComposeViewModel(
         try {
             val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)
-            val adjusted = if (uiState.value.linkedVolumes && newVolume in 0 until MIN_RINGTONE_VOLUME_PERCENT) {
-                MIN_RINGTONE_VOLUME_PERCENT
-            } else newVolume
             audioManager.setStreamVolume(
                 AudioManager.STREAM_NOTIFICATION,
-                denormalizeVolume(adjusted, maxVolume),
+                denormalizeVolume(newVolume, maxVolume),
                 AudioManager.FLAG_SHOW_UI
             )
-            refreshState()
+            refreshSnapshot()
         } catch (_: Exception) {}
     }
     fun setRingtoneVolume(newVolume: Int) {
@@ -190,167 +147,243 @@ class DeviceSettingsComposeViewModel(
         try {
             val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING)
-            val adjusted = newVolume.coerceAtLeast(MIN_RINGTONE_VOLUME_PERCENT)
             audioManager.setStreamVolume(
                 AudioManager.STREAM_RING,
-                denormalizeVolume(adjusted, maxVolume),
+                denormalizeVolume(newVolume, maxVolume),
                 AudioManager.FLAG_SHOW_UI
             )
-            refreshState()
+            refreshSnapshot()
         } catch (_: Exception) {}
     }
     fun setBrightness(newBrightness: Int) {
         try {
-            if (Settings.System.canWrite(appContext)) {
-                Settings.System.putInt(appContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS, newBrightness.coerceIn(0, 255))
-                refreshState()
+            if (isAutoBrightnessEnabled()) {
+                Settings.System.putInt(
+                    appContext.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS_MODE,
+                    Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+                )
             }
+            if (Settings.System.canWrite(appContext)) {
+                Settings.System.putInt(
+                    appContext.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS,
+                    newBrightness
+                )
+            }
+            refreshSnapshot()
         } catch (_: Exception) {}
     }
+    fun testPermissionOrOpenSettings() {
+        if (!Settings.System.canWrite(appContext)) {
+            onRequestWriteSettings()
+        }
+    }
+    fun hasAudioPermissions(): Boolean = Settings.System.canWrite(appContext)
     fun isDoNotDisturbModeEnabled(): Boolean {
-        val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        return nm.currentInterruptionFilter != android.app.NotificationManager.INTERRUPTION_FILTER_ALL
+        val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        return nm?.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL
     }
     fun isSilentModeEnabled(): Boolean {
-        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        return am.ringerMode == AudioManager.RINGER_MODE_SILENT
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        return am?.ringerMode == AudioManager.RINGER_MODE_SILENT
+    }
+    fun isAutoBrightnessEnabled(): Boolean {
+        return Settings.System.getInt(
+            appContext.contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS_MODE,
+            Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+        ) == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC
     }
     fun getBrightness(): Int = try {
-        Settings.System.getInt(appContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 0).coerceIn(0, 255)
-    } catch (_: Exception) {
-        0
+        Settings.System.getInt(appContext.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 0)
+            .coerceIn(0, 255)
+    } catch (_: Exception) { 0 }
+    fun normalizeVolume(volume: Int, maxVolume: Int): Int {
+        if (maxVolume <= 0) return 0
+        return ((volume.toFloat() * 100f) / maxVolume).toInt().coerceIn(0, 100)
     }
-}
-```
----
-# 2) Compose `UiState`, `UiEvent`, `UiEffect`, and dialog models
-```kotlin
-package ifac.td.taxi.viewmodel.compose
-// # Block 228-2: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
-@Immutable
-data class DeviceSettingsUiState(
-    val canWriteSettings: Boolean = false,
-    val isDndEnabled: Boolean = false,
-    val isSilentModeEnabled: Boolean = false,
-    val linkedVolumes: Boolean = false,
-    val phoneCallVolume: Int = 0,
-    val systemVolume: Int = 0,
-    val notificationVolume: Int = 0,
-    val ringtoneVolume: Int = 0,
-    val brightness: Int = 0,
-    val dialog: DeviceSettingsDialogState? = null,
-    val buttonsState: DeviceSettingsButtonsState = DeviceSettingsButtonsState()
-)
-sealed interface DeviceSettingsUiEvent {
-    data object OnScreenResumed : DeviceSettingsUiEvent
-    data object OnDismissDialog : DeviceSettingsUiEvent
-    data object OnBackPressed : DeviceSettingsUiEvent
-    data object OnRequestWriteSettingsPermission : DeviceSettingsUiEvent
-    data object OnOpenSystemWriteSettings : DeviceSettingsUiEvent
-    data class OnPhoneCallVolumeChanged(val volume: Int) : DeviceSettingsUiEvent
-    data class OnSystemVolumeChanged(val volume: Int) : DeviceSettingsUiEvent
-    data class OnNotificationVolumeChanged(val volume: Int) : DeviceSettingsUiEvent
-    data class OnRingtoneVolumeChanged(val volume: Int) : DeviceSettingsUiEvent
-    data class OnBrightnessChanged(val brightness: Int) : DeviceSettingsUiEvent
-    data object OnPhoneCallStopTracking : DeviceSettingsUiEvent
-    data object OnSystemStopTracking : DeviceSettingsUiEvent
-    data object OnNotificationStopTracking : DeviceSettingsUiEvent
-    data object OnRingtoneStopTracking : DeviceSettingsUiEvent
-    data object OnBrightnessStopTracking : DeviceSettingsUiEvent
-}
-sealed interface DeviceSettingsUiEffect {
-    data object NavigateBack : DeviceSettingsUiEffect
-    data object OpenWriteSettings : DeviceSettingsUiEffect
-    data class ShowToast(val toast: DeviceSettingsToast) : DeviceSettingsUiEffect
-    data class OpenDialog(val dialog: DeviceSettingsDialogState) : DeviceSettingsUiEffect
-}
-sealed interface DeviceSettingsToast {
-    data object ErrorPermissionDenied : DeviceSettingsToast
-    data object DndOrSilentModeEnabled : DeviceSettingsToast
-    data object GenericError : DeviceSettingsToast
-}
-@Immutable
-data class DeviceSettingsDialogState(
-    val title: String,
-    val message: String,
-    val confirmText: String,
-    val dismissText: String? = null,
-)
-```
----
-# 3) `DeviceSettingsButtonsState` with Compose styling helpers
-```kotlin
-package ifac.td.taxi.viewmodel.compose
-// # Block 284-3: import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
-@Immutable
-data class DeviceSettingsButtonsState(
-    val showWriteSettingsButton: Boolean = false,
-    val showLinkedVolumesInfoButton: Boolean = true,
-    val showPhoneCallButton: Boolean = true,
-    val showSystemButton: Boolean = true,
-    val showNotificationButton: Boolean = true,
-    val showRingtoneButton: Boolean = true,
-    val showBrightnessButton: Boolean = true,
-    val primaryEnabled: Boolean = true,
-    val secondaryEnabled: Boolean = true,
-    val destructiveEnabled: Boolean = true,
-    val primaryContainerColor: Color = Color(0xFF1E88E5),
-    val primaryContentColor: Color = Color.White,
-    val secondaryContainerColor: Color = Color(0xFF263238),
-    val secondaryContentColor: Color = Color.White,
-    val destructiveContainerColor: Color = Color(0xFFD32F2F),
-    val destructiveContentColor: Color = Color.White,
-    val disabledContainerColor: Color = Color(0xFFB0BEC5),
-    val disabledContentColor: Color = Color(0xFF607D8B),
-) {
-    companion object {
-        fun from(
-            canWriteSettings: Boolean,
-            isDndEnabled: Boolean,
-            isSilentModeEnabled: Boolean,
-            linkedVolumes: Boolean
-        ): DeviceSettingsButtonsState {
-            val blocked = isDndEnabled || isSilentModeEnabled
-            return DeviceSettingsButtonsState(
-                showWriteSettingsButton = !canWriteSettings,
-                primaryEnabled = !blocked,
-                secondaryEnabled = !blocked,
-                destructiveEnabled = !blocked,
-                showLinkedVolumesInfoButton = linkedVolumes
+    fun denormalizeVolume(normalizedVolume: Int, maxVolume: Int): Int {
+        if (maxVolume <= 0) return 0
+        return ((normalizedVolume.toFloat() * maxVolume) / 100f).toInt().coerceIn(0, maxVolume)
+    }
+    fun getPhoneCallVolume(): Int {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return normalizeVolume(
+            am.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
+            am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+        ).coerceAtLeast(getMinPhoneCallVolume())
+    }
+    fun getNotificationVolume(): Int {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return normalizeVolume(
+            am.getStreamVolume(AudioManager.STREAM_NOTIFICATION),
+            am.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)
+        )
+    }
+    fun getSystemVolume(): Int {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return normalizeVolume(
+            am.getStreamVolume(AudioManager.STREAM_MUSIC),
+            am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        )
+    }
+    fun getRingtoneVolume(): Int {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return normalizeVolume(
+            am.getStreamVolume(AudioManager.STREAM_RING),
+            am.getStreamMaxVolume(AudioManager.STREAM_RING)
+        ).coerceAtLeast(20)
+    }
+    fun getMinPhoneCallVolume(): Int = 20
+    fun areNotificationAndRingVolumesLinked(): Boolean {
+        try {
+            val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val notificationVolume = audioManager.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
+            val ringVolume = audioManager.getStreamVolume(AudioManager.STREAM_RING)
+            val testVolume = if (notificationVolume > 0) notificationVolume - 1 else notificationVolume + 1
+            audioManager.setStreamVolume(
+                AudioManager.STREAM_NOTIFICATION,
+                testVolume.coerceIn(0, audioManager.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)),
+                0
             )
+            val newRingVolume = audioManager.getStreamVolume(AudioManager.STREAM_RING)
+            audioManager.setStreamVolume(AudioManager.STREAM_NOTIFICATION, notificationVolume, 0)
+            audioManager.setStreamVolume(AudioManager.STREAM_RING, ringVolume, 0)
+            return newRingVolume != ringVolume
+        } catch (_: Exception) {
+            return false
         }
     }
 }
-@Immutable
-data class ButtonStyleTokens(
-    val containerColor: Color,
-    val contentColor: Color,
-    val enabled: Boolean,
-)
-fun DeviceSettingsButtonsState.primaryStyle() = ButtonStyleTokens(
-    containerColor = if (primaryEnabled) primaryContainerColor else disabledContainerColor,
-    contentColor = if (primaryEnabled) primaryContentColor else disabledContentColor,
-    enabled = primaryEnabled
-)
-fun DeviceSettingsButtonsState.secondaryStyle() = ButtonStyleTokens(
-    containerColor = if (secondaryEnabled) secondaryContainerColor else disabledContainerColor,
-    contentColor = if (secondaryEnabled) secondaryContentColor else disabledContentColor,
-    enabled = secondaryEnabled
-)
-fun DeviceSettingsButtonsState.destructiveStyle() = ButtonStyleTokens(
-    containerColor = if (destructiveEnabled) destructiveContainerColor else disabledContainerColor,
-    contentColor = if (destructiveEnabled) destructiveContentColor else disabledContentColor,
-    enabled = destructiveEnabled
-)
 ```
 ---
-# 4) Compose screen preserving Navigation and lifecycle collection
+# 2) `DeviceSettingsButtonsState` with styling helpers
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
-// # Block 352-4: import android.content.Intent
+package ifac.td.taxi.ui.screen.components
+// # Block 263-2: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+@Immutable
+data class DeviceSettingsButtonsState(
+    val showLinkedVolumesButton: Boolean = true,
+    val showPermissionButton: Boolean = true,
+    val showResetButton: Boolean = true,
+    val showBackButton: Boolean = true,
+    val showThemeButton: Boolean = false,
+    val linkedVolumesEnabled: Boolean = true,
+    val permissionEnabled: Boolean = true,
+    val resetEnabled: Boolean = true,
+    val backEnabled: Boolean = true,
+    val themeEnabled: Boolean = true,
+    val linkedVolumesTextRes: Int = R.string.linked_volumes_title,
+    val permissionTextRes: Int = R.string.permissions_title,
+    val resetTextRes: Int = R.string.reset_title,
+    val backTextRes: Int = R.string.cancel,
+    val themeTextRes: Int = R.string.dark_theme_title,
+    val linkedVolumesContainerColor: Color = Color(0xFF1E88E5),
+    val permissionContainerColor: Color = Color(0xFFF57C00),
+    val resetContainerColor: Color = Color(0xFFE53935),
+    val backContainerColor: Color = Color(0xFF546E7A),
+    val themeContainerColor: Color = Color(0xFF455A64),
+    val linkedVolumesContentColor: Color = Color.White,
+    val permissionContentColor: Color = Color.White,
+    val resetContentColor: Color = Color.White,
+    val backContentColor: Color = Color.White,
+    val themeContentColor: Color = Color.White,
+) {
+    companion object {
+        fun default(): DeviceSettingsButtonsState = DeviceSettingsButtonsState()
+        fun disabledStyle(baseColor: Color): Color = baseColor.copy(alpha = 0.45f)
+    }
+}
+```
+---
+# 3) Compose `DeviceSettingsCustomButton.ktCustomDialog` based on XML dialog behavior
+```kotlin
+package ifac.td.taxi.ui.screen.components
+// # Block 305-3: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun DeviceSettingsCustomButton.ktCustomDialog(
+    visible: Boolean,
+    title: String,
+    message: String,
+    onAccept: (() -> Unit)? = null,
+    onCancel: (() -> Unit)? = null,
+    acceptText: String = "OK",
+    cancelText: String = "Cancel",
+    dismissOnBackPress: Boolean = true,
+    dismissOnClickOutside: Boolean = true,
+    content: (@Composable ColumnScope.() -> Unit)? = null
+) {
+    if (!visible) return
+    AlertDialog(
+        onDismissRequest = onCancel ?: {},
+        properties = DialogProperties(
+            dismissOnBackPress = dismissOnBackPress,
+            dismissOnClickOutside = dismissOnClickOutside
+        ),
+        containerColor = Color.Transparent,
+        title = null,
+        text = null,
+        confirmButton = {},
+        dismissButton = {},
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(20.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(text = title, style = MaterialTheme.typography.titleLarge)
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(text = message, style = MaterialTheme.typography.bodyMedium)
+                content?.let {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    it()
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (onCancel != null) {
+                        TextButton(onClick = onCancel) {
+                            Text(cancelText)
+                        }
+                    }
+                    if (onAccept != null) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(onClick = onAccept) {
+                            Text(acceptText)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+# 4) Compose `DeviceSettingsScreen`
+```kotlin
+package ifac.td.taxi.ui.screen
+// # Block 385-4: import android.content.Intent
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
@@ -359,246 +392,274 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavController
-import ifac.td.taxi.ui.screen.state.*
-import kotlinx.coroutines.launch
+import ifac.td.taxi.ui.screen.components.DeviceSettingsCustomButton.ktCustomDialog
+import ifac.td.taxi.ui.screen.components.DeviceSettingsButtonsState
+import ifac.td.taxi.viewmodel.DeviceSettingsComposeViewModel
+import ifac.td.taxi.viewmodel.DeviceSettingsUiEffect
+import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun DeviceSettingsScreen(
     navController: NavController,
     viewModel: DeviceSettingsComposeViewModel,
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var dialogState by remember { mutableStateOf<DeviceSettingsDialogState?>(null) }
     LaunchedEffect(Unit) {
-        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
-            launch {
-                viewModel.uiEffect.collect { effect ->
-                    when (effect) {
-                        DeviceSettingsUiEffect.NavigateBack -> navController.popBackStack()
-                        DeviceSettingsUiEffect.OpenWriteSettings -> {
-                            val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            context.startActivity(intent)
-                        }
-                        is DeviceSettingsUiEffect.ShowToast -> {
-                            // host-side toast/snackbar handling
-                        }
-                        is DeviceSettingsUiEffect.OpenDialog -> dialogState = effect.dialog
-                    }
-                }
-            }
-        }
+        viewModel.onScreenOpened()
     }
     LaunchedEffect(Unit) {
-        viewModel.onEvent(DeviceSettingsUiEvent.OnScreenResumed)
-    }
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            DeviceSettingsSliderCard(
-                title = "Phone call volume",
-                value = uiState.phoneCallVolume,
-                max = 100,
-                enabled = uiState.buttonsState.primaryEnabled,
-                onValueChange = { viewModel.onEvent(DeviceSettingsUiEvent.OnPhoneCallVolumeChanged(it)) },
-                onValueChangeFinished = { viewModel.onEvent(DeviceSettingsUiEvent.OnPhoneCallStopTracking) }
-            )
-            DeviceSettingsSliderCard(
-                title = "System volume",
-                value = uiState.systemVolume,
-                max = 100,
-                enabled = uiState.buttonsState.secondaryEnabled,
-                onValueChange = { viewModel.onEvent(DeviceSettingsUiEvent.OnSystemVolumeChanged(it)) },
-                onValueChangeFinished = { viewModel.onEvent(DeviceSettingsUiEvent.OnSystemStopTracking) }
-            )
-            DeviceSettingsSliderCard(
-                title = "Notification volume",
-                value = uiState.notificationVolume,
-                max = 100,
-                enabled = uiState.buttonsState.secondaryEnabled,
-                onValueChange = { viewModel.onEvent(DeviceSettingsUiEvent.OnNotificationVolumeChanged(it)) },
-                onValueChangeFinished = { viewModel.onEvent(DeviceSettingsUiEvent.OnNotificationStopTracking) }
-            )
-            DeviceSettingsSliderCard(
-                title = "Ringtone volume",
-                value = uiState.ringtoneVolume,
-                max = 100,
-                enabled = uiState.buttonsState.destructiveEnabled,
-                onValueChange = { viewModel.onEvent(DeviceSettingsUiEvent.OnRingtoneVolumeChanged(it)) },
-                onValueChangeFinished = { viewModel.onEvent(DeviceSettingsUiEvent.OnRingtoneStopTracking) }
-            )
-            DeviceSettingsSliderCard(
-                title = "Brightness",
-                value = uiState.brightness,
-                max = 255,
-                enabled = true,
-                onValueChange = { viewModel.onEvent(DeviceSettingsUiEvent.OnBrightnessChanged(it)) },
-                onValueChangeFinished = { viewModel.onEvent(DeviceSettingsUiEvent.OnBrightnessStopTracking) }
-            )
-            if (uiState.buttonsState.showWriteSettingsButton) {
-                Spacer(Modifier.height(16.dp))
-                Button(
-                    onClick = { viewModel.onEvent(DeviceSettingsUiEvent.OnRequestWriteSettingsPermission) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = uiState.buttonsState.primaryContainerColor,
-                        contentColor = uiState.buttonsState.primaryContentColor,
-                        disabledContainerColor = uiState.buttonsState.disabledContainerColor,
-                        disabledContentColor = uiState.buttonsState.disabledContentColor
-                    )
-                ) {
-                    Text("Grant system write permission")
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is DeviceSettingsUiEffect.OpenSystemWriteSettings -> {
+                    val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                        data = Uri.parse("package:${effect.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                }
+                DeviceSettingsUiEffect.RefreshSliders -> {
+                    viewModel.refreshSnapshot()
+                }
+                DeviceSettingsUiEffect.OpenPermissionSettings -> {
+                    dialogState = DeviceSettingsDialogState.PermissionRequired
+                }
+                DeviceSettingsUiEffect.NavigateBack -> navController.popBackStack()
+                is DeviceSettingsUiEffect.ShowToast -> {
+                    // host-side toast/snackbar if needed
                 }
             }
         }
-        dialogState?.let { dialog ->
-            DeviceSettingsCustomDialog(
-                state = dialog,
-                onConfirm = {
-                    dialogState = null
-                    viewModel.onEvent(DeviceSettingsUiEvent.OnDismissDialog)
-                },
-                onDismiss = {
-                    dialogState = null
-                    viewModel.onEvent(DeviceSettingsUiEvent.OnDismissDialog)
-                }
-            )
+    }
+    val buttonState = remember(uiState) {
+        DeviceSettingsButtonsState(
+            showLinkedVolumesButton = true,
+            showPermissionButton = !uiState.canWriteSettings,
+            showResetButton = true,
+            showBackButton = true,
+            showThemeButton = false,
+            linkedVolumesEnabled = true,
+            permissionEnabled = !uiState.canWriteSettings,
+            resetEnabled = true,
+            backEnabled = true
+        )
+    }
+    DeviceSettingsContent(
+        uiState = uiState,
+        buttonsState = buttonState,
+        onPhoneCallVolumeChanged = viewModel::setPhoneCallVolume,
+        onSystemVolumeChanged = viewModel::setSystemVolume,
+        onNotificationVolumeChanged = viewModel::setNotificationVolume,
+        onRingtoneVolumeChanged = viewModel::setRingtoneVolume,
+        onBrightnessChanged = viewModel::setBrightness,
+        onRequestPermissions = { viewModel.onRequestWriteSettings() },
+        onCheckLinkedVolumes = { viewModel.checkLinkedVolumes() },
+        onTestRingtone = { viewModel.testRingtone() },
+        onBack = { navController.popBackStack() },
+    )
+    dialogState?.let { dialog ->
+        when (dialog) {
+            DeviceSettingsDialogState.PermissionRequired -> {
+                DeviceSettingsCustomButton.ktCustomDialog(
+                    visible = true,
+                    title = "Permission required",
+                    message = "Please allow write system settings to adjust volumes and brightness.",
+                    onAccept = {
+                        dialogState = null
+                        viewModel.onRequestWriteSettings()
+                    },
+                    onCancel = { dialogState = null },
+                    acceptText = "Open settings",
+                    cancelText = "Cancel"
+                )
+            }
+            DeviceSettingsDialogState.ConfirmLinkedVolumes -> {
+                DeviceSettingsCustomButton.ktCustomDialog(
+                    visible = true,
+                    title = "Linked volumes",
+                    message = "Notification and ringtone volumes are linked on this device.",
+                    onAccept = { dialogState = null },
+                    onCancel = { dialogState = null }
+                )
+            }
+            DeviceSettingsDialogState.TestRingtone -> {
+                DeviceSettingsCustomButton.ktCustomDialog(
+                    visible = true,
+                    title = "Test ringtone",
+                    message = "Play a test ringtone now?",
+                    onAccept = {
+                        dialogState = null
+                        viewModel.testRingtone()
+                    },
+                    onCancel = { dialogState = null },
+                    acceptText = "Play",
+                    cancelText = "Cancel"
+                )
+            }
         }
     }
 }
+private sealed interface DeviceSettingsDialogState {
+    data object PermissionRequired : DeviceSettingsDialogState
+    data object ConfirmLinkedVolumes : DeviceSettingsDialogState
+    data object TestRingtone : DeviceSettingsDialogState
+}
 ```
 ---
-# 5) Compose slider equivalent
+# 5) Screen content with Compose sliders and buttons
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
-// # Block 479-5: import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Column
+package ifac.td.taxi.ui.screen
+// # Block 514-5: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.screen.components.DeviceSettingsButtonsState
+import ifac.td.taxi.viewmodel.DeviceSettingsUiState
 @Composable
-fun DeviceSettingsSliderCard(
+fun DeviceSettingsContent(
+    uiState: DeviceSettingsUiState,
+    buttonsState: DeviceSettingsButtonsState,
+    onPhoneCallVolumeChanged: (Int) -> Unit,
+    onSystemVolumeChanged: (Int) -> Unit,
+    onNotificationVolumeChanged: (Int) -> Unit,
+    onRingtoneVolumeChanged: (Int) -> Unit,
+    onBrightnessChanged: (Int) -> Unit,
+    onRequestPermissions: () -> Unit,
+    onCheckLinkedVolumes: () -> Unit,
+    onTestRingtone: () -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        VolumeSliderSection(
+            title = "Phone call volume",
+            value = uiState.phoneCallVolume,
+            onValueChange = onPhoneCallVolumeChanged
+        )
+        VolumeSliderSection(
+            title = "System volume",
+            value = uiState.systemVolume,
+            onValueChange = onSystemVolumeChanged
+        )
+        VolumeSliderSection(
+            title = "Notification volume",
+            value = uiState.notificationVolume,
+            onValueChange = onNotificationVolumeChanged
+        )
+        VolumeSliderSection(
+            title = "Ringtone volume",
+            value = uiState.ringtoneVolume,
+            onValueChange = onRingtoneVolumeChanged
+        )
+        BrightnessSliderSection(
+            value = uiState.brightness,
+            onValueChange = onBrightnessChanged
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        if (buttonsState.showPermissionButton) {
+            Button(onClick = onRequestPermissions) { Text("Grant permission") }
+        }
+        if (buttonsState.showLinkedVolumesButton) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(onClick = onCheckLinkedVolumes) { Text("Check linked volumes") }
+        }
+        if (buttonsState.showResetButton) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(onClick = onTestRingtone) { Text("Test ringtone") }
+        }
+        if (buttonsState.showBackButton) {
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(onClick = onBack) { Text("Back") }
+        }
+    }
+}
+@Composable
+fun VolumeSliderSection(
     title: String,
     value: Int,
-    max: Int,
-    enabled: Boolean,
-    onValueChange: (Int) -> Unit,
-    onValueChangeFinished: () -> Unit,
-    modifier: Modifier = Modifier
+    onValueChange: (Int) -> Unit
 ) {
-    Column(modifier = modifier) {
-        Text(text = "$title: $value")
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text(title)
         Slider(
             value = value.toFloat(),
             onValueChange = { onValueChange(it.toInt()) },
-            valueRange = 0f..max.toFloat(),
-            enabled = enabled,
-            onValueChangeFinished = onValueChangeFinished
+            valueRange = 0f..100f
+        )
+    }
+}
+@Composable
+fun BrightnessSliderSection(
+    value: Int,
+    onValueChange: (Int) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text("Brightness")
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.toInt()) },
+            valueRange = 0f..255f
         )
     }
 }
 ```
 ---
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import ifac.td.taxi.ui.screen.state.DeviceSettingsDialogState
-@Composable
-fun DeviceSettingsCustomDialog(
-    state: DeviceSettingsDialogState,
-    onConfirm: () -> Unit,
-    onDismiss: (() -> Unit)? = null,
-) {
-    AlertDialog(
-        onDismissRequest = { onDismiss?.invoke() },
-        title = { Text(state.title) },
-        text = { Text(state.message) },
-        confirmButton = {
-            Button(onClick = onConfirm) {
-                Text(state.confirmText)
-            }
-        },
-        dismissButton = {
-            if (state.dismissText != null) {
-                Button(onClick = { onDismiss?.invoke() }) {
-                    Text(state.dismissText)
-                }
-            }
-        }
-    )
-}
-```
+# 7) What’s still customizable
+To make this match your XML exactly, you’ll likely want to plug in your:
 ---
-# 7) Compose button helpers closer to a custom button component
+# 8) If you want the “closest possible” custom button helper
+Here is a more detailed button helper that behaves like a custom button component.
 ```kotlin
 package ifac.td.taxi.ui.screen.components
-// # Block 552-7: import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Text
+// # Block 630-6: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 @Composable
-fun DeviceSettingsStyledButton(
+fun DeviceSettingsCustomButton(
     text: String,
+    enabled: Boolean,
     containerColor: Color,
     contentColor: Color,
-    enabled: Boolean,
-    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
 ) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = containerColor,
-            contentColor = contentColor,
-            disabledContainerColor = containerColor.copy(alpha = 0.45f),
-            disabledContentColor = contentColor.copy(alpha = 0.65f)
-        ),
-        border = BorderStroke(1.dp, contentColor.copy(alpha = 0.25f))
+    val background = if (enabled) containerColor else containerColor.copy(alpha = 0.45f)
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .background(background, RoundedCornerShape(12.dp))
+            .clickable(
+                enabled = enabled,
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 16.dp),
     ) {
-        Text(text = text, color = contentColor)
+        Text(
+            text = text,
+            color = contentColor,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .fillMaxHeight()
+                .wrapContentHeight()
+        )
     }
 }
 ```
 ---
-# 8) Notes on preserving fragment navigation behavior
-To preserve your existing navigation flow:
-```kotlin
-class DeviceSettingsComposeFragment : Fragment() {
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ) = ComposeView(requireContext()).apply {
-        setContent {
-            val navController = rememberNavController()
-            // obtain viewModel from DI or factory
-            // DeviceSettingsScreen(navController, viewModel)
-        }
-    }
-}
-```
----
-# 9) What’s still intentionally simplified
-Your original XML fragment had a lot of behavior tied to custom views and possibly more styling from XML:
-I converted those into Compose-friendly equivalents, but to make it *pixel-identical*, I would need the actual XML and `CustomButton`/`CustomSettingsSlider` sources.
----
-1. a **fully self-contained Compose implementation** with a `Scaffold`, top app bar, and all sliders/buttons laid out similarly to the fragment, or  
-2. a **1:1 migration plan** where I map each XML/custom view property to its Compose equivalent.

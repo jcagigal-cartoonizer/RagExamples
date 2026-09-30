@@ -58,6 +58,7 @@ public class OpenAiChat {
     public String answerPath;
     public String processedAnswerPath;
     public List<EmbeddingMatch<TextSegment>> relevantEmbeddings;
+    private long REQUEST_TIMEOUT_SECONDS = 120;
     
     public String askQuestion(String question, int maxResults, double minScore) {
 
@@ -172,7 +173,7 @@ public class OpenAiChat {
         chatModel = OpenAiChatModel.builder()
                 .apiKey(theApiKey)
                 .modelName(theModelName)
-                .timeout(Duration.ofSeconds(60))
+                .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
                 .build();
         assistant = AiServices.builder(AssistantWithInfo.class)
                 .chatModel(chatModel)

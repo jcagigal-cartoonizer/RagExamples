@@ -1,82 +1,87 @@
-Below is a Compose-first replacement that keeps the original behavior, preserves navigation intent, uses a single `SharedFlow<AboutUiEffect>` for one-off events, and adds a dialog state handled from lifecycle-aware collection.
+Below is a Compose-first refactor of the `AboutFragment` + `AboutViewModel` that:
 
-I’ll provide:
+- preserves the original navigation behavior
+- uses a single `SharedFlow<AboutUiEffect>` for one-off events
+- exposes a Compose-friendly `UiState`
+- models the fragment button behavior with state holders/data classes
+- includes dialog state handling with lifecycle-aware collection
+- provides a Compose `CustomDialog`
+- provides button styling helpers and a richer `AboutButtonsState`
 
-1. `AboutScreen` composable
-2. `AboutViewModel` rewritten with `UiState + UiEvent + UiEffect`
-3. `AboutButtonsState` and styling helpers for the accept button
-4. `CustomDialog` composable based on the standard XML/dialog behavior
-5. A lifecycle-aware collector pattern that preserves navigation and dialog handling
+I’m keeping the implementation limited to Android + Jetpack Compose APIs, as requested.
 
 ---
 
-## 1) UI models
+# 1) Compose UI state + effects
 
 ```kotlin
 package ifac.td.taxi.ui.screen.about
 
-import ifac.td.taxi.framework.sdk.model.BluetoothInfo
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class AboutUiState(
     val appInfo: String = "",
-    val privacyPolicyText: String = "",
-    val bluetoothText: String? = null,
-    val showBluetoothInfo: Boolean = false,
+    val privacyPolicyText: String = "Privacy Policy",
+    val isBluetoothInfoVisible: Boolean = false,
+    val bluetoothInfoText: String = "",
     val buttons: AboutButtonsState = AboutButtonsState(),
-    val dialog: AboutDialogState? = null
+    val dialog: AboutDialogState = AboutDialogState.Hidden,
+    val logoTapCount: Int = 0
 )
 
+@Immutable
 data class AboutButtonsState(
-    val accept: AboutButtonStyle = AboutButtonStyle.accept(),
+    val accept: ButtonUiState = ButtonUiState(
+        text = "Accept",
+        backgroundColor = 0xFF1E88E5,
+        contentColor = 0xFFFFFFFF,
+        visible = true,
+        enabled = true
+    ),
+    val privacy: ButtonUiState = ButtonUiState(
+        text = "Privacy",
+        backgroundColor = 0x00000000,
+        contentColor = 0xFF1E88E5,
+        visible = true,
+        enabled = true
+    )
 )
 
-data class AboutButtonStyle(
+@Immutable
+data class ButtonUiState(
     val text: String,
-    val enabled: Boolean = true,
-    val backgroundColor: androidx.compose.ui.graphics.Color,
-    val contentColor: androidx.compose.ui.graphics.Color,
-    val borderColor: androidx.compose.ui.graphics.Color,
-    val visible: Boolean = true
-) {
-    companion object {
-        fun accept() = AboutButtonStyle(
-            text = "Accept",
-            enabled = true,
-            backgroundColor = androidx.compose.ui.graphics.Color(0xFF2E7D32), // adjust to XML theme if needed
-            contentColor = androidx.compose.ui.graphics.Color.White,
-            borderColor = androidx.compose.ui.graphics.Color(0xFF2E7D32),
-            visible = true
-        )
-    }
-}
+    val backgroundColor: Long,
+    val contentColor: Long,
+    val visible: Boolean = true,
+    val enabled: Boolean = true
+)
 
-sealed interface AboutUiEvent {
-    data object BackPressed : AboutUiEvent
-    data object PrivacyClicked : AboutUiEvent
-    data object LogoClicked : AboutUiEvent
-    data object DialogDismissed : AboutUiEvent
+@Immutable
+sealed interface AboutDialogState {
+    data object Hidden : AboutDialogState
+    data class Warning(val message: String) : AboutDialogState
 }
 
 sealed interface AboutUiEffect {
     data object NavigateBack : AboutUiEffect
-    data object OpenPrivacyUrl : AboutUiEffect
+    data object OpenPrivacyPolicy : AboutUiEffect
     data object ShowWarningDialog : AboutUiEffect
+    data object TriggerSecretTracking : AboutUiEffect
 }
-
-data class AboutDialogState(
-    val title: String,
-    val message: String,
-    val confirmText: String = "OK"
-)
 ```
 
 ---
 
-## 2) ViewModel with `UiState + UiEvent + SharedFlow<AboutUiEffect>`
+# 2) Compose-friendly ViewModel
 
-This replaces the fragment’s direct click logic and the two separate flows with:
-- one observable `StateFlow<AboutUiState>`
-- one `SharedFlow<AboutUiEffect>`
+This ViewModel replaces the fragment’s `deviceFlow`, `warningFlow`, and button logic with:
+
+- `StateFlow<AboutUiState>`
+- `SharedFlow<AboutUiEffect>`
+- `onEvent(...)`
+
+It also keeps the privacy action as a browser intent launcher, but emits a UI effect instead of directly navigating.
 
 ```kotlin
 package ifac.td.taxi.viewmodel
@@ -85,42 +90,39 @@ import android.app.Application
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.BluetoothLocalUseCase
 import ifac.td.taxi.framework.sdk.model.BluetoothInfo
 import ifac.td.taxi.framework.util.ApkUtils
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.screen.about.AboutButtonsState
 import ifac.td.taxi.ui.screen.about.AboutDialogState
 import ifac.td.taxi.ui.screen.about.AboutUiEffect
-import ifac.td.taxi.ui.screen.about.AboutUiEvent
 import ifac.td.taxi.ui.screen.about.AboutUiState
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class AboutViewModel(
-    context: Application,
+    application: Application,
     private val bluetoothLocalUseCase: BluetoothLocalUseCase,
-) : BaseViewModel(context) {
+) : AndroidViewModel(application) {
 
-    private val privacyPolicyUrl = "https://www.taxitronic.com/en/privacy-policy-smart-td/"
+    private val TAG = "AboutViewModel"
+    private val context get() = getApplication<Application>()
 
-    private val _uiState = MutableStateFlow(
-        AboutUiState(
-            appInfo = buildAppInfo(),
-            privacyPolicyText = context.getString(R.string.privacy_policy),
-            buttons = AboutButtonsState(),
-        )
-    )
+    private val _uiState = MutableStateFlow(AboutUiState())
     val uiState = _uiState.asStateFlow()
 
-    private val _uiEffect = MutableSharedFlow<AboutUiEffect>()
-    val uiEffect = _uiEffect.asSharedFlow()
+    private val _effects = MutableSharedFlow<AboutUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<AboutUiEffect> = _effects.asSharedFlow()
 
-    private fun buildAppInfo(): String {
+    fun init() {
         val name = ApkUtils.getAppNameVersionDate(
             name = true, version = false, date = false, context = context
         )
@@ -130,256 +132,228 @@ class AboutViewModel(
         val date = ApkUtils.getAppNameVersionDate(
             name = false, version = false, date = true, context = context
         )
-        return context.getString(R.string.app_info_format, name, version, date)
+
+        _uiState.update {
+            it.copy(
+                appInfo = context.getString(
+                    ifac.td.taxi.R.string.app_info_format,
+                    name, version, date
+                ),
+                buttons = AboutButtonsState(),
+                privacyPolicyText = context.getString(ifac.td.taxi.R.string.privacy_policy)
+            )
+        }
+
+        checkSavedDevice()
     }
 
-    fun onEvent(event: AboutUiEvent) {
-        when (event) {
-            AboutUiEvent.BackPressed -> emitEffect(AboutUiEffect.NavigateBack)
-            AboutUiEvent.PrivacyClicked -> openPrivacy()
-            AboutUiEvent.LogoClicked -> handleLogoClick()
-            AboutUiEvent.DialogDismissed -> {
-                _uiState.update { it.copy(dialog = null) }
-            }
+    fun onAcceptClicked() {
+        viewModelScope.launch {
+            _effects.emit(AboutUiEffect.NavigateBack)
         }
     }
 
-    private var counter = 0
-
-    private fun handleLogoClick() {
-        counter++
-        if (counter == 5) {
-            // Keep original behavior
-            try {
-                com.interfacom.sdk.taximeter.bravocomm.W2CLocation.setTrackingState(
-                    com.interfacom.sdk.taximeter.bravocomm.location.AlfaLocation.ESTADO_SEGUIMIENTO_ALARMA,
-                    "1"
-                )
-            } finally {
-                counter = 0
-            }
-        }
-    }
-
-    private fun openPrivacy() {
+    fun onPrivacyClicked() {
+        val privacyPolicyUrl = "https://www.taxitronic.com/en/privacy-policy-smart-td/"
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(privacyPolicyUrl)).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
 
         try {
             context.startActivity(intent)
-            emitEffect(AboutUiEffect.OpenPrivacyUrl)
         } catch (_: ActivityNotFoundException) {
-            _uiState.update {
-                it.copy(
-                    dialog = AboutDialogState(
-                        title = context.getString(R.string.app_name),
-                        message = context.getString(R.string.warning_not_browser),
-                        confirmText = context.getString(android.R.string.ok)
-                    )
-                )
+            viewModelScope.launch {
+                _uiState.update {
+                    it.copy(dialog = AboutDialogState.Warning("No browser available to open this link"))
+                }
+                _effects.emit(AboutUiEffect.ShowWarningDialog)
             }
-            emitEffect(AboutUiEffect.ShowWarningDialog)
+            Logs.d(TAG, "onPrivacyClicked: No browser available")
         }
     }
 
-    fun checkSavedDevice() {
-        viewModelScope.launch {
-            val bluetooth = bluetoothLocalUseCase.getLocalBluetooth()
-            val isDeviceAvailable = bluetooth != null
+    fun dismissDialog() {
+        _uiState.update { it.copy(dialog = AboutDialogState.Hidden) }
+    }
 
-            val bluetoothText = if (isDeviceAvailable && bluetooth != null) {
-                buildString {
+    fun onLogoClicked() {
+        val current = _uiState.value.logoTapCount + 1
+        if (current >= 5) {
+            _uiState.update { it.copy(logoTapCount = 0) }
+            viewModelScope.launch {
+                _effects.emit(AboutUiEffect.TriggerSecretTracking)
+            }
+        } else {
+            _uiState.update { it.copy(logoTapCount = current) }
+        }
+    }
+
+    private fun checkSavedDevice() {
+        viewModelScope.launch {
+            val bluetooth: BluetoothInfo? = bluetoothLocalUseCase.getLocalBluetooth()
+            if (bluetooth != null) {
+                val deviceInfo = buildString {
                     appendLine("${bluetooth.name} [${bluetooth.btPIN}]")
-                    // Original fragment also read Taximeter values
-                    val taximeter = com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance()
-                    val firmware = taximeter.taximeterVersionFirmware
-                    val hardware = taximeter.taximeterVersionHardware
+                    val firmware = com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().taximeterVersionFirmware
+                    val hardware = com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().taximeterVersionHardware
                     if (firmware.isNotEmpty() && hardware.isNotEmpty()) {
                         appendLine("$firmware - $hardware")
                     }
-                    val answerK62 = taximeter.answerK62
+                    val answerK62 = com.interfacom.sdk.taximeter.taximeter.Taximeter.getInstance().answerK62
                     if (answerK62.isNotEmpty()) appendLine(answerK62)
                 }
+                _uiState.update {
+                    it.copy(
+                        isBluetoothInfoVisible = true,
+                        bluetoothInfoText = deviceInfo
+                    )
+                }
             } else {
-                null
-            }
-
-            _uiState.update {
-                it.copy(
-                    showBluetoothInfo = isDeviceAvailable && bluetoothText != null,
-                    bluetoothText = bluetoothText
-                )
+                _uiState.update {
+                    it.copy(
+                        isBluetoothInfoVisible = false,
+                        bluetoothInfoText = ""
+                    )
+                }
             }
         }
-    }
-
-    private fun emitEffect(effect: AboutUiEffect) {
-        viewModelScope.launch { _uiEffect.emit(effect) }
-    }
-}
-
-data class AboutButtonsState(
-    val accept: AboutButtonStyle = AboutButtonStyle.accept()
-)
-
-data class AboutButtonStyle(
-    val text: String,
-    val visible: Boolean = true,
-    val enabled: Boolean = true,
-    val backgroundColor: androidx.compose.ui.graphics.Color,
-    val contentColor: androidx.compose.ui.graphics.Color,
-    val borderColor: androidx.compose.ui.graphics.Color,
-) {
-    companion object {
-        fun accept() = AboutButtonStyle(
-            text = "Accept",
-            visible = true,
-            enabled = true,
-            backgroundColor = androidx.compose.ui.graphics.Color(0xFF000000), // customize to match XML/theme
-            contentColor = androidx.compose.ui.graphics.Color.White,
-            borderColor = androidx.compose.ui.graphics.Color(0xFF000000)
-        )
     }
 }
 ```
 
 ---
 
-## 3) Compose screen
+# 3) Compose screen
 
-This screen:
-- collects `uiState`
-- collects `uiEffect` lifecycle-aware
-- preserves navigation by calling `navigateBack()`
-- shows a dialog when needed
-- renders the privacy policy as underlined text
-- renders the app info and Bluetooth info
-- reproduces the logo click counter behavior
+This composable:
+
+- shows the header behavior at the navigation level, not in UI code
+- handles lifecycle-aware effect collection
+- triggers back navigation
+- shows dialog based on state
+- reproduces the logo tap secret behavior
 
 ```kotlin
 package ifac.td.taxi.ui.screen.about
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.ClickableText
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.R
+import kotlinx.coroutines.launch
 import ifac.td.taxi.viewmodel.AboutViewModel
-import kotlinx.coroutines.flow.collectLatest
 
 @Composable
-fun AboutScreen(
+fun AboutRoute(
     viewModel: AboutViewModel,
-    navigateBack: () -> Unit,
-    showToast: (Int) -> Unit,
+    onNavigateBack: () -> Unit,
+    onShowToast: (String) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     LaunchedEffect(Unit) {
-        viewModel.checkSavedDevice()
+        viewModel.init()
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.uiEffect.collectLatest { effect ->
-            when (effect) {
-                AboutUiEffect.NavigateBack -> navigateBack()
-                AboutUiEffect.OpenPrivacyUrl -> Unit
-                AboutUiEffect.ShowWarningDialog -> {
-                    // dialog already represented in state
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.effects.collect { effect ->
+                    when (effect) {
+                        AboutUiEffect.NavigateBack -> onNavigateBack()
+                        AboutUiEffect.ShowWarningDialog -> {
+                            val dialog = uiState.dialog
+                            if (dialog is AboutDialogState.Warning) {
+                                onShowToast(dialog.message)
+                            }
+                        }
+                        AboutUiEffect.TriggerSecretTracking -> {
+                            com.interfacom.sdk.taximeter.bravocomm.W2CLocation.setTrackingState(
+                                com.interfacom.sdk.taximeter.bravocomm.location.AlfaLocation.ESTADO_SEGUIMIENTO_ALARMA,
+                                "1"
+                            )
+                        }
+                        AboutUiEffect.OpenPrivacyPolicy -> Unit
+                    }
                 }
             }
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
-        AboutContent(
-            state = uiState,
-            onEvent = viewModel::onEvent
-        )
-
-        uiState.dialog?.let { dialog ->
-            CustomDialog(
-                title = dialog.title,
-                message = dialog.message,
-                confirmText = dialog.confirmText,
-                onConfirm = { viewModel.onEvent(AboutUiEvent.DialogDismissed) },
-                onDismiss = { viewModel.onEvent(AboutUiEvent.DialogDismissed) }
-            )
-        }
-    }
+    AboutScreen(
+        uiState = uiState,
+        onAcceptClick = viewModel::onAcceptClicked,
+        onPrivacyClick = viewModel::onPrivacyClicked,
+        onLogoClick = viewModel::onLogoClicked,
+        onDismissDialog = viewModel::dismissDialog,
+        modifier = modifier
+    )
 }
 
 @Composable
-private fun AboutContent(
-    state: AboutUiState,
-    onEvent: (AboutUiEvent) -> Unit
+fun AboutScreen(
+    uiState: AboutUiState,
+    onAcceptClick: () -> Unit,
+    onPrivacyClick: () -> Unit,
+    onLogoClick: () -> Unit,
+    onDismissDialog: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Spacer(Modifier.weight(1f))
+    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
+        Text(
+            text = uiState.appInfo,
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        Spacer(Modifier.height(12.dp))
 
         Text(
-            text = buildAnnotatedString {
-                pushStringAnnotation(tag = "privacy", annotation = "privacy")
-                withStyle(
-                    style = SpanStyle(
-                        textDecoration = TextDecoration.Underline,
-                        color = Color.Unspecified
-                    )
-                ) {
-                    append(state.privacyPolicyText)
-                }
-                pop()
-            },
-            modifier = Modifier.clickable { onEvent(AboutUiEvent.PrivacyClicked) }
+            text = uiState.privacyPolicyText,
+            color = Color(0xFF1E88E5),
+            textDecoration = TextDecoration.Underline,
+            modifier = Modifier.clickable { onPrivacyClick() }
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
 
-        Text(
-            text = stringResource(id = R.string.powered_by),
-            modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally)
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        Image(
-            painter = painterResource(id = R.drawable.logotaxitronic),
-            contentDescription = stringResource(id = R.string.logo_taxitronic),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(120.dp)
-                .clickable { onEvent(AboutUiEvent.LogoClicked) }
-        )
-
-        if (state.showBluetoothInfo && !state.bluetoothText.isNullOrBlank()) {
-            Spacer(Modifier.height(16.dp))
-            Text(text = state.bluetoothText)
+        if (uiState.isBluetoothInfoVisible) {
+            Text(text = uiState.bluetoothInfoText)
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(24.dp))
 
-        if (state.buttons.accept.visible) {
-            ComposeAcceptButton(
-                style = state.buttons.accept,
-                onClick = { onEvent(AboutUiEvent.BackPressed) }
+        AboutButtons(
+            state = uiState.buttons,
+            onAcceptClick = onAcceptClick
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            text = "LOGO",
+            modifier = Modifier.clickable { onLogoClick() }
+        )
+    }
+
+    when (val dialog = uiState.dialog) {
+        AboutDialogState.Hidden -> Unit
+        is AboutDialogState.Warning -> {
+            CustomDialog(
+                title = "Warning",
+                message = dialog.message,
+                onConfirm = onDismissDialog,
+                onDismiss = onDismissDialog
             )
         }
     }
@@ -388,102 +362,127 @@ private fun AboutContent(
 
 ---
 
-## 4) Button styling helpers and custom button replacement
+# 4) Buttons composable + styling helpers
 
-This is the Compose version of the custom button component, with styling fields that let you match XML more closely.
+This is a more faithful Compose replacement for the custom button component with state-driven visibility, color, and shape.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.about
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun ComposeAcceptButton(
-    style: AboutButtonStyle,
-    onClick: () -> Unit
+fun AboutButtons(
+    state: AboutButtonsState,
+    onAcceptClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Button(
-        onClick = onClick,
-        enabled = style.enabled,
-        modifier = Modifier
+    Column(modifier = modifier.fillMaxWidth()) {
+        if (state.accept.visible) {
+            ComposeButton(
+                state = state.accept,
+                onClick = onAcceptClick
+            )
+        }
+    }
+}
+
+@Composable
+fun ComposeButton(
+    state: ButtonUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bg = Color(state.backgroundColor)
+    val fg = Color(state.contentColor)
+
+    Box(
+        modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = style.backgroundColor,
-            contentColor = style.contentColor,
-            disabledContainerColor = style.backgroundColor.copy(alpha = 0.4f),
-            disabledContentColor = style.contentColor.copy(alpha = 0.4f)
-        ),
-        border = BorderStroke(1.dp, style.borderColor)
+            .height(48.dp)
+            .background(bg, RoundedCornerShape(12.dp))
+            .border(1.dp, fg.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+            .clickable(enabled = state.enabled) { onClick() }
+            .padding(horizontal = 16.dp),
     ) {
-        Text(text = style.text)
+        Text(
+            text = state.text,
+            color = fg,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(vertical = 12.dp)
+        )
     }
 }
 ```
 
 ---
 
-## 5) CustomDialog composable
+# 5) CustomDialog in Compose
 
-This is a Compose dialog matching the role of your `custom_dialog.xml` and `CustomDialog.kt`:
-- title
-- message
-- confirm button
-- dismiss behavior
-- lifecycle-safe state-driven handling
+This is a Compose-based equivalent of a custom dialog layout and dialog class.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.about
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Button
-import androidx.compose.material3.Divider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 
 @Composable
 fun CustomDialog(
     title: String,
     message: String,
-    confirmText: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss
+    ) {
         Surface(
+            shape = MaterialTheme.shapes.medium,
             tonalElevation = 8.dp,
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-            color = Color.White
+            color = Color.White,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text(text = title)
-                Spacer(Modifier.height(12.dp))
-                Divider()
-                Spacer(Modifier.height(12.dp))
-                Text(text = message)
-                Spacer(Modifier.height(20.dp))
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.End
+                    horizontalArrangement = Arrangement.End
                 ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Spacer(Modifier.width(8.dp))
                     Button(onClick = onConfirm) {
-                        Text(text = confirmText)
+                        Text("OK")
                     }
                 }
             }
@@ -494,48 +493,148 @@ fun CustomDialog(
 
 ---
 
-## 6) Notes on preserving original behavior
+# 6) Exact state replacement for fragment button logic
 
-### Preserved behavior
-- `navigateBack()` is still called when the accept button is pressed
-- privacy click still opens the URL
-- if no browser exists, warning dialog is shown
-- logo click counter still triggers `W2CLocation.setTrackingState(...)` on the 5th click
-- saved Bluetooth device info is still loaded and rendered
-- app name/version/date text is still assembled
-
-### What changed
-- fragment click logic is now replaced by `AboutUiEvent`
-- one-off events are emitted via `SharedFlow<AboutUiEffect>`
-- dialog is state-driven via `AboutUiState.dialog`
-- lifecycle collection is done with Compose and `collectAsStateWithLifecycle`
-
----
-
-## 7) If you want a stricter XML-like button match
-
-If your original `CustomButton` had exact colors, corner radius, margins, typography, or pressed states, you can encode them in `AboutButtonStyle` and implement a more exact `ComposeAcceptButton`.
-
-For example:
+If you want to fully mirror the fragment logic in state form, here’s a more explicit state holder version:
 
 ```kotlin
-data class AboutButtonStyle(
-    val text: String,
-    val visible: Boolean = true,
-    val enabled: Boolean = true,
-    val backgroundColor: Color,
-    val contentColor: Color,
-    val borderColor: Color,
-    val cornerRadiusDp: Int = 12,
-    val textAllCaps: Boolean = false
+package ifac.td.taxi.ui.screen.about
+
+import androidx.compose.runtime.Immutable
+
+@Immutable
+data class AboutButtonsState(
+    val accept: ButtonUiState = ButtonUiState(
+        text = "Accept",
+        backgroundColor = 0xFF2196F3,
+        contentColor = 0xFFFFFFFF,
+        visible = true,
+        enabled = true
+    ),
+    val logo: ButtonUiState = ButtonUiState(
+        text = "Logo",
+        backgroundColor = 0x00000000,
+        contentColor = 0xFF757575,
+        visible = true,
+        enabled = true
+    ),
+    val privacy: ButtonUiState = ButtonUiState(
+        text = "Privacy Policy",
+        backgroundColor = 0x00000000,
+        contentColor = 0xFF1E88E5,
+        visible = true,
+        enabled = true
+    ),
+    val bluetoothInfoVisible: Boolean = false
 )
 ```
 
-And use `shape = RoundedCornerShape(style.cornerRadiusDp.dp)` in the `Button`.
+---
+
+# 7) More exact Compose button styling helper
+
+If your XML custom button had a more specific “outlined / filled / empty” behavior, you can model it like this:
+
+```kotlin
+package ifac.td.taxi.ui.screen.about
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+enum class AboutButtonStyle {
+    FILLED,
+    OUTLINED,
+    TEXT
+}
+
+@Composable
+fun AboutStyledButton(
+    text: String,
+    style: AboutButtonStyle,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    when (style) {
+        AboutButtonStyle.FILLED -> Button(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier.fillMaxWidth().height(48.dp)
+        ) { Text(text) }
+
+        AboutButtonStyle.OUTLINED -> OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier.fillMaxWidth().height(48.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+        ) { Text(text) }
+
+        AboutButtonStyle.TEXT -> TextButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier.fillMaxWidth().height(48.dp)
+        ) { Text(text, color = Color(0xFF1E88E5)) }
+    }
+}
+```
 
 ---
 
-If you want, I can also provide:
-- a version using `Scaffold`
-- a version that fully mirrors the original `ConstraintLayout` spacing
-- a direct `CustomButton` Compose reimplementation with `customFunction = ACCEPT` support
+# 8) Notes on preserving navigation and lifecycle behavior
+
+To preserve the original fragment behavior:
+
+- `btnAccept.setAction { iMainActivity.navigateBack() }`
+  - becomes `AboutUiEffect.NavigateBack`
+  - handled in the host composable via `onNavigateBack()`
+
+- `tvPrivacyPolicy.setOnClickListener { vModel.clickPrivacy() }`
+  - becomes `viewModel.onPrivacyClicked()`
+  - still tries to open browser intent
+  - if no browser is available, it sets dialog state and emits a warning effect
+
+- `logotaxitronic.setOnClickListener` counting 5 taps
+  - becomes `viewModel.onLogoClicked()`
+  - after 5 taps, emits `TriggerSecretTracking`
+  - handled in Compose by calling the SDK method
+
+- `vModel.checkSavedDevice()`
+  - now called from `init()`
+  - updates `AboutUiState.bluetoothInfoText` and visibility
+
+---
+
+# 9) If you want a more XML-faithful `CustomDialog`
+
+If your XML dialog had specific padding, icon, rounded corners, or action layout, I can adapt the Compose dialog to match it closely if you share `custom_dialog.xml` and `CustomDialog.kt`.
+
+---
+
+# 10) Minimal host usage example
+
+```kotlin
+@Composable
+fun AboutRouteHost(
+    viewModel: AboutViewModel,
+    onBack: () -> Unit,
+    showToast: (String) -> Unit
+) {
+    AboutRoute(
+        viewModel = viewModel,
+        onNavigateBack = onBack,
+        onShowToast = showToast
+    )
+}
+```
+
+---
+
+If you want, I can next provide:
+1. a **fully compilable version with imports organized per file**, or  
+2. a **Material3-based implementation that more closely matches your XML spacing/colors**.

@@ -1,11 +1,14 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.shared.utils.FragmentQuestionsProcessor;
+import com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FIRST_PREFIX;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAST_PREFIX;
 
 public class SimpleExampleOpenAi {
 
@@ -15,7 +18,7 @@ public class SimpleExampleOpenAi {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if (!PREFIX.equals(ONLY_THIS)) {
+            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
                 continue;
             }
             new FragmentQuestionsProcessor("./example-files").askQuestions();

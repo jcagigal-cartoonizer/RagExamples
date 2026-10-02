@@ -19,19 +19,6 @@ public class ReviewNavigationFragments extends ReadFile {
         String destinationFolder = "./copy-to-app/compose/navigation/";
         reviewAllFragments(sourceFolder, destinationFolder);
     }
-    public static String createFromFunction(ArrayList<String> params) {
-        StringBuilder function = new StringBuilder(
-            "    companion object {\n");
-            function.append("        fun fromViewModel(viewModel: ").append(PREFIX).append("ViewModel): ").append(PREFIX).append("ComposeViewModel {\n");
-            function.append("            val composeViewModel = ").append(PREFIX).append("ComposeViewModel(\n");
-            for (String param : params) {
-                function.append("                viewModel.").append(param).append(",\n");
-            }
-            function.append("            )");
-            function.append("            return composeViewModel");
-            function.append("        }\n"); 
-        return function.toString();
-    }
     public static void reviewAllFragments(String sourceFolder, String destinationFolder) {
         int totalFiles = 0;
         int processedFiles = 0;
@@ -62,11 +49,11 @@ public class ReviewNavigationFragments extends ReadFile {
     public File destinationFile;
     public PrintWriter writer;
     public String prefix;
-    public HashMap<Integer, String> numberedLines = new HashMap<>();
-    public HashMap<String, String> lines = new HashMap<>();
-    public HashMap<Integer, String> outputLines = new HashMap<>();
+    private HashMap<Integer, String> numberedLines = new HashMap<>();
+    private HashMap<String, String> lines = new HashMap<>();
+    private HashMap<Integer, String> outputLines = new HashMap<>();
     public HashMap<String, String> parameterNames = new HashMap<>();
-    public int numLines = 0;
+    private int numLines = 0;
 
     public ReviewNavigationFragments(File sourceFile, File destinationFile, String prefix) {
         super(sourceFile.getAbsolutePath());
@@ -80,11 +67,76 @@ public class ReviewNavigationFragments extends ReadFile {
         lines.put(line, line);
         numLines++;
     }
-    public void saveViewsFragment() {
+    /*
+    - Add companion object to ComposeViewModel
+    */
+    public void saveComposeViewModel(String sourcePath, String destinationPath) {
+        System.out.println("*** ReviewNavigationFragments saveComposeViewModel " + sourcePath);
+        SaveComposeViewModel save = new SaveComposeViewModel(sourcePath, destinationPath, parameterNames);
+        save.load();
+    }
+    class SaveComposeViewModel extends ReadFile {
+        private HashMap<Integer, String> numberedLines = new HashMap<>();
+        private HashMap<String, String> parameterNames = new HashMap<>();
+        private File destinationFile;
+        private PrintWriter writer;
+        private int numLines;
+        public SaveComposeViewModel(String sourcePath, String destinationPath, HashMap<String, String> parameterNames) {
+            super(sourcePath);
+            this.parameterNames = parameterNames;
+            this.destinationFile = new File(destinationPath);
+            numLines = 0;
+        }
+        public void createFromFunction() {
+            ArrayList<String> list = new ArrayList<>();
+            list.add("    companion object {"); 
+            list.add("        fun fromViewModel(viewModel: " + prefix + "ViewModel): " + prefix + "ComposeViewModel {");
+            list.add("            val composeViewModel = " + prefix + "ComposeViewModel(");
+            list.add("    // for every param in ViewModel:"); 
+            list.add("                viewModel.tripUseCase,"); 
+            list.add("                viewModel.licensingUseCase,"); 
+            list.add("                viewModel.bluetoothLocalUseCase,"); 
+            list.add("                viewModel.userPreferencesUseCase,"); 
+            list.add("                viewModel.ttsUseCase,"); 
+            list.add("                viewModel.context"); 
+            list.add("            )"); 
+            list.add("            return composeViewModel"); 
+            list.add("        }"); 
+            list.add("");
+            for (String string : list) {
+                numberedLines.put(numLines, string);
+                numLines++;
+            }
+        }
+
+        @Override
+        public void processLine(String line) {
+            numberedLines.put(numLines, line);
+            numLines++;
+            if (line.contains(" : BaseViewModel(")) {
+                createFromFunction();
+            }
+        }
+
+        @Override
+        public void end() {
+            super.end();
+            for (String value : numberedLines.values()) {
+                try {
+                    if (writer == null) {
+                        writer = new PrintWriter(this.destinationFile);
+                    }
+                    writer.println(value);
+                    writer.flush();
+                } catch (Exception e) {
+                    System.out.println("EXCEPTION ReviewNavigationFragments: " + e);
+                }
+            }
+        }
         
     }
     /*
-    - Change private val inside constructor
+    - Change private val inside ViewModel constructor
     */
     public void saveViewModel() {
         numLines = 0;
@@ -145,9 +197,10 @@ public class ReviewNavigationFragments extends ReadFile {
                         writer = new PrintWriter(origen);
                     }
                     writer.println(value);
+                    writer.flush();
                 }
             } catch (Exception e) {
-                System.out.println("EXCEPTION ReviewImports: " + e);
+                System.out.println("EXCEPTION ReviewNavigationFragments: " + e);
             } finally {
                 if (writer != null) {
                     writer.close();
@@ -160,7 +213,9 @@ public class ReviewNavigationFragments extends ReadFile {
     public void end() {
         super.end();
         saveViewModel();
-        saveViewsFragment();
+        String src = "/Cagi/Portfolio/Compose/smarttdv3Compose/app/src/main/java/ifac/td/taxi/compose/viewmodel/" + PREFIX + "ComposeViewModel.kt";
+        String dst = src;
+        saveComposeViewModel(src, dst);
     }
 
     @Override

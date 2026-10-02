@@ -31,6 +31,9 @@ public abstract class ReadFile {
 		
 	}
 	public final void load() {
+            if (dataIn == null) {
+                return;
+            }
 		try {
 			String line;
 			begin();

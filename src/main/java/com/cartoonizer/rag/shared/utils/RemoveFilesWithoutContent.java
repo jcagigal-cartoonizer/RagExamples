@@ -29,7 +29,7 @@ public class RemoveFilesWithoutContent extends ProcessFolder {
         if (fileReader.numLines < 2) {
             filesWithoutContent++;
             if (remove) {
-                System.out.println("*** DELETED because NO CONTENT IN " + path);
+                System.out.println("*** RemoveFilesWithoutContent DELETED because NO CONTENT IN " + path);
                 fitxer.delete();
             }
         } else {
@@ -43,6 +43,7 @@ public class RemoveFilesWithoutContent extends ProcessFolder {
         @Override
         public void end() {
             super.end();
+            System.out.println("");
         }
 
         @Override

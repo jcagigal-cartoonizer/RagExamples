@@ -1,0 +1,62 @@
+package ifac.td.taxi.ui.screen.components
+import  ifac.td.taxi.R
+import ifac.td.taxi.repository.connections.service.model.*
+import androidx.annotation.StringRes
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.res.stringResource
+import ifac.td.taxi.compose.viewmodel.*
+import androidx.navigation.NavController
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.*
+import androidx.compose.ui.*
+import androidx.compose.ui.draw.*
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.text.style.*
+import androidx.compose.ui.unit.*
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.platform.*
+import androidx.core.net.toUri
+import androidx.navigation.*
+import ifac.td.taxi.ui.screen.components.*
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.*
+import com.interfacom.sdk.taximeter.bravocomm.*
+import ifac.td.taxi.domain.model.*
+import ifac.td.taxi.domain.usecase.*
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.*
+import ifac.td.taxi.framework.sdk.usecase.*
+import ifac.td.taxi.repository.room.entities.*
+import ifac.td.taxi.repository.room.entities.countdown.*
+import ifac.td.taxi.repository.room.entities.message.*
+import ifac.td.taxi.viewmodel.model.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+// # Block 644-5: import androidx.compose.ui.platform.ComposeView
+class AddAmountComposeFragment : Fragment(R.layout.fragment_compose_container) {
+    private val viewModel: AddAmountViewModel by viewModels()
+    override fun onViewCreated(view: android.view.View, savedInstanceState: android.os.Bundle?) {
+        val composeView = view.findViewById<ComposeView>(R.id.composeView)
+        composeView.setContent {
+            AddAmountScreen(
+                viewModel = viewModel,
+                onBack = { parentFragmentManager.popBackStack() }
+            )
+        }
+    }
+}
+  ✅ Provided as `AddAmountScreen`
+  ✅ Provided as `AddAmountViewModel`, `AddAmountUiState`, `AddAmountUiEvent`, `AddAmountUiEffect`
+  ✅ Effect-driven back navigation included
+  ✅ `LaunchedEffect` collecting `SharedFlow<AddAmountUiEffect>`
+  ✅ `AddAmountButtonsState`
+  ✅ `MutableSharedFlow<AddAmountUiEffect>`
+  ✅ Provided
+  ✅ `ComposeCustomButton`, `rememberButtonColors`, `rememberButtonBorder`
+1. a fully wired Koin module for the Compose ViewModel,  
+2. a more exact Material 2 / Material 3 recreation of `CustomButton`,  
+3. or a version that uses `TextFieldValue` + input masking to better match `CustomImportEditText`.

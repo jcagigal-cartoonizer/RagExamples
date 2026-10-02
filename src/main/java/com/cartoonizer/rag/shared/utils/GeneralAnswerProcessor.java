@@ -25,9 +25,9 @@ public class GeneralAnswerProcessor extends ReadFile {
     public static String PREFIX = "ContactCentral";
     public static String SUFFIX = "Fragment";
     public static String LAYOUT = "fragment_contact_central.xml";
-    public static String ONLY_THIS = "Welcome";
-    public static int FIRST_PREFIX = 27;
-    public static int LAST_PREFIX = FIRST_PREFIX + 10;
+    public static String ONLY_THIS = "";
+    public static int FIRST_PREFIX = -1;
+    public static int LAST_PREFIX = -1;
     public static String[] PREFIXES = {
             "Dashboard",
             "ContactCentral",

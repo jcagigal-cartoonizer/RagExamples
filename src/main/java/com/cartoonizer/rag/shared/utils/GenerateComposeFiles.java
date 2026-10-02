@@ -22,32 +22,41 @@ public class GenerateComposeFiles {
 
     //Revisar: solo procesa Home
     public static void main(String[] args) {
+        int filesProcessed = 0;
+        int totalFiles = 0;
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
+            totalFiles++;
             if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
                 continue;
             }
             FILE_NAME = PREFIX + "Fragment.txt";
             String answerPath = "./output-files/" + FILE_NAME;
             String processedAnswerPath = "./processed-files/processed-" + FILE_NAME;
+            if (!new File(answerPath).exists() || !new File(processedAnswerPath).exists()) {
+                System.out.println("==> GenerateNavigationFiles MISSING " + answerPath + " or " + processedAnswerPath);
+                continue;
+            }
+            filesProcessed++;
             GeneralAnswerProcessor answerProcessor = new GeneralAnswerProcessor(answerPath, processedAnswerPath);
             answerProcessor.load();
 
             GenerateFiles reader = new GenerateFiles(answerProcessor, processedAnswerPath, PREFIX);
             reader.load();
         }
-        System.out.println("GenerarComposeFiles FILES OPEN: " + GenerateFiles.openFiles.size());
+        System.out.println("GenerateComposeFiles FILES OPEN: " + GenerateFiles.openFiles.size());
         for (Entry<String, Integer> entry : GenerateFiles.openFiles.entrySet()) {
-            System.out.println("GenerarComposeFiles OPEN " + entry.getKey() + " " + entry.getValue());
+            System.out.println("GenerateComposeFiles OPEN " + entry.getKey() + " " + entry.getValue());
         }
-        System.out.println("GenerarComposeFiles FILES CLOSED: " + GenerateFiles.closedFiles.size());
+        System.out.println("GenerateComposeFiles FILES CLOSED: " + GenerateFiles.closedFiles.size());
         for (Entry<String, Integer> entry : GenerateFiles.closedFiles.entrySet()) {
-            System.out.println("GenerarComposeFiles CLOSED " + entry.getKey() + " " + entry.getValue());
+            System.out.println("GenerateComposeFiles CLOSED " + entry.getKey() + " " + entry.getValue());
         }
         RemoveFilesWithoutContent purge = new RemoveFilesWithoutContent(new File("./generated-files"), true);
         purge.process();
-        System.out.println("*** filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
+        System.out.println("*** GenerateComposeFiles filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
+        System.out.println("*** fGenerateComposeFiles ilesProcessed = " + filesProcessed + " of " + totalFiles);
     }
 
     public static class GenerateFiles extends ReadFile {

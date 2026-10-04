@@ -36,6 +36,28 @@ import ifac.td.taxi.viewmodel.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.ui.custom.button.ButtonType
+import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView
+import com.interfacom.sdk.taximeter.licensing.rest.user.UserModule
+import com.interfacom.sdk.taximeter.licensing.rest.user.UserPresenter
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import android.app.Application
+import android.content.Intent
+import android.content.Context
+import android.content.ActivityNotFoundException
+import android.media.ToneGenerator
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.annotation.RawRes
+import android.net.Uri
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.framework.util.Logs
+import android.provider.Settings
+import ifac.td.taxi.domain.usecase.oldv2.MigrationV2UseCase
+import ifac.td.taxi.framework.sdk.ExternalBridgeInterface
+import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
+import android.widget.Toast
+import ifac.td.taxi.ui.screen.LoginUserScreen
 // # Block 77-2: import androidx.compose.foundation.layout.*
 @Composable
 fun LoginUserScreen(

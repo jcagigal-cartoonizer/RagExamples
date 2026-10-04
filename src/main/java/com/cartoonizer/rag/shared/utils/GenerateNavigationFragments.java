@@ -10,6 +10,7 @@ import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.getIface;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldIgnore;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -28,14 +29,14 @@ public class GenerateNavigationFragments {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
             totalFiles++;
-            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
+            if (shouldSkip(i)) {
                 continue;
             }
             FILE_NAME = PREFIX + "NavigationFragment.txt";
             String answerPath = "./output-files/navigation/" + FILE_NAME;
             String processedAnswerPath = "./processed-files/navigation/processed-" + FILE_NAME;
             if (!new File(answerPath).exists() || !new File(processedAnswerPath).exists()) {
-                System.out.println("==> GenerateNavigationFiles MISSING " + answerPath + " or " + processedAnswerPath);
+                System.out.println("==> GenerateNavigationFragments MISSING " + answerPath + " or " + processedAnswerPath);
                 continue;
             }
             processedFiles++;
@@ -45,18 +46,18 @@ public class GenerateNavigationFragments {
             GenerateNavigationFiles reader = new GenerateNavigationFiles(answerProcessor, processedAnswerPath, PREFIX);
             reader.load();
         }
-        System.out.println("GenerateNavigationFiles FILES OPEN: " + GenerateNavigationFiles.openFiles.size());
+        System.out.println("GenerateNavigationFragments FILES OPEN: " + GenerateNavigationFiles.openFiles.size());
         for (Entry<String, Integer> entry : GenerateNavigationFiles.openFiles.entrySet()) {
-            System.out.println("GenerateNavigationFiles OPEN " + entry.getKey() + " " + entry.getValue());
+            System.out.println("GenerateNavigationFragments OPEN " + entry.getKey() + " " + entry.getValue());
         }
         System.out.println("GenerateNavigationFiles FILES CLOSED: " + GenerateNavigationFiles.closedFiles.size());
         for (Entry<String, Integer> entry : GenerateNavigationFiles.closedFiles.entrySet()) {
-            System.out.println("GenerateNavigationFiles CLOSED " + entry.getKey() + " " + entry.getValue());
+            System.out.println("GenerateNavigationFragments CLOSED " + entry.getKey() + " " + entry.getValue());
         }
         RemoveFilesWithoutContent purge = new RemoveFilesWithoutContent(new File("./generated-files"), true);
         purge.process();
-        System.out.println("*** filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
-        System.out.println("*** GenerateNavigationFiles processedFiles: " + processedFiles + " of " + totalFiles);
+        System.out.println("*** GenerateNavigationFragments filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
+        System.out.println("*** GenerateNavigationFragments processedFiles: " + processedFiles + " of " + totalFiles);
     }
 
     public static class GenerateNavigationFiles extends ReadFile {
@@ -108,7 +109,7 @@ public class GenerateNavigationFragments {
             line = processBlocks(iface, line);
             boolean isEnd = line.trim().startsWith("@Preview") || line.trim().startsWith("Replace your current fragment destination");
             if (isEnd) {
-                System.out.println("*** GenerateNavigationFiles isEndTag line = " + line);
+                System.out.println("*** GenerateNavigationFragments isEndTag line = " + line);
                 printAlways = false;
             }
             if (!isEnd && outputPath != null) {
@@ -199,14 +200,14 @@ public class GenerateNavigationFragments {
         public void end() {
             super.end();
             if (errorFound) {
-                System.out.println("ERROR found in " + outputPath + " blocks " + answerProcessor.blocks.size() + " blockFiles " + answerProcessor.blockFiles.size());
+                System.out.println("GenerateNavigationFragments ERROR found in " + outputPath + " blocks " + answerProcessor.blocks.size() + " blockFiles " + answerProcessor.blockFiles.size());
 
             }
             if (writer != null) {
                 closeFile();
             } else {
                 String processedAnswerPath = this.answerProcessor.origen.getName();
-                System.out.println("*** DEBUG!!! GenerateComposeFiles writer IS NULL in " + processedAnswerPath);
+                System.out.println("*** DEBUG!!! GenerateNavigationFragments writer IS NULL in " + processedAnswerPath);
             }
         }
 
@@ -229,20 +230,20 @@ public class GenerateNavigationFragments {
             if (outputPath != null && writer != null) {
                 if (closedFiles.get(outputPath) == null) {
                     closedFiles.put(outputPath, orderedLines.size());
-                    System.out.println("*** generateComposeFile CLOSE FILE outputPath " + outputPath + " orderedLines = " + orderedLines.size());
+                    System.out.println("*** GenerateNavigationFragments CLOSE FILE outputPath " + outputPath + " orderedLines = " + orderedLines.size());
                 } else {
-                    System.out.println("*** generateComposeFile CLOSE FILE outputPath " + outputPath + " ALREADY ADDED new orderedLines = " + orderedLines.size());
+                    System.out.println("*** GenerateNavigationFragments CLOSE FILE outputPath " + outputPath + " ALREADY ADDED new orderedLines = " + orderedLines.size());
                 }
                 if (secondPass != null && writer != null) {
                     secondPass.printAll(lines, orderedLines);
                 } else {
-                    System.out.println("*** generateComposeFile NOT CALLING printAll outputPath " + outputPath + " orderedLines = " + orderedLines.size());
+                    System.out.println("*** GenerateNavigationFragments NOT CALLING printAll outputPath " + outputPath + " orderedLines = " + orderedLines.size());
                 }
                 if (writer != null) {
                     writer.close();
                 }
             } else {
-                System.out.println("*** generateComposeFile CLOSE FILE outputPath = " + (outputPath == null ? "NULL" : outputPath) + " writer = " + (writer == null ? "NULL" : "NOT NULL"));
+                System.out.println("*** GenerateNavigationFragments CLOSE FILE outputPath = " + (outputPath == null ? "NULL" : outputPath) + " writer = " + (writer == null ? "NULL" : "NOT NULL"));
             }
             outputPath = null;
             writer = null;
@@ -289,6 +290,10 @@ public class GenerateNavigationFragments {
             if (path.contains("CustomDialog")) {
                 print("import  androidx.compose.ui.window.Dialog");
             }
+            print("import ifac.td.taxi.domain.usecase.oldv2.MigrationV2UseCase");
+            print("import ifac.td.taxi.viewmodel.BaseViewModel");
+            print("import android.net.Uri");
+            print("import android.app.Application");
 
         }
 
@@ -364,7 +369,7 @@ public class GenerateNavigationFragments {
                         printAlways = true;
                         doPrint = true;
                         outputPath = answerProcessor.blockFilesList[i];
-                        System.out.println("*** processBlocks line = " + numLines + " call openFile " + outputPath + " block = " + answerProcessor.blocksList[i] + " line = " + line);
+                        System.out.println("*** GenerateNavigationFragments processBlocks line = " + numLines + " call openFile " + outputPath + " block = " + answerProcessor.blocksList[i] + " line = " + line);
                         openFile(outputPath, answerProcessor.packagesArray[i]);
                         break;
                     }
@@ -458,7 +463,7 @@ public class GenerateNavigationFragments {
                                 }
                             }
                             String lineImport = "import ifac.td.taxi.ui.screen.components." + name;
-//                            System.out.println("GenerateComposeFiles addImportForInternalVars AFTER lineImport = " + lineImport);
+//                            System.out.println("GenerateNavigationFragments addImportForInternalVars AFTER lineImport = " + lineImport);
                             internalImports.put(lineImport, lineImport);
                         }
                     }
@@ -511,7 +516,7 @@ public class GenerateNavigationFragments {
                     }
                 }
             }
-            System.out.println("*** printAll END " + " linesPrinted =  " + linesPrinted + " in " + outputPath);
+            System.out.println("*** GenerateNavigationFragments printAll END " + " linesPrinted =  " + linesPrinted + " in " + outputPath);
             internalImports.clear();
             addedImports.clear();
         }

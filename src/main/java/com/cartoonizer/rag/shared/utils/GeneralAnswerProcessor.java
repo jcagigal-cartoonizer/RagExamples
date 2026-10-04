@@ -6,11 +6,15 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 public class GeneralAnswerProcessor extends ReadFile {
+    public static boolean shouldSkip(int idx) {
+        boolean should = (!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (idx < FIRST_PREFIX || idx > LAST_PREFIX));
+        return should;
+    }
     public static void main(String[] args) {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
+            if (shouldSkip(i)) {
                 continue;
             }
 //            FragmentAnswerProcessor.processAll();
@@ -21,11 +25,17 @@ public class GeneralAnswerProcessor extends ReadFile {
             reader.load();
         }
     }
-
+    
     public static String PREFIX = "ContactCentral";
     public static String SUFFIX = "Fragment";
     public static String LAYOUT = "fragment_contact_central.xml";
-    public static String ONLY_THIS = "";
+//    public static String ONLY_THIS = "Home";
+//    public static String ONLY_THIS = "LoginUser";
+//    public static String ONLY_THIS = "ChangeDriverPin";
+//    public static String ONLY_THIS = "ChangeUserPassword";
+//    public static String ONLY_THIS = "SplashScreen";
+    public static String ONLY_THIS = "Welcome";
+//    public static String ONLY_THIS = "";
     public static int FIRST_PREFIX = -1;
     public static int LAST_PREFIX = -1;
     public static String[] PREFIXES = {

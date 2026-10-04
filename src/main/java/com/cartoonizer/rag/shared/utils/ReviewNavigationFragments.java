@@ -8,6 +8,7 @@ import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -15,18 +16,18 @@ import java.util.HashMap;
 
 public class ReviewNavigationFragments extends ReadFile {
     public static void main(String[] args) {
-        String sourceFolder = "/Cagi/Portfolio/Compose/smarttdv3Compose/app/src/main/java/ifac/td/taxi/viewmodel/";
-        String destinationFolder = "./copy-to-app/compose/navigation/";
-        reviewAllFragments(sourceFolder, destinationFolder);
+        reviewAllFragments();
     }
-    public static void reviewAllFragments(String sourceFolder, String destinationFolder) {
+    public static void reviewAllFragments() {
+        String sourceFolder = "/Cagi/Portfolio/Compose/smarttdv3Compose/app/src/main/java/ifac/td/taxi/viewmodel/";
+        String destinationFolder = "./generated-files/compose/navigation/";
         int totalFiles = 0;
         int processedFiles = 0;
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
             totalFiles++;
-            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
+            if (shouldSkip(i)) {
                 continue;
             }
             FILE_NAME = PREFIX + "ViewModel.kt";
@@ -40,8 +41,8 @@ public class ReviewNavigationFragments extends ReadFile {
             }
             processedFiles++;
             System.out.println("*** ReviewNavigationFragments sourceFile: " + sourceFile.getAbsolutePath() + " -> " + destinationFile.getAbsolutePath());
-            ReviewNavigationFragments reviewImports = new ReviewNavigationFragments(sourceFile, destinationFile, PREFIX);
-            reviewImports.load();
+            ReviewNavigationFragments reviewNavigation = new ReviewNavigationFragments(sourceFile, destinationFile, PREFIX);
+            reviewNavigation.load();
         }
         System.out.println("*** ReviewNavigationFragments processedFiles: " + processedFiles + " of " + totalFiles);
     }
@@ -92,13 +93,10 @@ public class ReviewNavigationFragments extends ReadFile {
             list.add("    companion object {"); 
             list.add("        fun fromViewModel(viewModel: " + prefix + "ViewModel): " + prefix + "ComposeViewModel {");
             list.add("            val composeViewModel = " + prefix + "ComposeViewModel(");
-            list.add("    // for every param in ViewModel:"); 
-            list.add("                viewModel.tripUseCase,"); 
-            list.add("                viewModel.licensingUseCase,"); 
-            list.add("                viewModel.bluetoothLocalUseCase,"); 
-            list.add("                viewModel.userPreferencesUseCase,"); 
-            list.add("                viewModel.ttsUseCase,"); 
-            list.add("                viewModel.context"); 
+            for (String parameterName : parameterNames.values()) {
+                String param = parameterName.trim();
+                list.add("                " + param + " : viewModel." + param + ","); 
+            }
             list.add("            )"); 
             list.add("            return composeViewModel"); 
             list.add("        }"); 
@@ -113,7 +111,7 @@ public class ReviewNavigationFragments extends ReadFile {
         public void processLine(String line) {
             numberedLines.put(numLines, line);
             numLines++;
-            if (line.contains(" : BaseViewModel(")) {
+            if (line.contains(" : BaseViewModel(") || line.contains(") : ViewModel() {")) {
                 createFromFunction();
             }
         }
@@ -213,7 +211,7 @@ public class ReviewNavigationFragments extends ReadFile {
     public void end() {
         super.end();
         saveViewModel();
-        String src = "/Cagi/Portfolio/Compose/smarttdv3Compose/app/src/main/java/ifac/td/taxi/compose/viewmodel/" + PREFIX + "ComposeViewModel.kt";
+        String src = "./generated-files/compose/viewmodel/" + PREFIX + "ComposeViewModel.kt";
         String dst = src;
         saveComposeViewModel(src, dst);
     }

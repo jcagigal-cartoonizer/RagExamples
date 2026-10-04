@@ -9,6 +9,7 @@ import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.SUFFIX;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 
 public class FragmentQuestionsProcessor {
@@ -16,7 +17,7 @@ public class FragmentQuestionsProcessor {
         for (int i = 0; i < LAYOUTS.length; i++) {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
-            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
+            if (shouldSkip(i)) {
                 continue;
             }
             new FragmentQuestionsProcessor("./example-files").askQuestions();

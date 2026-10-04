@@ -10,6 +10,7 @@ import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.getIface;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldIgnore;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -28,7 +29,7 @@ public class GenerateComposeFiles {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
             totalFiles++;
-            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
+            if (shouldSkip(i)) {
                 continue;
             }
             FILE_NAME = PREFIX + "Fragment.txt";
@@ -279,11 +280,36 @@ public class GenerateComposeFiles {
             if (path.contains("CustomDialog")) {
                 print("import  androidx.compose.ui.window.Dialog");
             }
-
+            print("import ifac.td.taxi.ui.custom.button.ButtonType");
+            print("import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView");
+            print("import com.interfacom.sdk.taximeter.licensing.rest.user.UserModule");
+            print("import com.interfacom.sdk.taximeter.licensing.rest.user.UserPresenter");
+            print("import androidx.compose.ui.text.input.PasswordVisualTransformation");
+            print("import android.app.Application");
+            print("import android.content.Intent");
+            print("import android.content.Context");
+            print("import android.content.ActivityNotFoundException");
+            print("import com.interfacom.sdk.taximeter.licensing.rest.user.UserModule");
+            print("import android.media.ToneGenerator");
+            print("import androidx.compose.ui.text.input.KeyboardType");
+            print("import androidx.compose.foundation.text.KeyboardOptions");
+            print("import androidx.annotation.RawRes");
+            print("import android.net.Uri");
+            print("import ifac.td.taxi.viewmodel.BaseViewModel");
+            print("import ifac.td.taxi.framework.util.Logs");
+            print("import android.provider.Settings");
+            print("import ifac.td.taxi.domain.usecase.oldv2.MigrationV2UseCase");
+            print("import ifac.td.taxi.framework.sdk.ExternalBridgeInterface");
+            print("import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable");
+            print("import android.widget.Toast");
+            print("import ifac.td.taxi.ui.screen." + PREFIX + "Screen");
         }
 
         private void openFile(String path, String packageName) {
             if (path != null && !path.isEmpty()) {
+                if (path.contains(PREFIX + "ViewModel")) {
+                    path = path.replaceAll(PREFIX + "ViewModel", PREFIX + "ComposeViewModel");
+                }
                 try {
                     if (path.contains("CustomDialog") && !path.contains(PREFIX + "CustomDialog")) {
                         path = path.replaceAll("CustomDialog", PREFIX + "CustomDialog");

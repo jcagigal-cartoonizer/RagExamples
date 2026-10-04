@@ -8,6 +8,7 @@ import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.HashMap;
@@ -27,7 +28,7 @@ public class ReviewImports extends ReadFile {
             LAYOUT = LAYOUTS[i];
             PREFIX = PREFIXES[i];
             totalFiles++;
-            if ((!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (i < FIRST_PREFIX || i > LAST_PREFIX))) {
+            if (shouldSkip(i)) {
                 continue;
             }
             FILE_NAME = PREFIX + "NavigationFragment.kt";

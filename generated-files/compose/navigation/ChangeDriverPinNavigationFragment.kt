@@ -21,6 +21,7 @@ class ChangeDriverPinNavigationFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
+val uiState = viewModel.uiState.value
         return ComposeView(requireContext()).apply {
             setContent {
                 ChangeDriverPinScreen(

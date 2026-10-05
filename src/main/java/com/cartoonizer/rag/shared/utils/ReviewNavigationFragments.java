@@ -88,43 +88,60 @@ public class ReviewNavigationFragments extends ReadFile {
             this.destinationFile = new File(destinationPath);
             numLines = 0;
         }
-        public void createFromFunction() {
+        public void createFromFunction(HashMap<Integer, String> numbered) {
             ArrayList<String> list = new ArrayList<>();
-            list.add("    companion object {"); 
-            list.add("        fun fromViewModel(viewModel: " + prefix + "ViewModel): " + prefix + "ComposeViewModel {");
-            list.add("            val composeViewModel = " + prefix + "ComposeViewModel(");
+            list.add("    fun fromViewModel(viewModel: " + prefix + "ViewModel): " + prefix + "ComposeViewModel {");
+            list.add("        val composeViewModel = " + prefix + "ComposeViewModel(");
             for (String parameterName : parameterNames.values()) {
                 String param = parameterName.trim();
-                list.add("                " + param + " : viewModel." + param + ","); 
+                list.add("            " + param + " = viewModel." + param + ","); 
             }
-            list.add("            )"); 
-            list.add("            return composeViewModel"); 
-            list.add("        }"); 
+            list.add("        )"); 
+            list.add("        return composeViewModel"); 
+            list.add("    }"); 
             list.add("");
             for (String string : list) {
-                numberedLines.put(numLines, string);
+                numbered.put(numLines, string);
                 numLines++;
             }
         }
-
+        public boolean fromFunctionAdded = false;
         @Override
         public void processLine(String line) {
             numberedLines.put(numLines, line);
             numLines++;
-            if (line.contains(" : BaseViewModel(") || line.contains(") : ViewModel() {")) {
-                createFromFunction();
-            }
         }
 
         @Override
         public void end() {
             super.end();
-            for (String value : numberedLines.values()) {
+            fromFunctionAdded = false;
+            numLines = 0;
+            fromFunctionAdded = false;
+            for (String line : numberedLines.values()) {
+                if ((line.contains("fun fromViewModel(viewModel:")) && !fromFunctionAdded) {
+                    System.out.println("==> SET fromFunctionAdded = true");
+                    fromFunctionAdded = true;
+                }
+                numLines++;
+            }
+            System.out.println("==> AFTER fromFunctionAdded = " + fromFunctionAdded);
+            HashMap<Integer, String> newNumberedLines = new HashMap<>();
+            numLines = 0;
+            for (String line : numberedLines.values()) {
+                newNumberedLines.put(numLines, line);
+                numLines++;
+                if ((line.contains(" : BaseViewModel(") || line.contains(") : ViewModel() {")) && !fromFunctionAdded) {
+                    System.out.println("==> fromFunctionAdded = false -> createFromFunction");
+                    createFromFunction(newNumberedLines);
+                }
+            }
+            for (String line : newNumberedLines.values()) {
                 try {
                     if (writer == null) {
                         writer = new PrintWriter(this.destinationFile);
                     }
-                    writer.println(value);
+                    writer.println(line);
                     writer.flush();
                 } catch (Exception e) {
                     System.out.println("EXCEPTION ReviewNavigationFragments: " + e);

@@ -21,10 +21,11 @@ class WelcomeNavigationFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
+val uiState = viewModel.uiState.value
         return ComposeView(requireContext()).apply {
             setContent {
                 WelcomeScreen(
-uiState = {},
+uiState = uiState,
 onAction = {},
 
                 )

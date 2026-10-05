@@ -151,6 +151,16 @@ public class GenerateNavigationFragment {
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
+            if (line.contains("return ") && line.contains("ComposeView(")) {
+                String lineToAdd = "val uiState = viewModel.uiState.value";
+                builder.append(lineToAdd).append("\n");
+                lineToAdd = "val buttonsState = viewModel.uiState.buttonsState";
+                builder.append(lineToAdd).append("\n");
+                lineToAdd = "val dialogState = viewModel.uiState.dialogState";
+                builder.append(lineToAdd).append("\n");
+                
+            }
+
             builder.append(line).append("\n");
             if (line.trim().startsWith(prefix + "Screen(")) {
                 for (String value : parameterNames.values()) {
@@ -160,11 +170,21 @@ public class GenerateNavigationFragment {
                         builder.append(value).append(" = ").append("Modifier").append(",\n");
                     } else if (value.contains("navController")) {
                         builder.append(value).append(" = ").append("findNavController()").append(",\n");
+                    } else if (value.contains("uiState")) {
+                        builder.append(value).append(" = ").append("uiState,\n");
+                    } else if (value.contains("buttonsState")) {
+                        builder.append(value).append(" = ").append("buttonsState,\n");
+                    } else if (value.contains("dialogState")) {
+                        builder.append(value).append(" = ").append("dialogState,\n");
+                    } else if (value.contains("uiState")) {
+                        builder.append(value).append(" = ").append("uiState,\n");
                     } else {
                         builder.append(value).append(" = ").append("{}").append(",\n");
                     }
                 }
             }
+            
+            
         }
         try {
             String result = builder.toString();

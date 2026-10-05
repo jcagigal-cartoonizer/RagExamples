@@ -13,18 +13,17 @@ import java.nio.file.attribute.BasicFileAttributes;
 
 public class RunAllProcesses {
     public static String[] ONLY_THIS_ARRAY = new String[]{
-        "Home",
-        "LoginUser",
-        "ChangeDriverPin",
-        "ChangeUserPassword",
-        "SplashScreen",
-        "Welcome",
+            "Dashboard",
+            "ContactCentral",
+            "InfoDispatch",
+            "DispatchReceived",
+            "About",
+            "AddAmount",
     };
     public static void main(String[] args) {
         if (ONLY_THIS_ARRAY.length > 0) {
             for (int i = 0; i < ONLY_THIS_ARRAY.length; i++) {
-                String arg = ONLY_THIS_ARRAY[i];
-                GeneralAnswerProcessor.ONLY_THIS = arg;
+                GeneralAnswerProcessor.ONLY_THIS = ONLY_THIS_ARRAY[i];
                 runAll();
             }
         } else {
@@ -33,6 +32,7 @@ public class RunAllProcesses {
     }
 
     public static void runAll() {
+        System.out.println("=== RunAllProcesses " + GeneralAnswerProcessor.ONLY_THIS);
         // Run GenerateComposeFiles -> input example-files, output generated-files
         GenerateComposeFiles.main(new String[0]);
 

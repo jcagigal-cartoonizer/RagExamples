@@ -373,6 +373,25 @@ public class GeneralAnswerProcessor extends ReadFile {
 //            return;
 //        }
         String fileNameToUseNoExtension = fileNameToUse.replaceAll(Pattern.quote(".kt"), "");
+        // 
+        if (line.contains("getApplication<Application>()")) {
+            line = line.replaceAll(Pattern.quote("getApplication<Application>()"), "context");
+        }
+        if (line.contains("ComposeColor")) {
+            line = line.replaceAll(Pattern.quote("ComposeColor"), "Color");
+        }
+        if (line.contains("Color.TRANSPARENT")) {
+            line = line.replaceAll(Pattern.quote("Color.TRANSPARENT"), "Color.Transparent");
+        }
+        if (line.contains(", errorMessage = null")) {
+            line = line.replaceAll(Pattern.quote(", errorMessage = null"), "");
+        }
+        if (line.contains("emitEffect(first") && line.contains("next")) {
+            line = line.replaceAll("next", "crossinline next");
+        }
+        if (line.contains("text = buttons") && line.contains(".text,")) {
+            line = line.replaceAll(Pattern.quote(".text"), ".textRes");
+        }
         if (line.contains("DialogButtonSpec") && !line.trim().startsWith(PREFIX) && !line.trim().startsWith(fileNameToUseNoExtension)) {
             line = line.replaceAll(Pattern.quote("DialogButtonSpec"), fileNameToUseNoExtension +  "DialogButtonSpec");
         }

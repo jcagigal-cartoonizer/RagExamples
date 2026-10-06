@@ -12,14 +12,16 @@ import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import java.nio.file.attribute.BasicFileAttributes;
 
 public class RunAllProcesses {
+
     public static String[] ONLY_THIS_ARRAY = new String[]{
-            "Dashboard",
-            "ContactCentral",
-            "InfoDispatch",
-            "DispatchReceived",
-            "About",
-            "AddAmount",
+        "BluetoothDiscovery",
+        "ChangeDriverPin",
+        "ChangePasswordRedSys",
+        "ChangeUserPassword",
+        "ChooseOption",
+        "ClosedPartial",
     };
+
     public static void main(String[] args) {
         if (ONLY_THIS_ARRAY.length > 0) {
             for (int i = 0; i < ONLY_THIS_ARRAY.length; i++) {
@@ -39,7 +41,8 @@ public class RunAllProcesses {
         // Run ExtractScreenFromFile -> input generated-files/ui, output generated-files/clean-ui
         ExtractScreenFromFile.main(new String[0]);
         // COPY from generated-files/clean-ui to generated-files/ui
-        copyNeededFiles("./generated-files/clean-ui", "./generated-files/ui");
+        copyNeededFiles("./generated-files/extracted/ui/screen", "./generated-files/ui/screen", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles("./generated-files/extracted/ui/screen/components", "./generated-files/ui/screen/components", GeneralAnswerProcessor.ONLY_THIS);
 
         // Run GenerateNavigationFragment -> input output-files/navigation and processed-files/navigation, output generated-files/compose/navigation
         GenerateNavigationFragment.main(new String[0]);
@@ -47,52 +50,56 @@ public class RunAllProcesses {
         // Run CleanComposableFile -> input generated-files/compose/navigation, output generated-files/clean-ui/navigation
         CleanComposableFile.main(new String[0]);
         // COPY from generated-files/clean-ui/navigation to generated-files/compose/navigation
-        copyNeededFiles("./generated-files/clean-ui/navigation", "./generated-files/compose/navigation");
+        copyNeededFiles("./generated-files/clean-ui/navigation", "./generated-files/compose/navigation", GeneralAnswerProcessor.ONLY_THIS);
 
         ReviewNavigationFragments.reviewAllFragments();
 
         // Run ReviewImports
         ReviewImports.main(new String[0]);
-        
+
         DeleteComposeInNavigation deleteFiles = new DeleteComposeInNavigation(new File("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/compose/navigation"));
         deleteFiles.process();
         deleteFiles = new DeleteComposeInNavigation(new File("/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/compose/viewmodel"));
         deleteFiles.process();
-        
-        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/ui/screen", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/ui/screen");
-        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/ui/screen/components", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/ui/screen/components");
-        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/compose/navigation", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/compose/navigation");
-        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/compose/viewmodel", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/compose/viewmodel");
-    
+
+        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/ui/screen", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/ui/screen", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/ui/screen/components", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/ui/screen/components", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/compose/navigation", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/compose/navigation", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles("/Cagi/Portfolio/RagUtils/RagExamples/generated-files/compose/viewmodel", "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app/compose/viewmodel", GeneralAnswerProcessor.ONLY_THIS);
+
     }
 
-    private static void copyNeededFiles(String source, String destination) {
+    private static void copyNeededFiles(String source, String destination, String prefix) {
         File pathSource = new File(source);
         File pathDestination = new File(destination);
-        CopyFolder copyFolder = new CopyFolder(pathSource, pathDestination);
+        CopyFolder copyFolder = new CopyFolder(pathSource, pathDestination, prefix);
         copyFolder.process();
     }
 
     public static class CopyFolder extends ProcessFolder {
 
         private File destinationFolder;
+        private String prefix;
 
-        public CopyFolder(File sourceFolder, File destinationFolder) {
+        public CopyFolder(File sourceFolder, File destinationFolder, String prefix) {
             super(sourceFolder);
             this.destinationFolder = destinationFolder;
+            this.prefix = prefix;
         }
 
         @Override
         public boolean processFile(File fitxer) {
-            try {
-                String sourceFolder = pathFolder;
-                String destinationFolder = this.destinationFolder.getAbsolutePath();
-                Path pathSource = Paths.get(sourceFolder + "/" + fitxer.getName());
-                Path pathDestination = Paths.get(destinationFolder + "/" + fitxer.getName());
-                System.out.println("*** processFile copy " + fitxer.getAbsolutePath() + " to " + destinationFolder + "/" + fitxer.getName());
-                Files.copy(pathSource, pathDestination, REPLACE_EXISTING);
-            } catch (Exception e) {
-                System.out.println("ERROR processFile " + fitxer.getAbsolutePath() + ": " + e);
+            if (fitxer.getName().contains(prefix)) {
+                try {
+                    String sourceFolder = pathFolder;
+                    String destinationFolder = this.destinationFolder.getAbsolutePath();
+                    Path pathSource = Paths.get(sourceFolder + "/" + fitxer.getName());
+                    Path pathDestination = Paths.get(destinationFolder + "/" + fitxer.getName());
+                    System.out.println("*** processFile copy " + fitxer.getAbsolutePath() + " to " + destinationFolder + "/" + fitxer.getName());
+                    Files.copy(pathSource, pathDestination, REPLACE_EXISTING);
+                } catch (Exception e) {
+                    System.out.println("ERROR processFile " + fitxer.getAbsolutePath() + ": " + e);
+                }
             }
             return true;
         }
@@ -131,6 +138,7 @@ public class RunAllProcesses {
             }
         });
     }
+
     public static class DeleteComposeInNavigation extends ProcessFolder {
 
         public DeleteComposeInNavigation(File rootFolder) {
@@ -144,6 +152,6 @@ public class RunAllProcesses {
             }
             return true;
         }
-        
+
     }
 }

@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 public class ExtractScreenFromFile extends ProcessFolder {
+
     public static void main(String[] args) {
         File path = new File("./generated-files/ui/screen");
         ExtractScreenFromFile extract = new ExtractScreenFromFile(path);
@@ -14,6 +15,7 @@ public class ExtractScreenFromFile extends ProcessFolder {
         System.out.println("==> ExtractScreenFromFile filesProcessed " + extract.filesProcessed);
     }
     public int filesProcessed = 0;
+
     public ExtractScreenFromFile(File rootFolder) {
         super(rootFolder);
     }
@@ -29,7 +31,9 @@ public class ExtractScreenFromFile extends ProcessFolder {
         extract.load();
         return true;
     }
+
     class ExtractScreen extends ReadFile {
+
         public File file;
         public String path;
         public String screenOutputPath;
@@ -43,19 +47,22 @@ public class ExtractScreenFromFile extends ProcessFolder {
         public PrintWriter writerComponent;
         public boolean screenFound;
         public String screenName;
+
         public ExtractScreen(String pathOrigen) {
+            // pathOrigen = generated-files/ui/screen/components/AboutCustomDialog.kt
             super(pathOrigen);
             screenFound = false;
             screenName = null;
             this.path = pathOrigen;
             this.file = new File(pathOrigen);
             String parentPath = this.file.getParent();
+            String prefix = getPrefixFromName(file.getName());
             if (parentPath.contains("/ui/screen/components")) {
-                this.screenOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen/components"), "/extracted/screen") + "/" + file.getName();
-                this.componentOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen/components"), "/extracted/components") + "/" + file.getName();
+                this.screenOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen/components"), "/extracted/ui/screen") + "/" + prefix + "Screen.kt";
+                this.componentOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen/components"), "/extracted/ui/screen/components") + "/" + file.getName();
             } else {
-                this.screenOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen"), "/extracted/screen") + "/" + file.getName();
-                this.componentOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen/components"), "/extracted/components") + "/" + file.getName();
+                this.screenOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen"), "/extracted/ui/screen") + "/" + prefix + "Screen.kt";
+                this.componentOutputPath = parentPath.replaceAll(Pattern.quote("/ui/screen/components"), "/extracted/ui/screen/components") + "/" + file.getName();
             }
             System.out.println("*** ExtractScreenFromFile screenOutputPath = " + screenOutputPath);
             System.out.println("*** ExtractScreenFromFile componentOutputPath = " + componentOutputPath);
@@ -97,6 +104,7 @@ public class ExtractScreenFromFile extends ProcessFolder {
             saveScreenLines();
             saveComponentLines();
         }
+
         public void saveScreenLines() {
             if (screenLines.entrySet().isEmpty()) {
                 return;
@@ -109,18 +117,29 @@ public class ExtractScreenFromFile extends ProcessFolder {
                 this.writerScreen = new PrintWriter(this.screenOutputPath);
                 System.out.println("*** ExtractScreenFromFile SAVED " + screenOutputPath);
             } catch (Exception e) {
-                System.out.println("*** ExtractScreenFromFile ERROR in " + screenOutputPath + ": " + e);
+                System.out.println("*** ExtractScreenFromFile ERROR SAVING " + screenOutputPath + ": " + e);
             }
             if (this.writerScreen == null) {
                 System.out.println("ERROR writer == null");
                 return;
             }
+            for (Map.Entry<Integer, String> entry : numberedLines.entrySet()) {
+                String value = entry.getValue();
+                int num = entry.getKey();
+                if (value.trim().startsWith("package ") || value.trim().startsWith("import ")) {
+                    if (value.trim().startsWith("package ")) {
+                        value = value.replaceAll(Pattern.quote("package ifac.td.taxi.ui.screen.components"), "package ifac.td.taxi.ui.screen");
+                    }
+                    writerScreen.println(value);
+                }
+            }
             for (Map.Entry<Integer, String> entry : screenLines.entrySet()) {
                 String line = entry.getValue();
-                writerScreen.println(line);                
+                writerScreen.println(line);
             }
             writerScreen.close();
         }
+
         public void saveComponentLines() {
             if (componentLines.entrySet().isEmpty()) {
                 return;
@@ -128,7 +147,7 @@ public class ExtractScreenFromFile extends ProcessFolder {
             try {
                 this.writerComponent = new PrintWriter(this.componentOutputPath);
             } catch (Exception e) {
-                System.out.println("*** ExtractScreenFromFile ERROR in " + componentOutputPath + ": " + e);
+                System.out.println("*** ExtractScreenFromFile ERROR creating writer for " + componentOutputPath + ": " + e);
             }
             if (this.writerComponent == null) {
                 System.out.println("ERROR writer == null");
@@ -136,10 +155,20 @@ public class ExtractScreenFromFile extends ProcessFolder {
             }
             for (Map.Entry<Integer, String> entry : componentLines.entrySet()) {
                 String line = entry.getValue();
-                writerComponent.println(line);                
+                writerComponent.println(line);
             }
             writerComponent.close();
         }
+
+        public static String getPrefixFromName(String name) {
+            for (int i = 0; i < GeneralAnswerProcessor.PREFIXES.length; i++) {
+                if (name.startsWith(GeneralAnswerProcessor.PREFIXES[i])) {
+                    return GeneralAnswerProcessor.PREFIXES[i];
+                }
+
+            }
+            return "";
+        }
     }
-    
+
 }

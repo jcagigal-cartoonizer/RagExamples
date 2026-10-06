@@ -93,8 +93,6 @@ public class GenerateNavigationFragment {
         StringBuilder fragmentTemplate = new StringBuilder(
                 """
             package ifac.td.taxi.compose.navigation
-            import ifac.td.taxi.compose.viewmodel.__PREFIX__ComposeViewModel
-            import ifac.td.taxi.ui.screen.__PREFIX__Screen
             import androidx.fragment.app.Fragment
             import org.koin.androidx.viewmodel.ext.android.viewModel
             import android.view.LayoutInflater
@@ -154,9 +152,9 @@ public class GenerateNavigationFragment {
             if (line.contains("return ") && line.contains("ComposeView(")) {
                 String lineToAdd = "val uiState = viewModel.uiState.value";
                 builder.append(lineToAdd).append("\n");
-                lineToAdd = "val buttonsState = viewModel.uiState.buttonsState";
+                lineToAdd = "val buttonsState = viewModel.buttonsState";
                 builder.append(lineToAdd).append("\n");
-                lineToAdd = "val dialogState = viewModel.uiState.dialogState";
+                lineToAdd = "val dialogState = viewModel.dialogState";
                 builder.append(lineToAdd).append("\n");
                 
             }

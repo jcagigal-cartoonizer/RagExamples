@@ -119,28 +119,13 @@ public class GenerateComposeFiles {
 //            System.out.println("*** currentFile = " + currentFile);
 //            System.out.println("=== outputPath = " + outputPath);
             if (printAlways) {
-// R.string. navigate -> btn_navegar
-                if (line.contains("R.string.btn_notifications")) {
-                    line = line.replaceAll(Pattern.quote("R.string.btn_notifications"), "R.string.btn_avisos");
+                if (line.contains("private val _uiState = ")) {
+                    print("    val context = application");
+                    print("    lateinit var buttonsState : " + PREFIX + "ButtonsState");
+                    print("    lateinit var dialogState : ContactCentralDialogState");
                 }
-                if (line.contains("R.string.no_client")) {
-                    line = line.replaceAll(Pattern.quote("R.string.no_client"), "R.string.no_clients");
-                }
-                if (line.contains("R.string.return_dispatch")) {
-                    line = line.replaceAll(Pattern.quote("R.string.return_dispatch"), "R.string.btn_devolver");
-                }
-                if (line.contains("R.string.print")) {
-                    line = line.replaceAll(Pattern.quote("R.string.print"), "R.string.btn_print");
-                }
-                if (line.contains("R.string.navigate")) {
-                    line = line.replaceAll(Pattern.quote("R.string.navigate"), "R.string.btn_navegar");
-                }
-                if (line.contains("CustomDialog(") && !line.contains(PREFIX + "CustomDialog")) {
-                    line = line.replaceAll(Pattern.quote("CustomDialog"), PREFIX + "CustomDialog");
-                }
-                if (line.contains(PREFIX + "Effect") && !line.contains(PREFIX + "Effect")) {
-                    line = line.replaceAll(Pattern.quote(PREFIX + "Effect"), PREFIX + "UiEffect");
-                }
+                line = addPrefixes(line);
+                line = addStrings(line);
                 if (line.trim().startsWith("fun composeButtonColors(")) {
                     line = "@Composable\n" + line;
                 }
@@ -176,6 +161,9 @@ public class GenerateComposeFiles {
                     insideDialogStateLet = false;
                 }
                 print(line);
+                if (line.trim().startsWith("init {")) {
+                    print("        dialogState = _uiState.value.dialog");
+                }
             }
             previousLine = line;
 
@@ -329,9 +317,6 @@ public class GenerateComposeFiles {
                     lines.clear();
                     orderedLines.clear();
                     print("package " + packageName);
-                    if (path.endsWith("ViewModel.kt")) {
-                        print("import  android.app.Application");
-                    }
                     for (Map.Entry<String, String> entry : secondPass.internalImports.entrySet()) {
                         print(entry.getKey());
                     }
@@ -388,6 +373,51 @@ public class GenerateComposeFiles {
             } else {
                 errorFound = true;
 //                System.out.println("ERROR: GenerateComposeFiles processBlocks " + answerProcessor.origen.getName() + " -> blocksList.length " + answerProcessor.blocksList.length + " != " + answerProcessor.blockFilesList.length);
+            }
+            return line;
+        }
+
+        public static String addPrefixes(String line) {
+            if (line.contains("CustomDialog(") && !line.contains(PREFIX + "CustomDialog")) {
+                line = line.replaceAll(Pattern.quote("CustomDialog"), PREFIX + "CustomDialog");
+            } else if (line.contains(PREFIX + "Effect") && !line.contains(PREFIX + "UiEffect")) {
+                line = line.replaceAll(Pattern.quote(PREFIX + "Effect"), PREFIX + "UiEffect");
+            } else if (line.contains("ComposeButton") && !line.contains(PREFIX + "ComposeButton")) {
+                line = line.replaceAll(Pattern.quote("ComposeButton"), PREFIX + "ComposeButton");
+            } else if (line.contains("UiEvent") && !line.contains(PREFIX + "UiEvent")) {
+                line = line.replaceAll(Pattern.quote("UiEvent"), PREFIX + "UiEvent");
+            } else if (line.contains("UiEffect") && !line.contains(PREFIX + "UiEffect")) {
+                line = line.replaceAll(Pattern.quote("UiEffect"), PREFIX + "UiEffect");
+            } else if (line.contains("ButtonUiState") && !line.contains(PREFIX + "ButtonUiState")) {
+                line = line.replaceAll(Pattern.quote("ButtonUiState"), PREFIX + "ButtonUiState");
+            } else if (line.contains("UiState") && !line.contains(PREFIX + "UiState")) {
+                line = line.replaceAll(Pattern.quote("UiState"), PREFIX + "UiState");
+            } else if (line.contains("DialogState") && !line.contains(PREFIX + "DialogState")) {
+                line = line.replaceAll(Pattern.quote("DialogState"), PREFIX + "DialogState");
+            } else if (line.contains("ButtonUiState") && !line.contains(PREFIX + "ButtonUiState")) {
+                line = line.replaceAll(Pattern.quote("ButtonUiState"), PREFIX + "ButtonUiState");
+            }
+            if (line.contains("CustomDialogCustomDialog")) {
+                line = line.replaceAll(Pattern.quote("CustomDialogCustomDialog"), "CustomDialog");
+            }
+            return line;
+        }
+
+        public static String addStrings(String line) {
+            if (line.contains("R.string.btn_notifications")) {
+                line = line.replaceAll(Pattern.quote("R.string.btn_notifications"), "R.string.btn_avisos");
+            }
+            if (line.contains("R.string.no_client")) {
+                line = line.replaceAll(Pattern.quote("R.string.no_client"), "R.string.no_clients");
+            }
+            if (line.contains("R.string.return_dispatch")) {
+                line = line.replaceAll(Pattern.quote("R.string.return_dispatch"), "R.string.btn_devolver");
+            }
+            if (line.contains("R.string.print")) {
+                line = line.replaceAll(Pattern.quote("R.string.print"), "R.string.btn_print");
+            }
+            if (line.contains("R.string.navigate")) {
+                line = line.replaceAll(Pattern.quote("R.string.navigate"), "R.string.btn_navegar");
             }
             return line;
         }
@@ -479,11 +509,15 @@ public class GenerateComposeFiles {
                         }
                     }
                 }
-                if ((line.contains(PREFIX + "ComposeViewModel") && !generateFiles.outputPath.contains("ViewModel"))) {
-                    String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                    internalImports.put(lineImport, lineImport);
-                }
+//                if ((line.contains(PREFIX + "ComposeViewModel") && !generateFiles.outputPath.contains("ViewModel"))) {
+//                    String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
+
+            
+        
+
+        ////                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                    internalImports.put(lineImport, lineImport);
+//                }
             }
         }
 

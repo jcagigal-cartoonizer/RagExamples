@@ -205,6 +205,8 @@ public class GeneralAnswerProcessor extends ReadFile {
     private int numBlock = 0;
     private int numLines = 0;
     private boolean firstImport = false;
+    private boolean importFound;
+    private boolean packageFound;
     private boolean hasImports = true;
     private String fileNameToUse = "";
     private String previousLine = "";
@@ -239,13 +241,15 @@ public class GeneralAnswerProcessor extends ReadFile {
         iface = getIface();
         numBlock = 0;
         numLines = 0;
-        hasImports = true;
         importsMap = new HashMap<>();
         lines = new HashMap<>();
         blocks = new HashMap<>();
         orderedLines = new HashMap<>();
         blockFiles = new HashMap<>();
         firstImport = false;
+        hasImports = false;
+        importFound = false;
+        packageFound = false;
         fileNameToUse = "";
         blockLine = "";
     }
@@ -281,6 +285,7 @@ public class GeneralAnswerProcessor extends ReadFile {
         }
         if (line.trim().startsWith("import ")) {
             printAlways = true;
+            hasImports = true;
         }
         if (line.contains("ifac.td.taxi.ui.screen.state.MessageUiState")) {
             return;
@@ -305,8 +310,8 @@ public class GeneralAnswerProcessor extends ReadFile {
             }
             importsMap.put(line, line);
         } else {
-            if (!hasImports) {
-                System.out.println("*** NO IMPORTS IN " + processedAnswerPath);
+            if (!hasImports && packageFound) {
+                System.out.println("*** NO IMPORTS IN " + processedAnswerPath + " line " + line);
                 hasImports = true;
                 numBlock++;
                 blockLine = "// # Block " + numLines + "-" + numBlock + ": " + line;
@@ -319,19 +324,19 @@ public class GeneralAnswerProcessor extends ReadFile {
                 if (fileNameToUse.isEmpty()) {
                     if (line.contains("class ")) {
                         fileNameToUse = extractFileNameFromClass(line);
-    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                        System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                         blockFiles.put(blockLine, fileNameToUse);
                     } else if ("@Composable".equals(previousLine) && line.startsWith("fun ")) {
                         fileNameToUse = extractFileNameFromFun(line);
-    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                        System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                         blockFiles.put(blockLine, fileNameToUse);
                     } else if (line.trim().startsWith("object ")) {
                         fileNameToUse = extractFileNameFromObject(line);
-    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                        System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                         blockFiles.put(blockLine, fileNameToUse);
                     } else if (line.trim().startsWith("fun ")) {
                         fileNameToUse = extractFileNameFromFun(line);
-    //                    System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
+                        System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                         blockFiles.put(blockLine, fileNameToUse);
                     } else {
 //                        System.out.println("*** fileNameToUse isEmpty but no name found blockLine = " + blockLine);
@@ -346,6 +351,9 @@ public class GeneralAnswerProcessor extends ReadFile {
             numLines++;
             orderedLines.put(numLines, line);
             lines.put(line, line);
+        }
+        if (line.trim().startsWith("package ")) {
+            packageFound = true;
         }
         previousLine = line;
     }
@@ -428,11 +436,11 @@ public class GeneralAnswerProcessor extends ReadFile {
         if (line.contains("fun CustomDialog") && !line.contains(fileNameToUseNoExtension + "CustomDialog")) {
             line = line.replaceAll(Pattern.quote("CustomDialog"), fileNameToUseNoExtension + "CustomDialog");
         }
+        if (line.contains("CustomDialogCustomDialog")) {
+            line = line.replaceAll(Pattern.quote("CustomDialogCustomDialog"), "CustomDialog");
+        }
         if (line.contains(PREFIX + PREFIX)) {
             line = line.replaceAll(Pattern.quote(PREFIX + PREFIX), PREFIX);
-        }
-        if (line.contains("CustomDialog") && !line.contains(PREFIX + "CustomDialog") && !line.contains(fileNameToUseNoExtension + "CustomDialog")) {
-            line = line.replaceAll(Pattern.quote("CustomDialog"), fileNameToUseNoExtension + "CustomDialog");
         }
         if (printAlways) {
             if (line.contains("ifac.td.taxi.ui.screen.compose.dialog.")) {
@@ -537,7 +545,10 @@ public class GeneralAnswerProcessor extends ReadFile {
         if (idx > 0) {
             className = className.substring(0, idx);
         }
-        className = className.substring(0, 1).toUpperCase() + className.substring(1);
+        className = className.substring(0, 1).toUpperCase() + className.substring(1).trim();
+        if (!className.startsWith(PREFIX)) {
+            className = PREFIX + className;
+        }
         return className + ".kt";
     }
 
@@ -553,13 +564,19 @@ public class GeneralAnswerProcessor extends ReadFile {
                 funName = funName.substring(idx + 1, idx + 2).toUpperCase() + funName.substring(idx + 2);
             }
         }
-        funName = funName.substring(0, 1).toUpperCase() + funName.substring(1);
+        funName = funName.substring(0, 1).toUpperCase() + funName.substring(1).trim();
+        if (!funName.startsWith(PREFIX)) {
+            funName = PREFIX + funName;
+        }
         return funName + ".kt";
     }
     private String extractFileNameFromObject(String line) {
 // object ComposeCustomButtonDefaults
         String funName = line.replaceAll("object ", "").replaceAll(Pattern.quote("{"), "").replaceAll(" ", "").trim() + ".kt";
-        funName = funName.substring(0, 1).toUpperCase() + funName.substring(1);
+        funName = funName.substring(0, 1).toUpperCase() + funName.substring(1).trim();
+        if (!funName.startsWith(PREFIX)) {
+            funName = PREFIX + funName;
+        }
         return funName + ".kt";
     }
 

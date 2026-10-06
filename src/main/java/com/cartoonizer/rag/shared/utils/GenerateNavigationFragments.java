@@ -183,7 +183,7 @@ public class GenerateNavigationFragments {
                     print("import android.view.ViewGroup");
                     print("import androidx.fragment.app.Fragment");
                     print("import androidx.fragment.app.viewModels");
-                    print("import ifac.td.taxi.viewmodel." + PREFIX + "ViewModel");
+//                    print("import ifac.td.taxi.viewmodel." + PREFIX + "ViewModel");
                     print("import ifac.td.taxi.ui.screen." + PREFIX + "Screen");
                 }
             }
@@ -318,9 +318,6 @@ public class GenerateNavigationFragments {
                     lines.clear();
                     orderedLines.clear();
                     print("package " + packageName);
-                    if (path.endsWith("ViewModel.kt")) {
-                        print("import  android.app.Application");
-                    }
                     for (Map.Entry<String, String> entry : secondPass.internalImports.entrySet()) {
                         print(entry.getKey());
                     }
@@ -468,11 +465,11 @@ public class GenerateNavigationFragments {
                         }
                     }
                 }
-                if ((line.contains(PREFIX + "ComposeViewModel") && !generateFiles.outputPath.contains("ViewModel"))) {
-                    String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
-//                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
-                    internalImports.put(lineImport, lineImport);
-                }
+//                if ((line.contains(PREFIX + "ComposeViewModel") && !generateFiles.outputPath.contains("ViewModel"))) {
+//                    String lineImport = "import ifac.td.taxi.compose.viewmodel." + PREFIX + "ComposeViewModel";
+////                        System.out.println("addImport --> " + lineImport + " in\n    " + outputPath);
+//                    internalImports.put(lineImport, lineImport);
+//                }
             }
         }
 

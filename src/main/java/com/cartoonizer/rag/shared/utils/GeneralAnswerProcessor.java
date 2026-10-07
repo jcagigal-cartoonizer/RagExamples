@@ -64,7 +64,7 @@ public class GeneralAnswerProcessor extends ReadFile {
                 "LoginDriver",
                 "LoginUserRedSys",
                 "LoginUser",
-                "MacroZoning",        
+                "MacroZoning",
                 "MeetingSign",
                 "MessageDetail",
                 "Messages",
@@ -334,12 +334,14 @@ public class GeneralAnswerProcessor extends ReadFile {
                         fileNameToUse = extractFileNameFromObject(line);
                         System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                         blockFiles.put(blockLine, fileNameToUse);
-                    } else if (line.trim().startsWith("fun ")) {
+                    } else if (line.trim().startsWith("fun ") || line.trim().startsWith("private fun ")) {
                         fileNameToUse = extractFileNameFromFun(line);
                         System.out.println("*** fileNameToUse " + fileNameToUse + " in " + line + " blockLine " + blockLine);
                         blockFiles.put(blockLine, fileNameToUse);
                     } else {
-//                        System.out.println("*** fileNameToUse isEmpty but no name found blockLine = " + blockLine);
+                        if (!blockLine.isEmpty()) {
+                            System.out.println("*** fileNameToUse isEmpty but no name found blockLine = " + blockLine + "\n--> " + line);
+                        }
                     }
                 }
                 if(!fileNameToUse.isEmpty() && !fileNameToUse.startsWith(PREFIX)) {
@@ -560,7 +562,7 @@ public class GeneralAnswerProcessor extends ReadFile {
 
     private String extractFileNameFromFun(String line) {
 // fun MainActivityViewModel.homeExternalStateFlow(): Flow<HomeExternalState> {
-        String funName = line.trim().replaceAll("fun ", "").replaceAll(" ", "").trim(); 
+        String funName = line.trim().replaceAll("private fun ", "").replaceAll("fun ", "").replaceAll(" ", "").trim(); 
 //        System.out.println("extractFileNameFromFun BEFORE " + funName);
         int idx = funName.indexOf("(");
         if (idx > 0) {

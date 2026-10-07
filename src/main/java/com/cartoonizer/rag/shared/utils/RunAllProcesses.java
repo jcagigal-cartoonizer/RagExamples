@@ -14,12 +14,12 @@ import java.nio.file.attribute.BasicFileAttributes;
 public class RunAllProcesses {
 
     public static String[] ONLY_THIS_ARRAY = new String[]{
-//        "CropImage",
-//        "DestinationMap",
-//        "DeviceSettings",
-//        "FixedPrice",
-//        "GPSTest",
-//        "InformationMessage",
+                "MeetingSign",
+                "MessageDetail",
+                "Messages",
+                "OfflineInvoice",
+                "OnlineInvoice",
+                "OnTrip",
     };
 
     public static void main(String[] args) {

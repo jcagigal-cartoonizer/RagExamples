@@ -1,11 +1,8 @@
 package com.cartoonizer.rag.shared.utils;
 
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FILE_NAME;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FIRST_PREFIX;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAST_PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
 import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;

@@ -120,12 +120,19 @@ public class GenerateComposeFiles {
 //            System.out.println("=== outputPath = " + outputPath);
             if (printAlways) {
                 if (line.contains("private val _uiState = ")) {
-                    print("    val context = application");
                     print("    lateinit var buttonsState : " + PREFIX + "ButtonsState");
-                    print("    lateinit var dialogState : ContactCentralDialogState");
+                    print("    lateinit var dialogState : " + PREFIX + "DialogState");
                 }
                 line = addPrefixes(line);
                 line = addStrings(line);
+                if (line.trim().contains(" -> emitEffect(")) {
+                    int idx = line.indexOf(" -> ");
+                    if (idx > 0) {
+                        String prev = line.substring(0, idx + 3);
+                        String emitLine = line.substring(idx + 3);
+                        line = prev + " {\nviewModelScope.launch {" + emitLine + "\n}\n}";
+                    }
+                }
                 if (line.trim().startsWith("fun composeButtonColors(")) {
                     line = "@Composable\n" + line;
                 }
@@ -267,6 +274,9 @@ public class GenerateComposeFiles {
             print("import androidx.lifecycle.compose.collectAsStateWithLifecycle");
             if (path.contains("CustomDialog")) {
                 print("import  androidx.compose.ui.window.Dialog");
+            }
+            if (path.contains("ComposeViewModel")) {
+                print("import ifac.td.taxi.viewmodel." + PREFIX + "ViewModel");
             }
             print("import ifac.td.taxi.ui.custom.button.ButtonType");
             print("import com.interfacom.sdk.taximeter.licensing.rest.user.ChangePasswordPinView");

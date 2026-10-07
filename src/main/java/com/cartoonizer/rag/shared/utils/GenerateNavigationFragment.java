@@ -104,6 +104,8 @@ public class GenerateNavigationFragment {
             import androidx.compose.ui.Modifier      
             import androidx.navigation.findNavController
             import org.koin.androidx.viewmodel.ext.android.viewModel
+            import ifac.td.taxi.compose.viewmodel.__PREFIX__ComposeViewModel
+            import ifac.td.taxi.ui.screen.__PREFIX__Screen
             class __PREFIX__NavigationFragment : Fragment() {
             
                 private val viewModel: __PREFIX__ComposeViewModel by viewModel()

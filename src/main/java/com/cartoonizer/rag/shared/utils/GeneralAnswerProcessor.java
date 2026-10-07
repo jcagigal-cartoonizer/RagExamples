@@ -34,7 +34,7 @@ public class GeneralAnswerProcessor extends ReadFile {
 //    public static String ONLY_THIS = "ChangeDriverPin";
 //    public static String ONLY_THIS = "ChangeUserPassword";
 //    public static String ONLY_THIS = "SplashScreen";
-    public static String ONLY_THIS = "Welcome";
+    public static String ONLY_THIS = "";
 //    public static String ONLY_THIS = "";
     public static int FIRST_PREFIX = -1;
     public static int LAST_PREFIX = -1;
@@ -433,11 +433,17 @@ public class GeneralAnswerProcessor extends ReadFile {
         if (line.contains("data class CustomDialogState")) {
             line = line.replaceAll(Pattern.quote("CustomDialogState"), fileNameToUseNoExtension + "CustomDialogState");
         }
-        if (line.contains("fun CustomDialog") && !line.contains(fileNameToUseNoExtension + "CustomDialog")) {
+        if (line.contains("fun CustomDialogState")) {
+            line = line.replaceAll(Pattern.quote("CustomDialogState"), fileNameToUseNoExtension + "CustomDialogState");
+        }
+        if (line.contains("fun CustomDialog") && !line.contains(fileNameToUseNoExtension + "CustomDialog") && !line.contains("CustomDialogState")) {
             line = line.replaceAll(Pattern.quote("CustomDialog"), fileNameToUseNoExtension + "CustomDialog");
         }
         if (line.contains("CustomDialogCustomDialog")) {
             line = line.replaceAll(Pattern.quote("CustomDialogCustomDialog"), "CustomDialog");
+        }
+        if (line.contains("CustomDialog") && !line.contains(fileNameToUseNoExtension + "CustomDialog")) {
+            line = line.replaceAll(Pattern.quote("CustomDialog"), fileNameToUseNoExtension + "CustomDialog");
         }
         if (line.contains(PREFIX + PREFIX)) {
             line = line.replaceAll(Pattern.quote(PREFIX + PREFIX), PREFIX);

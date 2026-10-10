@@ -3,6 +3,7 @@ package com.cartoonizer.rag.shared;
 
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
 
 public interface Assistant {
 
@@ -13,5 +14,5 @@ public interface Assistant {
                 + "{{question}}\n"
                 + "\n"
     )
-        String answer(@UserMessage String question);
+        String answer(@UserMessage @V("question") String question);
 }

@@ -1,0 +1,1251 @@
+package ifac.td.taxi.ui.screen.dashboard
+// # Block 1-1: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.ui.model.ZoneModel
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+@Immutable
+data class DashboardUiState(
+    val isLoadingZones: Boolean = true,
+    val nearbyZones: List<ZoneModel> = emptyList(),
+    val farZones: List<ZoneModel> = emptyList(),
+    val actualZones: List<ZoneModel> = emptyList(),
+    val pendingTrips: List<PendingTrip> = emptyList(),
+    val pendingTripsCount: Int = 0,
+    val headerState: DashboardHeaderState = DashboardHeaderState(),
+    val buttonsState: DashboardButtonsState = DashboardButtonsState(),
+    val dialogState: DashboardDialogState = DashboardDialogState.Hidden,
+)
+@Immutable
+data class DashboardHeaderState(
+    val showStand: Boolean = false,
+    val showZone: Boolean = false,
+    val showHired: Boolean = false,
+    val showTrips: Boolean = false,
+    val standText: String = "",
+    val zoneText: String = "",
+    val hiredText: String = "",
+    val tripsText: String = "",
+)
+sealed interface DashboardUiEvent {
+    data object OnResume : DashboardUiEvent
+    data object OnPause : DashboardUiEvent
+    data object OnBackPressed : DashboardUiEvent
+    data object OnShowAllTripsClicked : DashboardUiEvent
+    data object OnShowRecentTripsClicked : DashboardUiEvent
+    data object OnCancelClicked : DashboardUiEvent
+    data object OnCloseClicked : DashboardUiEvent
+    data object OnDismissDialog : DashboardUiEvent
+    data object OnConfirmDialog : DashboardUiEvent
+    data class OnZoneClicked(val zone: ZoneModel) : DashboardUiEvent
+    data class OnZoneLongClicked(val macroZoneId: Int, val zoneId: Int) : DashboardUiEvent
+}
+sealed interface DashboardUiEffect {
+    data object NavigateBack : DashboardUiEffect
+    data object NavigateToHome : DashboardUiEffect
+    data object NavigateToOnTrip : DashboardUiEffect
+    data object OpenDelocateDialog : DashboardUiEffect
+    data object CloseDialog : DashboardUiEffect
+}
+```
+---
+# 2) Full `DashboardButtonsState` with styling helpers
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+// # Block 53-2: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+@Immutable
+data class DashboardButtonsState(
+    val showShowAll: Boolean = true,
+    val showShowRecent: Boolean = false,
+    val showCancel: Boolean = true,
+    val showClose: Boolean = true,
+    val showAllEnabled: Boolean = false,
+    val showRecentEnabled: Boolean = true,
+    val cancelEnabled: Boolean = true,
+    val closeEnabled: Boolean = true,
+    val showAllStyle: DashboardButtonStyle = DashboardButtonStyle.DisabledBlue,
+    val showRecentStyle: DashboardButtonStyle = DashboardButtonStyle.EnabledBlue,
+    val cancelStyle: DashboardButtonStyle = DashboardButtonStyle.EnabledGray,
+    val closeStyle: DashboardButtonStyle = DashboardButtonStyle.EnabledRed,
+)
+@Immutable
+data class DashboardButtonStyle(
+    val backgroundColor: Color,
+    val contentColor: Color,
+    val borderColor: Color? = null,
+    val iconTint: Color? = null,
+)
+object DashboardButtonStyles {
+    val EnabledBlue = DashboardButtonStyle(
+        backgroundColor = Color(0xFF1976D2),
+        contentColor = Color.White
+    )
+    val DisabledBlue = DashboardButtonStyle(
+        backgroundColor = Color(0xFF90CAF9),
+        contentColor = Color.White
+    )
+    val EnabledRed = DashboardButtonStyle(
+        backgroundColor = Color(0xFFD32F2F),
+        contentColor = Color.White
+    )
+    val EnabledGray = DashboardButtonStyle(
+        backgroundColor = Color(0xFF616161),
+        contentColor = Color.White
+    )
+}
+fun DashboardButtonsState.Companion.fromShowAllMode(): DashboardButtonsState = DashboardButtonsState(
+    showShowAll = false,
+    showShowRecent = true,
+    showAllEnabled = false,
+    showRecentEnabled = true,
+    showAllStyle = DashboardButtonStyles.DisabledBlue,
+    showRecentStyle = DashboardButtonStyles.EnabledBlue
+)
+fun DashboardButtonsState.Companion.fromShowRecentMode(): DashboardButtonsState = DashboardButtonsState(
+    showShowAll = true,
+    showShowRecent = false,
+    showAllEnabled = true,
+    showRecentEnabled = false,
+    showAllStyle = DashboardButtonStyles.EnabledBlue,
+    showRecentStyle = DashboardButtonStyles.DisabledBlue
+)
+```
+---
+# 3) Dialog state holder
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+// # Block 117-3: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+@Immutable
+sealed interface DashboardDialogState {
+    data object Hidden : DashboardDialogState
+    data object DelocateOnHired : DashboardDialogState
+    data class Message(val title: String, val message: String) : DashboardDialogState
+}
+```
+---
+# 4) Compose-friendly `DashboardViewModel`
+```kotlin
+package ifac.td.taxi.viewmodel
+// # Block 130-4: import android.app.Application
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.repository.room.entities.BravoConfigurationVariableEntity
+import ifac.td.taxi.ui.model.ZoneModel
+import ifac.td.taxi.ui.util.ZoneUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class DashboardComposeViewModel(
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+    private val handler = Handler(Looper.getMainLooper())
+    private val pendingTripsHandler = Handler(Looper.getMainLooper())
+    private var zonesRunnable: Runnable? = null
+    private var pendingTripsRunnable: Runnable? = null
+    var bravoConfiguration: BravoConfigurationVariableEntity? = null
+    var isCustomersAtStand: Boolean = false
+    private val _uiState = MutableStateFlow(DashboardUiState())
+    val uiState = _uiState.asStateFlow()
+    private val _uiEffects = MutableSharedFlow<DashboardUiEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val uiEffects = _uiEffects.asSharedFlow()
+    private val _zonesListFlow = MutableStateFlow<List<ZoneModel>?>(null)
+    private val _nearbyZonesListSortedFlow = MutableStateFlow<List<ZoneModel>?>(null)
+    private val _farZonesListSortedFlow = MutableStateFlow<List<ZoneModel>?>(null)
+    private val _actualZoneListSortedFlow = MutableStateFlow<List<ZoneModel>?>(null)
+    private val _zoningListDataTypes = MutableStateFlow<String?>(null)
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            licensingUseCase.getLicensingParameters()?.isCustomersAtStand?.let {
+                isCustomersAtStand = it
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                _nearbyZonesListSortedFlow,
+                _farZonesListSortedFlow,
+                _actualZoneListSortedFlow,
+                _zoningListDataTypes
+            ) { nearby, far, actual, dataTypes ->
+                val header = buildHeaderState(dataTypes.orEmpty())
+                val buttons = buildButtonsState()
+                _uiState.value.copy(
+                    nearbyZones = nearby.orEmpty(),
+                    farZones = far.orEmpty(),
+                    actualZones = actual.orEmpty(),
+                    headerState = header,
+                    buttonsState = buttons,
+                    isLoadingZones = false
+                )
+            }.collect { newState ->
+                _uiState.value = newState
+            }
+        }
+        viewModelScope.launch {
+            _zonesListFlow.collect { zones ->
+                zones?.let { filterData(it) }
+            }
+        }
+    }
+    fun onEvent(event: DashboardUiEvent) {
+        when (event) {
+            DashboardUiEvent.OnResume -> {
+                initViewModelData()
+                loadTrips(sharedPendingTripsFlow())
+            }
+            DashboardUiEvent.OnPause -> removeHandlerCallbacks()
+            DashboardUiEvent.OnBackPressed,
+            DashboardUiEvent.OnCancelClicked -> emitEffect(DashboardUiEffect.NavigateBack)
+            DashboardUiEvent.OnCloseClicked -> handleClose()
+            DashboardUiEvent.OnShowAllTripsClicked -> {
+                _uiState.update {
+                    it.copy(buttonsState = it.buttonsState.copy(
+                        showShowAll = false,
+                        showShowRecent = true
+                    ))
+                }
+            }
+            DashboardUiEvent.OnShowRecentTripsClicked -> {
+                _uiState.update {
+                    it.copy(buttonsState = it.buttonsState.copy(
+                        showShowAll = true,
+                        showShowRecent = false
+                    ))
+                }
+            }
+            DashboardUiEvent.OnDismissDialog -> {
+                _uiState.update { it.copy(dialogState = DashboardDialogState.Hidden) }
+                emitEffect(DashboardUiEffect.CloseDialog)
+            }
+            DashboardUiEvent.OnConfirmDialog -> {
+                _uiState.update { it.copy(dialogState = DashboardDialogState.Hidden) }
+                emitEffect(DashboardUiEffect.NavigateToHome)
+            }
+            is DashboardUiEvent.OnZoneClicked -> Unit
+            is DashboardUiEvent.OnZoneLongClicked -> Unit
+        }
+    }
+    fun handleClose() {
+        when (sharedShiftStatus()) {
+            "STATE_HIRED",
+            "STATE_DISPATCHED",
+            "STATE_HIRED_DISPATCHED",
+            "STATE_HIRED_NO_CENTRAL" -> {
+                _uiState.update { it.copy(dialogState = DashboardDialogState.DelocateOnHired) }
+                emitEffect(DashboardUiEffect.OpenDelocateDialog)
+            }
+            else -> emitEffect(DashboardUiEffect.NavigateToHome)
+        }
+    }
+    fun sharedShiftStatus(): String? = null
+    fun emitEffect(effect: DashboardUiEffect) {
+        viewModelScope.launch { _uiEffects.emit(effect) }
+    }
+    fun buildHeaderState(dataTypes: String): DashboardHeaderState {
+        val columns = ZoneUtils.parseStringDataTypes(dataTypes)
+        return DashboardHeaderState(
+            showStand = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.STAND_VEHICLES),
+            showZone = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.ZONE_VEHICLES),
+            showHired = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.HIRED_VEHICLES) ||
+                    columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.BOOKED_TRIPS),
+            showTrips = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                    columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.TOTAL_TRIPS) ||
+                    (columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.HIRED_VEHICLES) &&
+                            columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.BOOKED_TRIPS)),
+            standText = "Stand",
+            zoneText = "Zone",
+            hiredText = if (columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.HIRED_VEHICLES)) "Hired" else "Serv.",
+            tripsText = if (columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.PREBOOKED_TRIPS)) "Pre" else "Trips"
+        )
+    }
+    fun buildButtonsState(): DashboardButtonsState {
+        return DashboardButtonsState(
+            showShowAll = true,
+            showShowRecent = false,
+            showCancel = true,
+            showClose = true,
+            showAllEnabled = false,
+            showRecentEnabled = true,
+            cancelEnabled = true,
+            closeEnabled = true,
+            showAllStyle = DashboardButtonStyles.DisabledBlue,
+            showRecentStyle = DashboardButtonStyles.EnabledBlue,
+            cancelStyle = DashboardButtonStyles.EnabledGray,
+            closeStyle = DashboardButtonStyles.EnabledRed
+        )
+    }
+    fun initViewModelData() {
+        viewModelScope.launch {
+            val refreshRate = licensingUseCase.getLicensingParameters()?.segRefrescoConsUbicacion
+            refreshRate?.let { seconds ->
+                val millis = (seconds * 1000).toLong()
+                var lastZoningUpdate = zoningUseCase.getLastZoningUpdate()
+                if ((System.currentTimeMillis() - lastZoningUpdate) < millis) {
+                    zoneCallback.invoke(W2CLocation.getZoning().macrozones[0].zones, W2CLocation.getZoning().availableColumns)
+                }
+                zonesRunnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch {
+                            if ((System.currentTimeMillis() - lastZoningUpdate) > millis) {
+                                zoningUseCase.getZonesInformation(
+                                    W2CLocation.getZoning().macrozones[0],
+                                    zoneCallback,
+                                )
+                                lastZoningUpdate = System.currentTimeMillis()
+                                zoningUseCase.setLastZoningUpdate()
+                            }
+                        }
+                        handler.postDelayed(this, 1000)
+                    }
+                }
+                zonesRunnable?.let { handler.post(it) }
+            }
+        }
+    }
+    private val zoneCallback: (List<Zone>, String) -> Unit = { _, availableColumns ->
+        viewModelScope.launch(Dispatchers.IO) {
+            val zonesList = mutableListOf<ZoneModel>()
+            W2CLocation.getZoning().macrozones.forEach { mz ->
+                zonesList.addAll(mz.zones.map { zone -> ZoneModel(zone, false) })
+            }
+            _zonesListFlow.emit(zonesList)
+            if (availableColumns.isNotBlank()) _zoningListDataTypes.emit(availableColumns)
+        }
+    }
+    private suspend fun filterData(zonesList: List<ZoneModel>) {
+        val zonesWithMoreTrips = zonesList.filter {
+            ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value ?: "") > 0
+        }
+        val (farZones, nearbyZones) = zonesWithMoreTrips.partition {
+            getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) > 5000
+        }
+        _nearbyZonesListSortedFlow.emit(
+            nearbyZones.sortedWith(
+                compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value ?: "") }
+                    .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+            )
+        )
+        _farZonesListSortedFlow.emit(
+            farZones.sortedWith(
+                compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value ?: "") }
+                    .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+            )
+        )
+        refreshActualZoneData()
+    }
+    fun refreshActualZoneData() {
+        viewModelScope.launch {
+            val lastZoneSent = W2CLocation.getZoning().getZoneById(
+                W2CLocation.getLastIdMacrozoneSent(),
+                W2CLocation.getLastIdZoneSent()
+            )
+            val lastZoneLocated = W2CLocation.getZoneFromLatLong(W2CLocation.getLastLatLong())
+            val actualZoneList = mutableListOf<ZoneModel>()
+            if (lastZoneSent != null) actualZoneList.add(ZoneModel(lastZoneSent, false))
+            if (lastZoneLocated != null) actualZoneList.add(ZoneModel(lastZoneLocated, false))
+            _actualZoneListSortedFlow.emit(actualZoneList)
+        }
+    }
+    fun loadTrips(flow: MutableStateFlow<ArrayList<PendingTrip>?>) {
+        if (BravoCentral.isPendingTripsAllowed(false)) {
+            viewModelScope.launch { pendingTripsUseCase.getPendingTripsZone(flow) }
+        }
+        startChronometer(flow)
+    }
+    fun startChronometer(mFlow: MutableStateFlow<ArrayList<PendingTrip>?>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            pendingTripsRunnable = object : Runnable {
+                override fun run() {
+                    viewModelScope.launch {
+                        if (BravoCentral.isPendingTripsAllowed(true)) {
+                            pendingTripsUseCase.getPendingTripsZone(mFlow)
+                        }
+                    }
+                    pendingTripsHandler.postDelayed(this, 2000L)
+                }
+            }
+            pendingTripsRunnable?.let { pendingTripsHandler.postDelayed(it, 500L) }
+        }
+    }
+    fun sharedPendingTripsFlow(): MutableStateFlow<ArrayList<PendingTrip>?> {
+        return MutableStateFlow(null)
+    }
+    fun getDistanceFromLatLonInMetersLocale(lastLatLong: LatLong?, centralCoord: LatLong?): Int {
+        if (lastLatLong == null || lastLatLong.Lat.isNaN() || centralCoord == null || centralCoord.Lat.isNaN()) {
+            return Int.MAX_VALUE
+        }
+        return W2CLocation.getDistanceFromLatLonInMeters(lastLatLong, centralCoord)
+    }
+    fun removeHandlerCallbacks() {
+        pendingTripsRunnable?.let { pendingTripsHandler.removeCallbacks(it) }
+        zonesRunnable?.let { handler.removeCallbacks(it) }
+    }
+}
+```
+---
+# 5) Compose screen
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+// # Block 408-5: import androidx.activity.compose.BackHandler
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.ui.model.ZoneModel
+import ifac.td.taxi.viewmodel.DashboardViewModel
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun DashboardScreen(
+    viewModel: DashboardComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit,
+    onNavigateToOnTrip: () -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var dialogVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        viewModel.uiEffects.collectLatest { effect ->
+            when (effect) {
+                DashboardUiEffect.NavigateBack -> onNavigateBack()
+                DashboardUiEffect.NavigateToHome -> onNavigateHome()
+                DashboardUiEffect.NavigateToOnTrip -> onNavigateToOnTrip()
+                DashboardUiEffect.OpenDelocateDialog -> dialogVisible = true
+                DashboardUiEffect.CloseDialog -> dialogVisible = false
+            }
+        }
+    }
+    BackHandler {
+        viewModel.onEvent(DashboardUiEvent.OnBackPressed)
+    }
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(DashboardUiEvent.OnResume)
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.onEvent(DashboardUiEvent.OnPause)
+        }
+    }
+    Scaffold(
+        topBar = {
+            DashboardHeader(
+                state = uiState.headerState
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            DashboardButtonsRow(
+                state = uiState.buttonsState,
+                onShowAll = { viewModel.onEvent(DashboardUiEvent.OnShowAllTripsClicked) },
+                onShowRecent = { viewModel.onEvent(DashboardUiEvent.OnShowRecentTripsClicked) },
+                onCancel = { viewModel.onEvent(DashboardUiEvent.OnCancelClicked) },
+                onClose = { viewModel.onEvent(DashboardUiEvent.OnCloseClicked) }
+            )
+            Spacer(Modifier.height(12.dp))
+            Text("Pending trips: ${uiState.pendingTripsCount}")
+            Spacer(Modifier.height(12.dp))
+            DashboardZonesSection(
+                title = "Nearby zones",
+                zones = uiState.nearbyZones
+            )
+            DashboardZonesSection(
+                title = "Far zones",
+                zones = uiState.farZones
+            )
+            DashboardZonesSection(
+                title = "Actual zones",
+                zones = uiState.actualZones
+            )
+        }
+    }
+    if (dialogVisible) {
+        DashboardCustomNotificationDialogCustomDialog(
+            title = "Delocate",
+            message = "Do you want to delocate the hired zone?",
+            confirmText = "Yes",
+            dismissText = "No",
+            onConfirm = {
+                dialogVisible = false
+                viewModel.onEvent(DashboardUiEvent.OnConfirmDialog)
+            },
+            onDismiss = {
+                dialogVisible = false
+                viewModel.onEvent(DashboardUiEvent.OnDismissDialog)
+            }
+        )
+    }
+}
+@Composable
+fun DashboardHeader(state: DashboardHeaderState) {
+    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        if (state.showStand) Text(state.standText)
+        if (state.showZone) Text(state.zoneText)
+        if (state.showHired) Text(state.hiredText)
+        if (state.showTrips) Text(state.tripsText)
+    }
+}
+@Composable
+fun DashboardZonesSection(
+    title: String,
+    zones: List<ZoneModel>
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        LazyColumn {
+            items(zones) { zone ->
+                Text(text = zone.zone.nombreZone ?: "Zone")
+            }
+        }
+    }
+}
+```
+---
+# 6) Compose button row + styling helpers
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+// # Block 534-6: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun DashboardButtonsRow(
+    state: DashboardButtonsState,
+    onShowAll: () -> Unit,
+    onShowRecent: () -> Unit,
+    onCancel: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (state.showShowAll) {
+            DashboardButton(
+                text = "Show all",
+                style = state.showAllStyle,
+                enabled = state.showAllEnabled,
+                onClick = onShowAll,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (state.showShowRecent) {
+            DashboardButton(
+                text = "Show recent",
+                style = state.showRecentStyle,
+                enabled = state.showRecentEnabled,
+                onClick = onShowRecent,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (state.showCancel) {
+            DashboardButton(
+                text = "Cancel",
+                style = state.cancelStyle,
+                enabled = state.cancelEnabled,
+                onClick = onCancel,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (state.showClose) {
+            DashboardButton(
+                text = "Close",
+                style = state.closeStyle,
+                enabled = state.closeEnabled,
+                onClick = onClose,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+@Composable
+fun DashboardButton(
+    text: String,
+    style: DashboardButtonStyle,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val alpha = if (enabled) 1f else 0.55f
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .alpha(alpha)
+            .background(style.backgroundColor, RoundedCornerShape(12.dp))
+            .border(1.dp, style.borderColor ?: Color.Transparent, RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = text, color = style.contentColor)
+    }
+}
+```
+---
+# 7) Compose `DashboardCustomNotificationDialogCustomDialog` based on XML/dialog behavior
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+// # Block 623-7: import androidx.compose.foundation.background
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+@Composable
+fun DashboardCustomNotificationDialogCustomDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    dismissText: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            color = Color.White
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(dismissText)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = onConfirm) {
+                        Text(confirmText)
+                    }
+                }
+            }
+        }
+    }
+}
+```
+---
+# 9) If you want a Fragment wrapper to preserve current navigation entry point
+```kotlin
+class DashboardComposeFragment : Fragment() {
+    private val viewModel: DashboardViewModel by viewModel()
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        return ComposeView(requireContext()).apply {
+            setContent {
+                DashboardRoute(
+                    viewModel = viewModel,
+                    navigateBack = { findNavController().popBackStack() },
+                    navigateHome = { findNavController().navigate(R.id.homeFragment) },
+                    navigateToOnTrip = { findNavController().navigate(R.id.onTripFragment) }
+                )
+            }
+        }
+    }
+}
+```
+---
+# 10) Important notes
+A few things in your original ViewModel are still tied to the old architecture:
+To fully complete the migration, those should also be exposed as Compose-friendly state/effects or injected as flows into the dashboard ViewModel.
+Also, your original `DashboardViewModel` uses `Handler` loops. In Compose, the UI can still work with that, but a cleaner version would replace them with `viewModelScope.launch { while(isActive) ... }` or `ticker`-style flows.
+---
+# 11) What you still need to plug in
+You’ll likely want to adapt these parts to your real app:
+---
+1. a **fully compiling version** with `MainActivityViewModel` integration,
+2. a **more exact `CustomButton` clone in Compose**,
+3. and a **Compose `DashboardRoute` that mirrors the fragment’s `onResume/onPause` behavior exactly**.
+****************************************************************************************
+2nd. ANSWER: Below is a second-pass Compose bridge that is closer to the fragment behavior you posted.
+I’ll give you:
+1. a more exact `HomeButtonsState` reducer that mirrors the fragment’s `collect {}` branches one-by-one, and  
+2. a full `MainActivityViewModel` Compose bridge pattern so shared flows like `locationEnabledFlow`, `roofLightFlow`, `zoneFlow`, `shortBreakStatus`, etc. are collected in Compose exactly like the fragment did.
+I’ll keep this in Android + Jetpack Compose terms only.
+---
+# 1) More exact `HomeButtonsState` reducer
+## State
+```kotlin
+package ifac.td.taxi.compose.home
+// # Block 748-8: import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Immutable
+@Immutable
+data class HomeButtonsState(
+    val topBarRight: TopBarRightState = TopBarRightState.Hidden,
+    val notificationDialog: NotificationDialogState = NotificationDialogState.Hidden,
+    val isRoofLightOn: Boolean? = null,
+    val zoneText: String? = null,
+    val locationEnabled: Pair<Boolean, Boolean> = true to true,
+    val shortBreakStatus: String? = null,
+    val hasTaximeterConnection: Boolean = false,
+    val isManual: Boolean = false,
+    val currentShiftStatus: String? = null,
+    val dispatch: InfoDispatchUiModel? = null,
+    val tripId: Long? = null,
+)
+@Immutable
+sealed interface TopBarRightState {
+    data object Hidden : TopBarRightState
+    data class Next(
+        val enabled: Boolean,
+        val showConfirmManualDialog: Boolean = false
+    ) : TopBarRightState
+}
+@Immutable
+sealed interface NotificationDialogState {
+    data object Hidden : NotificationDialogState
+    data class SelectNotification(
+        val buttons: List<NotificationButtonType>
+    ) : NotificationDialogState
+}
+enum class NotificationButtonType {
+    AT_DOOR,
+    RIDER_IN_CAB,
+    CANCEL,
+    ACCEPT
+}
+@Immutable
+data class InfoDispatchUiModel(
+    val isAtDoorNotificationEnabled: Boolean = false,
+    val isAtDoorNotificationSent: Boolean = false,
+    val riderInCab: Boolean = false,
+    val isRiderInCabNotificationSent: Boolean = false,
+)
+```
+---
+## Reducer
+```kotlin
+package ifac.td.taxi.compose.home
+// # Block 797-9: import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+object HomeButtonsReducer {
+    fun reduce(
+        previous: HomeButtonsState,
+        action: HomeButtonsAction
+    ): HomeButtonsState {
+        return when (action) {
+            is HomeButtonsAction.RoofLightChanged -> {
+                previous.copy(isRoofLightOn = action.enabled)
+            }
+            is HomeButtonsAction.ZoneChanged -> {
+                previous.copy(zoneText = action.zone)
+            }
+            is HomeButtonsAction.LocationEnabledChanged -> {
+                previous.copy(locationEnabled = action.value)
+            }
+            is HomeButtonsAction.ShortBreakStatusChanged -> {
+                previous.copy(shortBreakStatus = action.status)
+            }
+            is HomeButtonsAction.HasTaximeterConnectionChanged -> {
+                previous.copy(hasTaximeterConnection = action.connected)
+            }
+            is HomeButtonsAction.ManualStateChanged -> {
+                previous.copy(isManual = action.isManual)
+            }
+            is HomeButtonsAction.ShiftStatusChanged -> {
+                val newState = previous.copy(currentShiftStatus = action.status)
+                newState.withTopBarRightState()
+            }
+            is HomeButtonsAction.DispatchChanged -> {
+                previous.copy(dispatch = action.dispatch).withNotificationDialogButtons()
+            }
+            is HomeButtonsAction.TripIdChanged -> {
+                previous.copy(tripId = action.tripId)
+            }
+            HomeButtonsAction.EvaluateTopBarRight -> {
+                previous.withTopBarRightState()
+            }
+            HomeButtonsAction.OpenNotificationDialog -> {
+                previous.withNotificationDialogButtons()
+            }
+            HomeButtonsAction.HideNotificationDialog -> {
+                previous.copy(notificationDialog = NotificationDialogState.Hidden)
+            }
+        }
+    }
+    fun HomeButtonsState.withNotificationDialogButtons(): HomeButtonsState {
+        val dispatch = dispatch
+        val buttons = buildList {
+            if (dispatch?.isAtDoorNotificationEnabled == true && dispatch.isAtDoorNotificationSent == false) {
+                add(NotificationButtonType.AT_DOOR)
+            }
+            if (dispatch?.riderInCab == true && dispatch.isRiderInCabNotificationSent == false) {
+                add(NotificationButtonType.RIDER_IN_CAB)
+            }
+        }
+        return copy(
+            notificationDialog = if (buttons.isEmpty()) {
+                NotificationDialogState.Hidden
+            } else {
+                NotificationDialogState.SelectNotification(buttons)
+            }
+        )
+    }
+    fun HomeButtonsState.withTopBarRightState(): HomeButtonsState {
+        val taximeterConnection = hasTaximeterConnection
+        val status = currentShiftStatus
+        val showNext = when {
+            !taximeterConnection && isHired(status) -> true
+            status == null -> false
+            isManual -> true
+            isHired(status) && isTaximeterWithoutProtocol() && !hasITopTaximeterConnected() -> true
+            status == ifConstants.STATE_DISPATCHED && canGoToHiredManual(taximeterConnection) -> true
+            else -> false
+        }
+        return copy(
+            topBarRight = if (showNext) {
+                TopBarRightState.Next(enabled = true)
+            } else {
+                TopBarRightState.Hidden
+            }
+        )
+    }
+    fun isHired(status: String?): Boolean {
+        return status == ifConstants.STATE_HIRED ||
+                status == ifConstants.STATE_HIRED_DISPATCHED ||
+                status == ifConstants.STATE_HIRED_NO_CENTRAL
+    }
+    fun isTaximeterWithoutProtocol(): Boolean {
+        return true
+    }
+    fun hasITopTaximeterConnected(): Boolean {
+        return true
+    }
+    fun canGoToHiredManual(taximeterConnection: Boolean): Boolean {
+        return !taximeterConnection
+    }
+}
+```
+---
+## Actions
+```kotlin
+package ifac.td.taxi.compose.home
+sealed interface HomeButtonsAction {
+    data class RoofLightChanged(val enabled: Boolean?) : HomeButtonsAction
+    data class ZoneChanged(val zone: String?) : HomeButtonsAction
+    data class LocationEnabledChanged(val value: Pair<Boolean, Boolean>) : HomeButtonsAction
+    data class ShortBreakStatusChanged(val status: String?) : HomeButtonsAction
+    data class HasTaximeterConnectionChanged(val connected: Boolean) : HomeButtonsAction
+    data class ManualStateChanged(val isManual: Boolean) : HomeButtonsAction
+    data class ShiftStatusChanged(val status: String?) : HomeButtonsAction
+    data class DispatchChanged(val dispatch: InfoDispatchUiModel?) : HomeButtonsAction
+    data class TripIdChanged(val tripId: Long?) : HomeButtonsAction
+    data object EvaluateTopBarRight : HomeButtonsAction
+    data object OpenNotificationDialog : HomeButtonsAction
+    data object HideNotificationDialog : HomeButtonsAction
+}
+```
+---
+# 2) Full `MainActivityViewModel` Compose bridge
+---
+## Compose bridge ViewModel
+```kotlin
+package ifac.td.taxi.compose.home
+// # Block 922-10: import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+class MainActivityComposeBridgeViewModel(
+    private val sharedViewModel: ComposeSharedViewModel
+) : ViewModel() {
+    private val _homeButtonsState = MutableStateFlow(HomeButtonsState())
+    val homeButtonsState = _homeButtonsState.asStateFlow()
+    fun bind() {
+        viewModelScope.launch {
+            sharedViewModel.roofLightFlow.collect { roofLight ->
+                reduce(HomeButtonsAction.RoofLightChanged(roofLight))
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.zoneFlow.collect { zone ->
+                reduce(HomeButtonsAction.ZoneChanged(zone))
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.locationEnabledFlow.collect { locationEnabled ->
+                reduce(HomeButtonsAction.LocationEnabledChanged(locationEnabled))
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.shortBreakStatus.collect { status ->
+                reduce(HomeButtonsAction.ShortBreakStatusChanged(status))
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.hasTaximeterConnectionFlow.collect { connected ->
+                reduce(HomeButtonsAction.HasTaximeterConnectionChanged(connected))
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.dispatchFlow.collect { dispatch ->
+                reduce(
+                    HomeButtonsAction.DispatchChanged(
+                        dispatch = dispatch?.toUiModel()
+                    )
+                )
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.shiftStatusFlow.collect { shift ->
+                reduce(HomeButtonsAction.ShiftStatusChanged(shift?.currentStatus))
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.userLoggedFlow.collect {
+                reduce(HomeButtonsAction.EvaluateTopBarRight)
+            }
+        }
+        viewModelScope.launch {
+            sharedViewModel.locationManuallyDeLocatedFlow.collect {
+                reduce(HomeButtonsAction.EvaluateTopBarRight)
+            }
+        }
+    }
+    fun onNotificationDialogDismiss() {
+        reduce(HomeButtonsAction.HideNotificationDialog)
+    }
+    fun onOpenNotificationDialog() {
+        reduce(HomeButtonsAction.OpenNotificationDialog)
+    }
+    fun onTopBarRightClicked() {
+        val state = _homeButtonsState.value
+        when (val top = state.topBarRight) {
+            is TopBarRightState.Next -> {
+                if (state.currentShiftStatus == com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_DISPATCHED) {
+                    reduce(HomeButtonsAction.OpenNotificationDialog)
+                } else {
+                    // trigger manual payment / hired manual flow
+                }
+            }
+            TopBarRightState.Hidden -> Unit
+        }
+    }
+    fun reduce(action: HomeButtonsAction) {
+        _homeButtonsState.update { current ->
+            HomeButtonsReducer.reduce(current, action)
+        }
+    }
+}
+fun ifac.td.taxi.compose.home.InfoDispatchModel?.toUiModel(): InfoDispatchUiModel? {
+    return this?.let {
+        InfoDispatchUiModel(
+            isAtDoorNotificationEnabled = it.isAtDoorNotificationEnabled(),
+            isAtDoorNotificationSent = it.isAtDoorNotificationSent,
+            riderInCab = it.riderInCab,
+            isRiderInCabNotificationSent = it.isRiderInCabNotificationSent
+        )
+    }
+}
+```
+---
+# 3) Compose bridge for `ComposeSharedViewModel`
+Your `ComposeSharedViewModel` already exposes the flows.  
+What you need now is a screen-level collector that mirrors the fragment’s `repeatOnLifecycle { launch { collect {} } }`.
+Here’s the Compose version.
+```kotlin
+package ifac.td.taxi.compose.home
+// # Block 1026-11: import androidx.compose.runtime.*
+import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.collectLatest
+@Composable
+fun HomeRoute(
+    sharedViewModel: ComposeSharedViewModel,
+    bridgeViewModel: MainActivityComposeBridgeViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit,
+    onNavigateToOnTrip: () -> Unit,
+) {
+    val state by bridgeViewModel.homeButtonsState.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        bridgeViewModel.bind()
+    }
+    HomeScreen(
+        state = state,
+        onBack = onNavigateBack,
+        onHome = onNavigateHome,
+        onOnTrip = onNavigateToOnTrip,
+        onDismissDialog = bridgeViewModel::onNotificationDialogDismiss,
+        onTopBarRightClick = bridgeViewModel::onTopBarRightClicked
+    )
+}
+```
+---
+# 4) Compose screen that reacts like the fragment
+```kotlin
+package ifac.td.taxi.compose.home
+// # Block 1056-12: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+@Composable
+fun HomeScreen(
+    state: HomeButtonsState,
+    onBack: () -> Unit,
+    onHome: () -> Unit,
+    onOnTrip: () -> Unit,
+    onDismissDialog: () -> Unit,
+    onTopBarRightClick: () -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Home") },
+                navigationIcon = {
+                    TextButton(onClick = onBack) { Text("Back") }
+                },
+                actions = {
+                    when (val right = state.topBarRight) {
+                        is TopBarRightState.Next -> {
+                            TextButton(onClick = onTopBarRightClick) {
+                                Text("Next")
+                            }
+                        }
+                        TopBarRightState.Hidden -> Unit
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            Text("Zone: ${state.zoneText ?: "-"}")
+            Text("Roof light: ${state.isRoofLightOn ?: false}")
+            Text("Location enabled: ${state.locationEnabled.first} / ${state.locationEnabled.second}")
+            Text("Short break: ${state.shortBreakStatus ?: "-"}")
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = onHome) { Text("Go Home") }
+            Button(onClick = onOnTrip) { Text("Go On Trip") }
+        }
+    }
+    when (val dialog = state.notificationDialog) {
+        is NotificationDialogState.Hidden -> Unit
+        is NotificationDialogState.SelectNotification -> {
+            CustomNotificationDialog(
+                buttons = dialog.buttons,
+                onDismiss = onDismissDialog,
+                onButtonClick = { button ->
+                    when (button) {
+                        NotificationButtonType.AT_DOOR -> {
+                            // sendAtTheDoorNotification(...)
+                        }
+                        NotificationButtonType.RIDER_IN_CAB -> {
+                            // sendInCabNotification(...)
+                        }
+                        else -> Unit
+                    }
+                }
+            )
+        }
+    }
+}
+```
+---
+# 5) Compose notification dialog
+```kotlin
+package ifac.td.taxi.compose.home
+// # Block 1132-13: import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+@Composable
+fun CustomNotificationDialog(
+    buttons: List<NotificationButtonType>,
+    onDismiss: () -> Unit,
+    onButtonClick: (NotificationButtonType) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select notification") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                buttons.forEach { button ->
+                    Button(onClick = { onButtonClick(button) }) {
+                        Text(
+                            when (button) {
+                                NotificationButtonType.AT_DOOR -> "At door"
+                                NotificationButtonType.RIDER_IN_CAB -> "Rider in cab"
+                                NotificationButtonType.CANCEL -> "Cancel"
+                                NotificationButtonType.ACCEPT -> "Accept"
+                            }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+```
+---
+# 6) Exact fragment branch mapping
+Here is the direct mapping from your fragment collectors to the Compose bridge:
+## Fragment branch
+```kotlin
+launch {
+    sharedViewModel.roofLightFlow.collect {
+        vModel.checkRoofLight(it)
+    }
+}
+```
+## Compose bridge equivalent
+```kotlin
+viewModelScope.launch {
+    sharedViewModel.roofLightFlow.collect { roofLight ->
+        reduce(HomeButtonsAction.RoofLightChanged(roofLight))
+    }
+}
+```
+---
+## Fragment branch
+```kotlin
+launch {
+    sharedViewModel.zoneFlow.collect {
+        vModel.checkZone(it)
+    }
+}
+```
+## Compose bridge equivalent
+```kotlin
+viewModelScope.launch {
+    sharedViewModel.zoneFlow.collect { zone ->
+        reduce(HomeButtonsAction.ZoneChanged(zone))
+    }
+}
+```
+---
+## Fragment branch
+```kotlin
+launch {
+    sharedViewModel.locationEnabledFlow.collect {
+        vModel.checkLocationEnabled(it)
+    }
+}
+```
+## Compose bridge equivalent
+```kotlin
+viewModelScope.launch {
+    sharedViewModel.locationEnabledFlow.collect { locationEnabled ->
+        reduce(HomeButtonsAction.LocationEnabledChanged(locationEnabled))
+    }
+}
+```
+---
+## Fragment branch
+```kotlin
+launch {
+    sharedViewModel.shortBreakStatus.collect {
+        vModel.checkShortBreakStatus(it)
+    }
+}
+```
+## Compose bridge equivalent
+```kotlin
+viewModelScope.launch {
+    sharedViewModel.shortBreakStatus.collect { status ->
+        reduce(HomeButtonsAction.ShortBreakStatusChanged(status))
+    }
+}
+```
+---
+## Fragment branch
+```kotlin
+launch {
+    sharedViewModel.dispatchFlow.collect {
+        // openNotificationDialog() logic
+    }
+}
+```
+## Compose bridge equivalent
+```kotlin
+viewModelScope.launch {
+    sharedViewModel.dispatchFlow.collect { dispatch ->
+        reduce(HomeButtonsAction.DispatchChanged(dispatch?.toUiModel()))
+    }
+}
+```
+---
+# 7) Recommended Compose lifecycle collection pattern
+```kotlin
+@Composable
+fun HomeLifecycleCollector(
+    sharedViewModel: ComposeSharedViewModel,
+    bridgeViewModel: MainActivityComposeBridgeViewModel
+) {
+    LaunchedEffect(Unit) {
+        bridgeViewModel.bind()
+    }
+}
+```
+---

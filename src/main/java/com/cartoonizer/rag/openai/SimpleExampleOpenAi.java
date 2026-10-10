@@ -1,15 +1,15 @@
 package com.cartoonizer.rag.openai;
 
-import com.cartoonizer.rag.shared.utils.FragmentQuestionsProcessor;
-import com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUTS;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAYOUT;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.ONLY_THIS;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.FIRST_PREFIX;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.LAST_PREFIX;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.shouldSkip;
+import com.cartoonizer.rag.utils.FragmentQuestionsProcessor;
+import com.cartoonizer.rag.utils.GeneralAnswerProcessor;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FIRST_PREFIX;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAST_PREFIX;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
 
 public class SimpleExampleOpenAi {
 

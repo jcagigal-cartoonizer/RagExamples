@@ -17,59 +17,109 @@ import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import com.cartoonizer.rag.shared.Assistant;
-import com.cartoonizer.rag.shared.utils.ApiKeys;
-import com.cartoonizer.rag.shared.utils.ModelNames;
+import com.cartoonizer.rag.utils.ApiKeys;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.SUFFIX;
+import com.cartoonizer.rag.utils.ModelNames;
+import com.cartoonizer.rag.utils.Utils;
 
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
+import java.io.File;
 import java.util.List;
-import static java.util.stream.Collectors.joining;
 
 public class OpenAiChatWithAugmentor {
     public static void main(String[] args) {
         String documentsPath = "./example-files";
-        String answerPath = null;
-        String processedAnswerPath = null;
-        OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
-        Assistant assistant = chat.createAssistant();
-
-        String questions[] = {
-            """
-            Provide a full Compose recreation of the entire fragment_home.xml file and the HomeFragment.kt file, keeping all the imports and components as is and using jetpack views navigation instead of Compose navigation
-            """
-        };
-        String answers[] = new String[questions.length];
-        for (int i = 0; i < questions.length; i++) {
-            answers[i] = assistant.answer(questions[i]);            
-        }
-        for (int i = 0; i < questions.length; i++) {
-            System.out.println("\n************************************************************************************");
-//            System.out.println("QUESTION: " + questions[i] + " is:");        
-            System.out.println("ANSWER: " + answers[i]);        
-        }
-        System.out.println("\n==========================================================================================");
+        PREFIX = "Dashboard";
+        LAYOUT = "fragment_dashboard.xml";
+        OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
+        chat.askQuestions();
     }
-    
-    public String theFilesPath;
+    public String documentsPath;
     private String theApiKey;
     private String theModelName;
-    public String answerPath;
-    public String processedAnswerPath;
-    private OpenAiChatWithAugmentor() {
-        
-    }
-    public OpenAiChatWithAugmentor(String apiKey, String modelName, String documentsPath, String answerPath, String processedAnswerPath) {
+
+    public String savedViewModel;
+    public String savedLayout;
+    public String savedViewClass;
+    public String pathForViewClass; // the Jetpack Views class
+    public String pathViewModel; // the Jetpack Views
+    public String fileToGenerate;
+    public Assistant assistant;
+    public OpenAiChatWithAugmentor(String apiKey, String modelName, String documentsPath) {
         this.theApiKey = apiKey;
         this.theModelName = modelName;
-        this.theFilesPath = documentsPath;
-        this.answerPath = answerPath;
-        this.processedAnswerPath = processedAnswerPath;
+        this.documentsPath = documentsPath;
+        fileToGenerate = PREFIX + SUFFIX;
+        pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
+        pathViewModel = documentsPath  + "/" + PREFIX + "ViewModel.kt";
+        
+        String pathLayout = documentsPath  + "/" + LAYOUT;
+        
+        savedViewClass = Utils.readFullFile(pathForViewClass);
+        savedViewModel = Utils.readFullFile(pathViewModel);
+        savedLayout = Utils.readFullFile(pathLayout);
+        assistant = createAssistant();
+    }
+    public void askQuestions() {
+        String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + fileToGenerate + ".txt";
+        String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + fileToGenerate + ".txt";
+        
+        String pathLayout = documentsPath  + "/" + LAYOUT;
+        
+        File f = new File(documentsPath);
+        if (f.exists()) {
+            System.out.println("Before setup ");
+            OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
+            String[] questions = chat.getQuestions();
+//            - provide Jetpack Compose Modifier extensions that implement the properties of the android xml styles file styles.xml
+//            - provide a jetpack compose composable function that implements the following layout xml file used in Jetpack Views using those Compose Theme and Modifiers
+            String[] answers = new String[questions.length];
+            for (int i = 0; i < questions.length; i++) {
+//                System.out.println("\n\n****************************************************************************************");
+                String question = questions[i];
+//                System.out.println("QUESTION: " + question);
+                answers[i] = chat.assistant.answer(question);
+                System.out.println("ANSWER: " + answers[i]);
+                String secondQuestion = 
+                    """
+                    Now do a second pass and provide:
+                    1. a **more exact `HomeButtonsState` reducer** that mirrors every `collect {}` branch from the fragment one-by-one, and  
+                    2. a **full `MainActivityViewModel` Compose bridge** so your shared flows like `locationEnabledFlow`, `roofLightFlow`, `zoneFlow`, `shortBreakStatus`, etc. are integrated into the Compose screen exactly like the fragment did.
+                    """; 
+                String secondAnswer = chat.assistant.answer(secondQuestion);
+                System.out.println("\n****************************************************************************************");
+                System.out.println("2nd. ANSWER: " + secondAnswer);
+            }
+            System.out.println("\n\n****************************************************************************************");
+        }
+    }
+    protected String[] getQuestions() {
+            String[] questions = {
+            "1. provide a jetpack Compose composable that implements the following jetpack views class \n" +
+            savedViewClass +
+            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" + 
+            savedViewModel +
+            "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
+            "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
+            "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
+            "6. provide a full `" + PREFIX + "ButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<" + PREFIX + "UiEffect>` instead of multiple event types\n" +
+            "7. Provide a compose CustomDialog implementation based on the custom_dialog.xml file and the dialog implemented in the CustomDialog.kt file \n" +
+            "8. Provide also a `" + PREFIX + "ButtonsState` with exact Compose button styling helpers matching the custom button component more closely \n" +
+            "Use only android and jetpack compose references\n"
+
+            };
+            return questions;
     }
     public Assistant createAssistant() {
 
-        List<Document> documents = FileSystemDocumentLoader.loadDocuments(theFilesPath, new TextDocumentParser());
+        List<Document> documents = FileSystemDocumentLoader.loadDocuments(documentsPath, new TextDocumentParser());
 
         EmbeddingModel embeddingModel = new BgeSmallEnV15QuantizedEmbeddingModel();
 

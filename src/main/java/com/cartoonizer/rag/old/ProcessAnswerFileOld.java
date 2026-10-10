@@ -1,13 +1,14 @@
 package com.cartoonizer.rag.old;
 
-import com.cartoonizer.rag.shared.utils.ContactCentralBlocks;
-import com.cartoonizer.rag.shared.utils.DashboardBlocks;
-import static com.cartoonizer.rag.shared.utils.GeneralAnswerProcessor.PREFIX;
-import com.cartoonizer.rag.shared.utils.GeneralBlocks;
-import com.cartoonizer.rag.shared.utils.InfoDispatchBlocks;
-import com.cartoonizer.rag.shared.utils.ReadFile;
-import com.cartoonizer.rag.shared.utils.IGeneralBlocks;
-import com.cartoonizer.rag.shared.utils.LoginUserBlocks;
+import com.cartoonizer.rag.utils.ContactCentralBlocks;
+import com.cartoonizer.rag.utils.DashboardBlocks;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.*;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
+import com.cartoonizer.rag.utils.GeneralBlocks;
+import com.cartoonizer.rag.utils.InfoDispatchBlocks;
+import com.cartoonizer.rag.utils.ReadFile;
+import com.cartoonizer.rag.utils.IGeneralBlocks;
+import com.cartoonizer.rag.utils.LoginUserBlocks;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,8 +35,8 @@ public class ProcessAnswerFileOld {
 
         public static void processAll() {
             FILE_NAME = PREFIX + "Fragment.txt";
-            String answerPath = "./output-files/" + FILE_NAME;
-            String processedAnswerPath = "./processed-files/processed-" + FILE_NAME;
+            String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + FILE_NAME;
+            String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + FILE_NAME;
             ReadFile reader = new AnswerProcessor(answerPath, processedAnswerPath);
             reader.load();
         }

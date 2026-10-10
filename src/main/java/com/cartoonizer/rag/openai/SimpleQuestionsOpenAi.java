@@ -1,7 +1,7 @@
 package com.cartoonizer.rag.openai;
 
-import com.cartoonizer.rag.shared.utils.ApiKeys;
-import com.cartoonizer.rag.shared.utils.ModelNames;
+import com.cartoonizer.rag.utils.ApiKeys;
+import com.cartoonizer.rag.utils.ModelNames;
 import java.io.File;
 
 public class SimpleQuestionsOpenAi {

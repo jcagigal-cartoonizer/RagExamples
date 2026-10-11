@@ -1,16 +1,13 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FIRST_PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAST_PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.getIface;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldIgnore;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
@@ -36,8 +33,8 @@ public class GenerateComposeFiles {
                 continue;
             }
             FILE_NAME = PREFIX + "Fragment.txt";
-            String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + FILE_NAME;
-            String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + FILE_NAME;
+            String answerPath = ANSWER_FOLDER + "/" + FILE_NAME;
+            String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + FILE_NAME;
             if (!new File(answerPath).exists() || !new File(processedAnswerPath).exists()) {
                 System.out.println("==> GenerateNavigationFiles MISSING " + answerPath + " or " + processedAnswerPath);
                 continue;
@@ -57,7 +54,7 @@ public class GenerateComposeFiles {
         for (Entry<String, Integer> entry : GenerateFiles.closedFiles.entrySet()) {
             System.out.println("GenerateComposeFiles CLOSED " + entry.getKey() + " " + entry.getValue());
         }
-        RemoveFilesWithoutContent purge = new RemoveFilesWithoutContent(new File(GENERATED_FILES_WITH_ASSISTANT), true);
+        RemoveFilesWithoutContent purge = new RemoveFilesWithoutContent(new File(GENERATED_FILES), true);
         purge.process();
         System.out.println("*** GenerateComposeFiles filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);
         System.out.println("*** fGenerateComposeFiles ilesProcessed = " + filesProcessed + " of " + totalFiles);

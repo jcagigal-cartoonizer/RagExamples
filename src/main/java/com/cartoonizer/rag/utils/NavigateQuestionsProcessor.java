@@ -8,9 +8,9 @@ import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 
@@ -25,7 +25,7 @@ public class NavigateQuestionsProcessor {
             if (shouldSkip(i)) {
                 continue;
             }
-            new NavigateQuestionsProcessor(GENERATED_FILES_WITH_ASSISTANT + "/ui/screen").askQuestions();
+            new NavigateQuestionsProcessor(GENERATED_FILES + "/ui/screen").askQuestions();
             processedFiles++;
             try {
                 Thread.sleep(1000);
@@ -45,8 +45,8 @@ public class NavigateQuestionsProcessor {
     }
 
     public void askQuestions() {
-        String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/navigation/" + fileToGenerate + ".txt";
-        String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/navigation/processed-" + fileToGenerate + ".txt";        
+        String answerPath = ANSWER_FOLDER + "/navigation/" + fileToGenerate + ".txt";
+        String processedAnswerPath = PROCESSED_FOLDER + "/navigation/processed-" + fileToGenerate + ".txt";        
         System.out.println("Generate " + processedAnswerPath + " from " + pathForComposable);
         if (!new File(pathForComposable).exists()) {
             return;

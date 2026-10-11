@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -11,10 +11,10 @@ import java.util.HashMap;
 public class GenerateNavigationFragment {
 
     public static void main(String[] args) {
-        String outputPath = GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation";
+        String outputPath = GENERATED_FILES + "/compose/navigation";
         String prefix = ONLY_THIS;
         System.out.println("generateNavigationFragment " + outputPath + " prefix = " + prefix);
-        String screenPath = GENERATED_FILES_WITH_ASSISTANT + "/ui/screen/" + prefix + "Screen.kt";
+        String screenPath = GENERATED_FILES + "/ui/screen/" + prefix + "Screen.kt";
         ExtractParametersFromScreen extractParametersFromScreen = new ExtractParametersFromScreen(screenPath, prefix);
         extractParametersFromScreen.load();
         System.out.println("*** ExtractParametersFromScreen numLiniesLlegides " + extractParametersFromScreen.numLiniesLlegides + " parameters " + extractParametersFromScreen.parameterNames.size());

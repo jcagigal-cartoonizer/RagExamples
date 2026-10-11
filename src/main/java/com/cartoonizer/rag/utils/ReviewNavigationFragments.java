@@ -2,7 +2,7 @@ package com.cartoonizer.rag.utils;
 
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FIRST_PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAST_PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
@@ -21,7 +21,7 @@ public class ReviewNavigationFragments extends ReadFile {
     }
     public static void reviewAllFragments() {
         String sourceFolder = "/Cagi/Portfolio/Compose/smarttdv3Compose/app/src/main/java/ifac/td/taxi/viewmodel/";
-        String destinationFolder = GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation/";
+        String destinationFolder = GENERATED_FILES + "/compose/navigation/";
         int totalFiles = 0;
         int processedFiles = 0;
         for (int i = 0; i < LAYOUTS.length; i++) {
@@ -91,6 +91,7 @@ public class ReviewNavigationFragments extends ReadFile {
         }
         public void createFromFunction(HashMap<Integer, String> numbered) {
             ArrayList<String> list = new ArrayList<>();
+            list.add("companion object {");
             list.add("    fun fromViewModel(viewModel: " + prefix + "ViewModel): " + prefix + "ComposeViewModel {");
             list.add("        val composeViewModel = " + prefix + "ComposeViewModel(");
             for (String parameterName : parameterNames.values()) {
@@ -101,6 +102,7 @@ public class ReviewNavigationFragments extends ReadFile {
             list.add("        return composeViewModel"); 
             list.add("    }"); 
             list.add("");
+            list.add("}");
             for (String string : list) {
                 numbered.put(numLines, string);
                 numLines++;
@@ -132,7 +134,8 @@ public class ReviewNavigationFragments extends ReadFile {
             for (String line : numberedLines.values()) {
                 newNumberedLines.put(numLines, line);
                 numLines++;
-                if ((line.contains(" : BaseViewModel(") || line.contains(") : ViewModel() {")) && !fromFunctionAdded) {
+                if ((line.contains(" : BaseViewModel(") || line.contains(") : ViewModel() {") ||
+                        line.contains(") : AndroidViewModel(")) && !fromFunctionAdded) {
                     System.out.println("==> fromFunctionAdded = false -> createFromFunction");
                     createFromFunction(newNumberedLines);
                 }
@@ -229,7 +232,7 @@ public class ReviewNavigationFragments extends ReadFile {
     public void end() {
         super.end();
         saveViewModel();
-        String src = GENERATED_FILES_WITH_ASSISTANT + "/compose/viewmodel/" + PREFIX + "ComposeViewModel.kt";
+        String src = GENERATED_FILES + "/compose/viewmodel/" + PREFIX + "ComposeViewModel.kt";
         String dst = src;
         saveComposeViewModel(src, dst);
     }

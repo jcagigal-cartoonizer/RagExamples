@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.HashMap;
@@ -13,8 +13,8 @@ public class CleanComposableFile extends ProcessFolder {
     public static void main(String[] args) {
 //        REPLACEMENT = "/clean-ui/";
 //        PATTERN = "/ui/";
-//        File path = new File(GENERATED_FILES_WITH_ASSISTANT + "/ui/screen");
-        File path = new File(GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation");
+//        File path = new File(GENERATED_FILES + "/ui/screen");
+        File path = new File(GENERATED_FILES + "/compose/navigation");
         REPLACEMENT = "/clean-ui/navigation/";
         PATTERN = "compose/navigation";
         CleanComposableFile extract = new CleanComposableFile(path);

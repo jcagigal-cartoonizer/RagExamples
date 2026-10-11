@@ -8,8 +8,8 @@ public class SharedViewModelQuestionsProcessor {
     public static void askQuestions() {
         String documentsPath = "./example-files";
         String fileToGenerate = "ComposeSharedViewModel";
-        String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + fileToGenerate + ".txt";
-        String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + fileToGenerate + ".txt";
+        String answerPath = ANSWER_FOLDER + "/" + fileToGenerate + ".txt";
+        String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + fileToGenerate + ".txt";
         
         String pathSharedViewModel = documentsPath  + "/MainActivityViewModel.kt";
         String savedSharedViewModel = Utils.readFullFile(pathSharedViewModel);

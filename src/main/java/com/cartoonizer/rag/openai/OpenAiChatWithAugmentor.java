@@ -18,10 +18,10 @@ import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import com.cartoonizer.rag.shared.Assistant;
 import com.cartoonizer.rag.utils.ApiKeys;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
+import com.cartoonizer.rag.utils.GeneralAnswerProcessor;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.SUFFIX;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.cartoonizer.rag.utils.Utils;
@@ -31,13 +31,13 @@ import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import java.io.File;
+import java.io.PrintWriter;
 import java.util.List;
 
 public class OpenAiChatWithAugmentor {
     public static void main(String[] args) {
         String documentsPath = "./example-files";
-        PREFIX = "Dashboard";
-        LAYOUT = "fragment_dashboard.xml";
+        PREFIX = GeneralAnswerProcessor.ONLY_THIS;
         OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
         chat.askQuestions();
     }
@@ -60,45 +60,56 @@ public class OpenAiChatWithAugmentor {
         pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
         pathViewModel = documentsPath  + "/" + PREFIX + "ViewModel.kt";
         
-        String pathLayout = documentsPath  + "/" + LAYOUT;
-        
         savedViewClass = Utils.readFullFile(pathForViewClass);
         savedViewModel = Utils.readFullFile(pathViewModel);
-        savedLayout = Utils.readFullFile(pathLayout);
         assistant = createAssistant();
     }
     public void askQuestions() {
-        String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + fileToGenerate + ".txt";
-        String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + fileToGenerate + ".txt";
-        
-        String pathLayout = documentsPath  + "/" + LAYOUT;
-        
+        String answerPath = ANSWER_FOLDER + "/" + fileToGenerate + ".txt";
+        String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + fileToGenerate + ".txt";
+                
         File f = new File(documentsPath);
         if (f.exists()) {
             System.out.println("Before setup ");
             OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
             String[] questions = chat.getQuestions();
-//            - provide Jetpack Compose Modifier extensions that implement the properties of the android xml styles file styles.xml
-//            - provide a jetpack compose composable function that implements the following layout xml file used in Jetpack Views using those Compose Theme and Modifiers
             String[] answers = new String[questions.length];
+            StringBuilder theAnswer= new StringBuilder();
             for (int i = 0; i < questions.length; i++) {
 //                System.out.println("\n\n****************************************************************************************");
                 String question = questions[i];
 //                System.out.println("QUESTION: " + question);
                 answers[i] = chat.assistant.answer(question);
+                theAnswer.append(answers[i]);
                 System.out.println("ANSWER: " + answers[i]);
-                String secondQuestion = 
-                    """
-                    Now do a second pass and provide:
-                    1. a **more exact `HomeButtonsState` reducer** that mirrors every `collect {}` branch from the fragment one-by-one, and  
-                    2. a **full `MainActivityViewModel` Compose bridge** so your shared flows like `locationEnabledFlow`, `roofLightFlow`, `zoneFlow`, `shortBreakStatus`, etc. are integrated into the Compose screen exactly like the fragment did.
-                    """; 
+                String secondQuestion = getSecondQuestion();
                 String secondAnswer = chat.assistant.answer(secondQuestion);
+                theAnswer.append(secondAnswer);
                 System.out.println("\n****************************************************************************************");
                 System.out.println("2nd. ANSWER: " + secondAnswer);
             }
+            saveAnswer(answerPath, theAnswer.toString());
             System.out.println("\n\n****************************************************************************************");
         }
+    }
+    public void saveAnswer(String path, String answer) {
+        PrintWriter writer = null;
+        try {
+            writer = new PrintWriter(path);
+            writer.print(answer);
+        } catch (Exception ex) {
+            System.out.println("*** OpenAiWithAugmentor ERROR writing " + path + ": " + ex);
+        } finally {
+            if (writer != null) {
+                writer.close();
+            }
+        }
+        
+    }
+    protected String getSecondQuestion() {
+        return "Now do a second pass and provide:" +
+                    "1. a **more exact `" + PREFIX + "ButtonsState` reducer** that mirrors every `collect {}` branch from the fragment one-by-one, and" +
+                    "2. a **full `" + PREFIX + "MainActivityViewModel` Compose bridge** so your shared flows are integrated into the Compose screen exactly like the fragment did"; 
     }
     protected String[] getQuestions() {
             String[] questions = {
@@ -107,11 +118,9 @@ public class OpenAiChatWithAugmentor {
             "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" + 
             savedViewModel +
             "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
-            "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
+            "4. Use dialog state, lifecycle collection of state/events for dialog handling but only if the viewModel uses a CustomDialog.\n" +
             "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
-            "6. provide a full `" + PREFIX + "ButtonsState` with exact button coloring/visibility matching the XML behavior and using `SharedFlow<" + PREFIX + "UiEffect>` instead of multiple event types\n" +
-            "7. Provide a compose CustomDialog implementation based on the custom_dialog.xml file and the dialog implemented in the CustomDialog.kt file \n" +
-            "8. Provide also a `" + PREFIX + "ButtonsState` with exact Compose button styling helpers matching the custom button component more closely \n" +
+            "6. provide a full `" + PREFIX + "ButtonsState` with exact button coloring/visibility matching the XML behavior and the custom button component and using `SharedFlow<" + PREFIX + "UiEffect>` instead of multiple event types\n" +
             "Use only android and jetpack compose references\n"
 
             };

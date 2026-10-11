@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import java.io.File;
 
 public class RemoveFilesWithoutContent extends ProcessFolder {
@@ -8,7 +8,7 @@ public class RemoveFilesWithoutContent extends ProcessFolder {
     public static int filesWithoutContent = 0;
     public boolean remove = false;
     public static void main(String[] args) {
-        String path = GENERATED_FILES_WITH_ASSISTANT;
+        String path = GENERATED_FILES;
         RemoveFilesWithoutContent reader = new RemoveFilesWithoutContent(new File(path));
         reader.process();
         System.out.println("*** filesWithContent = " + RemoveFilesWithoutContent.filesWithContent + " filesWithoutContent = " + RemoveFilesWithoutContent.filesWithoutContent);

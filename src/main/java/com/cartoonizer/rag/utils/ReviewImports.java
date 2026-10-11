@@ -1,7 +1,7 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.COPY_TO_APP_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.COPY_TO_APP;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FIRST_PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAST_PREFIX;
@@ -10,7 +10,7 @@ import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 import java.io.PrintWriter;
@@ -19,8 +19,8 @@ import java.util.HashMap;
 public class ReviewImports extends ReadFile {
 
     public static void main(String[] args) {
-        String sourceFolder = GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation/";
-        String destinationFolder = COPY_TO_APP_WITH_ASSISTANT + "/compose/navigation/";
+        String sourceFolder = GENERATED_FILES + "/compose/navigation/";
+        String destinationFolder = COPY_TO_APP + "/compose/navigation/";
         reviewAllImports(sourceFolder, destinationFolder);
     }
 

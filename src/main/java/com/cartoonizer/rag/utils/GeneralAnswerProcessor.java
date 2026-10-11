@@ -6,16 +6,20 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 public class GeneralAnswerProcessor extends ReadFile {
-    public static String ANSWER_FOLDER_WITH_ASSISTANT = "./output-files/with-assistant";
-    public static String PROCESSED_FOLDER_WITH_ASSISTANT = "./processed-files/with-assistant";
-    public static String GENERATED_FILES_WITH_ASSISTANT = "./generated-files-with-assistant";
-    public static String COPY_TO_APP_WITH_ASSISTANT = "./copy-to-app-with-assistant";
+    public static final String ANSWER_FOLDER_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/output-files/with-assistant";
+    public static final String PROCESSED_FOLDER_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples//processed-files/with-assistant";
+    public static final String GENERATED_FILES_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples//generated-files-with-assistant";
+    public static final String COPY_TO_APP_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples//copy-to-app-with-assistant";
+    public static String ANSWER_FOLDER = ANSWER_FOLDER_WITH_ASSISTANT;
+    public static String PROCESSED_FOLDER = PROCESSED_FOLDER_WITH_ASSISTANT;
+    public static String GENERATED_FILES = GENERATED_FILES_WITH_ASSISTANT;
+    public static String COPY_TO_APP = COPY_TO_APP_WITH_ASSISTANT;
     public static boolean shouldSkip(int idx) {
         boolean should = (!ONLY_THIS.isEmpty() && !PREFIX.equals(ONLY_THIS)) || (ONLY_THIS.isEmpty() && FIRST_PREFIX >= 0 && (idx < FIRST_PREFIX || idx > LAST_PREFIX));
         return should;
     }
     public static void main(String[] args) {
-        processAll(ANSWER_FOLDER_WITH_ASSISTANT, PROCESSED_FOLDER_WITH_ASSISTANT);
+        processAll(ANSWER_FOLDER, PROCESSED_FOLDER);
     }
     public static void processAll(String answerFolder, String processedFolder) {
         for (int i = 0; i < LAYOUTS.length; i++) {
@@ -36,12 +40,7 @@ public class GeneralAnswerProcessor extends ReadFile {
     public static String PREFIX = "ContactCentral";
     public static String SUFFIX = "Fragment";
     public static String LAYOUT = "fragment_contact_central.xml";
-//    public static String ONLY_THIS = "Home";
-//    public static String ONLY_THIS = "LoginUser";
-//    public static String ONLY_THIS = "ChangeDriverPin";
-//    public static String ONLY_THIS = "ChangeUserPassword";
-//    public static String ONLY_THIS = "SplashScreen";
-    public static String ONLY_THIS = "Dashboard";
+    public static String ONLY_THIS = "Welcome";
 //    public static String ONLY_THIS = "";
     public static int FIRST_PREFIX = -1;
     public static int LAST_PREFIX = -1;
@@ -523,13 +522,13 @@ public class GeneralAnswerProcessor extends ReadFile {
         blockFilesList = new String[blockFiles.size()];
         idx = 0;
         for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
-            String path = GENERATED_FILES_WITH_ASSISTANT + "/ui/screen/components/";
+            String path = GENERATED_FILES + "/ui/screen/components/";
             String fileName = entry.getValue();
             fileName = normalizeFileName(fileName);
             if (fileName.contains("Screen.kt")) {
-                path = GENERATED_FILES_WITH_ASSISTANT + "/ui/screen/";
+                path = GENERATED_FILES + "/ui/screen/";
             } else if (fileName.contains("ViewModel.kt")) {
-                path = GENERATED_FILES_WITH_ASSISTANT + "/compose/viewmodel/";
+                path = GENERATED_FILES + "/compose/viewmodel/";
             }
             blockFilesList[idx] = path + fileName;
             idx++;

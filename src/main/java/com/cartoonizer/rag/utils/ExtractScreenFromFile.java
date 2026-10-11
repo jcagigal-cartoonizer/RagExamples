@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.HashMap;
@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 public class ExtractScreenFromFile extends ProcessFolder {
 
     public static void main(String[] args) {
-        File path = new File(GENERATED_FILES_WITH_ASSISTANT + "/ui/screen");
+        File path = new File(GENERATED_FILES + "/ui/screen");
         ExtractScreenFromFile extract = new ExtractScreenFromFile(path);
         extract.process();
         System.out.println("==> ExtractScreenFromFile filesProcessed " + extract.filesProcessed);

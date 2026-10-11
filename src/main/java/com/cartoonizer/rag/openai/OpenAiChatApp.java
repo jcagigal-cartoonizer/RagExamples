@@ -5,8 +5,8 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.utils.ApiKeys;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.cartoonizer.rag.utils.Utils;
 import java.io.File;
@@ -36,8 +36,8 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         String documentsPath = Paths.get("./example-files").toAbsolutePath().normalize().toString();
 
         String fileToGenerate = "HomeFragment";
-        String answerPath = Paths.get(ANSWER_FOLDER_WITH_ASSISTANT).toAbsolutePath().normalize().toString() + "/" + fileToGenerate + ".txt";
-        String processedAnswerPath = Paths.get(PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-").toAbsolutePath().normalize().toString() + fileToGenerate + ".txt";
+        String answerPath = Paths.get(ANSWER_FOLDER).toAbsolutePath().normalize().toString() + "/" + fileToGenerate + ".txt";
+        String processedAnswerPath = Paths.get(PROCESSED_FOLDER + "/processed-").toAbsolutePath().normalize().toString() + fileToGenerate + ".txt";
         
         String pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
         String pathViewModel = documentsPath  + "/HomeViewModel.kt";

@@ -1,7 +1,7 @@
 package com.cartoonizer.rag.utils;
 
 import com.cartoonizer.rag.openai.OpenAiChat;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FIRST_PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAST_PREFIX;
@@ -10,7 +10,7 @@ import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.SUFFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
@@ -44,8 +44,8 @@ public class FragmentQuestionsProcessor {
         pathViewModel = documentsPath  + "/" + PREFIX + "ViewModel.kt";
     }
     public void askQuestions() {
-        String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + fileToGenerate + ".txt";
-        String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + fileToGenerate + ".txt";
+        String answerPath = ANSWER_FOLDER + "/" + fileToGenerate + ".txt";
+        String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + fileToGenerate + ".txt";
         
         String pathLayout = documentsPath  + "/" + LAYOUT;
         

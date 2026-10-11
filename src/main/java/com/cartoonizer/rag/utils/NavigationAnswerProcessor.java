@@ -1,13 +1,13 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
 import java.io.PrintWriter;
 import java.util.HashMap;
@@ -24,8 +24,8 @@ public class NavigationAnswerProcessor extends ReadFile {
             }
 //            FragmentAnswerProcessor.processAll();
             FILE_NAME = PREFIX + "NavigationFragment.txt";
-            String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + FILE_NAME;
-            String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + FILE_NAME;
+            String answerPath = ANSWER_FOLDER + "/" + FILE_NAME;
+            String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + FILE_NAME;
             ReadFile reader = new NavigationAnswerProcessor(answerPath, processedAnswerPath);
             reader.load();
         }
@@ -255,7 +255,7 @@ public class NavigationAnswerProcessor extends ReadFile {
         blockFilesList = new String[blockFiles.size()];
         idx = 0;
         for (Map.Entry<String, String> entry : blockFiles.entrySet()) {
-            String path = GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation/";
+            String path = GENERATED_FILES + "/compose/navigation/";
             String fileName = entry.getValue();
             fileName = normalizeFileName(fileName);
             blockFilesList[idx] = path + fileName;

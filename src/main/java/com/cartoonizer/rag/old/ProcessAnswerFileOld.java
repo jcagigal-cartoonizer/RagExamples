@@ -35,8 +35,8 @@ public class ProcessAnswerFileOld {
 
         public static void processAll() {
             FILE_NAME = PREFIX + "Fragment.txt";
-            String answerPath = ANSWER_FOLDER_WITH_ASSISTANT + "/" + FILE_NAME;
-            String processedAnswerPath = PROCESSED_FOLDER_WITH_ASSISTANT + "/processed-" + FILE_NAME;
+            String answerPath = ANSWER_FOLDER + "/" + FILE_NAME;
+            String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + FILE_NAME;
             ReadFile reader = new AnswerProcessor(answerPath, processedAnswerPath);
             reader.load();
         }

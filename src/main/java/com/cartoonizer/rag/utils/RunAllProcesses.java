@@ -1,7 +1,7 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.COPY_TO_APP_WITH_ASSISTANT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES_WITH_ASSISTANT;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.COPY_TO_APP;
+import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
 import java.io.File;
 import java.io.IOException;
@@ -44,8 +44,8 @@ public class RunAllProcesses {
         // Run ExtractScreenFromFile -> input generated-files/ui, output generated-files/clean-ui
         ExtractScreenFromFile.main(new String[0]);
         // COPY from generated-files/clean-ui to generated-files/ui
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/extracted/ui/screen", GENERATED_FILES_WITH_ASSISTANT + "/ui/screen", GeneralAnswerProcessor.ONLY_THIS);
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/extracted/ui/screen/components", GENERATED_FILES_WITH_ASSISTANT + "/ui/screen/components", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/extracted/ui/screen", GENERATED_FILES + "/ui/screen", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/extracted/ui/screen/components", GENERATED_FILES + "/ui/screen/components", GeneralAnswerProcessor.ONLY_THIS);
 
         // Run GenerateNavigationFragment -> input output-files/navigation and processed-files/navigation, output generated-files/compose/navigation
         GenerateNavigationFragment.main(new String[0]);
@@ -53,22 +53,22 @@ public class RunAllProcesses {
         // Run CleanComposableFile -> input generated-files/compose/navigation, output generated-files/clean-ui/navigation
         CleanComposableFile.main(new String[0]);
         // COPY from generated-files/clean-ui/navigation to generated-files/compose/navigation
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/clean-ui/navigation", GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/clean-ui/navigation", GENERATED_FILES + "/compose/navigation", GeneralAnswerProcessor.ONLY_THIS);
 
         ReviewNavigationFragments.reviewAllFragments();
 
         // Run ReviewImports
         ReviewImports.main(new String[0]);
 
-        DeleteComposeInNavigation deleteFiles = new DeleteComposeInNavigation(new File(GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation"));
+        DeleteComposeInNavigation deleteFiles = new DeleteComposeInNavigation(new File(GENERATED_FILES + "/compose/navigation"));
         deleteFiles.process();
-        deleteFiles = new DeleteComposeInNavigation(new File(COPY_TO_APP_WITH_ASSISTANT + "/compose/viewmodel"));
+        deleteFiles = new DeleteComposeInNavigation(new File(COPY_TO_APP + "/compose/viewmodel"));
         deleteFiles.process();
 
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/ui/screen", COPY_TO_APP_WITH_ASSISTANT + "/ui/screen", GeneralAnswerProcessor.ONLY_THIS);
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/ui/screen/components", COPY_TO_APP_WITH_ASSISTANT + "/ui/screen/components", GeneralAnswerProcessor.ONLY_THIS);
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/compose/navigation", COPY_TO_APP_WITH_ASSISTANT + "/compose/navigation", GeneralAnswerProcessor.ONLY_THIS);
-        copyNeededFiles(GENERATED_FILES_WITH_ASSISTANT + "/compose/viewmodel", COPY_TO_APP_WITH_ASSISTANT + "/compose/viewmodel", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/ui/screen", COPY_TO_APP + "/ui/screen", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/ui/screen/components", COPY_TO_APP + "/ui/screen/components", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/compose/navigation", COPY_TO_APP + "/compose/navigation", GeneralAnswerProcessor.ONLY_THIS);
+        copyNeededFiles(GENERATED_FILES + "/compose/viewmodel", COPY_TO_APP + "/compose/viewmodel", GeneralAnswerProcessor.ONLY_THIS);
 
     }
 

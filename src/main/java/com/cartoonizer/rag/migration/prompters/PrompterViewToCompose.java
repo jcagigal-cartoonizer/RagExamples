@@ -29,16 +29,21 @@ public class PrompterViewToCompose {
     public List<Document> documents;
     public String answerPath;
     public String processedAnswerPath;
+    public boolean save;
     
     private PrompterViewToCompose() {
         
     }
     public PrompterViewToCompose(List<EmbeddingMatch<TextSegment>> relevantEmbeddings,ChatModel chatModel, List<Document> documents, String answerPath, String processedAnswerPath) {
+        this(relevantEmbeddings, chatModel, documents, answerPath, processedAnswerPath, true);
+    }
+    public PrompterViewToCompose(List<EmbeddingMatch<TextSegment>> relevantEmbeddings,ChatModel chatModel, List<Document> documents, String answerPath, String processedAnswerPath, boolean save) {
         this.relevantEmbeddings = relevantEmbeddings;
         this.chatModel = chatModel;
         this.documents = documents;
         this.answerPath = answerPath;
         this.processedAnswerPath = processedAnswerPath;
+        this.save = save;
     }
     public String getPrompt(String question) {
         // Create a prompt for the model that includes question and relevant embeddings
@@ -63,20 +68,25 @@ public class PrompterViewToCompose {
         String answer = aiMessage.text();
         saveAnswer(answerPath, answer);
         if (answerPath != null && !answerPath.isEmpty() && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
-            AnswerProcessor reader = new AnswerProcessor(answerPath, processedAnswerPath);
+            AnswerProcessor reader = new AnswerProcessor(answerPath, processedAnswerPath, save);
             reader.load();
         }
         return answer;
     }
     public void saveAnswer(String path, String answer) {
-        PrintWriter writer = null;
-        try {
-            writer = new PrintWriter(path);
-            writer.print(answer);
-        } catch (Exception ex) {
-        } finally {
-            if (writer != null) {
-                writer.close();
+        if (path == null || path.isEmpty()) {
+            System.out.println("ANSWER:");
+            System.out.println(answer);
+        } else {
+            PrintWriter writer = null;
+            try {
+                writer = new PrintWriter(path);
+                writer.print(answer);
+            } catch (Exception ex) {
+            } finally {
+                if (writer != null) {
+                    writer.close();
+                }
             }
         }
         

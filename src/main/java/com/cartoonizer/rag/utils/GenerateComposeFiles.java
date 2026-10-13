@@ -119,10 +119,10 @@ public class GenerateComposeFiles {
 //            System.out.println("*** currentFile = " + currentFile);
 //            System.out.println("=== outputPath = " + outputPath);
             if (printAlways) {
-                if (line.contains("private val _uiState = ")) {
-                    print("    lateinit var buttonsState : " + PREFIX + "ButtonsState");
-                    print("    lateinit var dialogState : " + PREFIX + "DialogState");
-                }
+//                if (line.contains("private val _uiState = ")) {
+//                    print("    lateinit var buttonsState : " + PREFIX + "ButtonsState");
+//                    print("    lateinit var dialogState : " + PREFIX + "DialogState");
+//                }
                 line = addPrefixes(line);
                 line = addStrings(line);
                 if (line.trim().contains(" -> emitEffect(")) {

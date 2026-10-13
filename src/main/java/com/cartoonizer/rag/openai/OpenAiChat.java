@@ -58,10 +58,14 @@ public class OpenAiChat {
     public String answerPath;
     public String processedAnswerPath;
     public List<EmbeddingMatch<TextSegment>> relevantEmbeddings;
+    public boolean save;
     private long REQUEST_TIMEOUT_SECONDS = 120;
-    
     public String askQuestion(String question, int maxResults, double minScore) {
-
+        return askQuestion(question, maxResults, minScore, true);
+    }
+    
+    public String askQuestion(String question, int maxResults, double minScore, boolean save) {
+        this.save = save;
         // Embed the question
         Embedding questionEmbedding = embeddingModel.embed(question).content();
         
@@ -88,7 +92,7 @@ public class OpenAiChat {
         variables.put("question", question);
         variables.put("information", information);
 
-        PrompterViewToCompose prompter = new PrompterViewToCompose(relevantEmbeddings, chatModel, documents, answerPath, processedAnswerPath);
+        PrompterViewToCompose prompter = new PrompterViewToCompose(relevantEmbeddings, chatModel, documents, answerPath, processedAnswerPath, this.save);
 //        AiMessage aiMessage = chatModel.chat(prompt.toUserMessage()).aiMessage();
 //        String answer = aiMessage.text();
         

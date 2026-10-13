@@ -1,3 +1,5 @@
+package com.cartoonizer.rag.openai;
+
 
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
@@ -35,11 +37,22 @@ import java.io.PrintWriter;
 import java.util.List;
 
 public class OpenAiChatWithAugmentor {
+
+    public static String[] PREFIXES_AUGMENTOR = new String[]{
+        "Dashboard",
+        "ContactCentral",
+        "Home",
+        "InfoDispatch",
+        "DispatchReceived",
+        "LoginUser",};
+
     public static void main(String[] args) {
         String documentsPath = "./example-files";
-        PREFIX = GeneralAnswerProcessor.ONLY_THIS;
-        OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
-        chat.askQuestions();
+        for (int i = 0; i < PREFIXES_AUGMENTOR.length; i++) {
+            PREFIX = PREFIXES_AUGMENTOR[i];
+            OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
+            chat.askQuestions();
+        }
     }
     public String documentsPath;
     private String theApiKey;
@@ -52,39 +65,54 @@ public class OpenAiChatWithAugmentor {
     public String pathViewModel; // the Jetpack Views
     public String fileToGenerate;
     public Assistant assistant;
+
     public OpenAiChatWithAugmentor(String apiKey, String modelName, String documentsPath) {
         this.theApiKey = apiKey;
         this.theModelName = modelName;
         this.documentsPath = documentsPath;
         fileToGenerate = PREFIX + SUFFIX;
-        pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
-        pathViewModel = documentsPath  + "/" + PREFIX + "ViewModel.kt";
-        
+        pathForViewClass = documentsPath + "/" + fileToGenerate + ".kt";
+        pathViewModel = documentsPath + "/" + PREFIX + "ViewModel.kt";
+
         savedViewClass = Utils.readFullFile(pathForViewClass);
         savedViewModel = Utils.readFullFile(pathViewModel);
         assistant = createAssistant();
     }
+
     public void askQuestions() {
         String answerPath = ANSWER_FOLDER + "/" + fileToGenerate + ".txt";
         String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + fileToGenerate + ".txt";
-                
+
         File f = new File(documentsPath);
         if (f.exists()) {
             System.out.println("Before setup ");
             OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath);
             String[] questions = chat.getQuestions();
             String[] answers = new String[questions.length];
-            StringBuilder theAnswer= new StringBuilder();
+            StringBuilder theAnswer = new StringBuilder();
             for (int i = 0; i < questions.length; i++) {
 //                System.out.println("\n\n****************************************************************************************");
                 String question = questions[i];
 //                System.out.println("QUESTION: " + question);
                 answers[i] = chat.assistant.answer(question);
+                theAnswer.append("\n// FIRST ANSWER\n");
                 theAnswer.append(answers[i]);
                 System.out.println("ANSWER: " + answers[i]);
                 String secondQuestion = getSecondQuestion();
                 String secondAnswer = chat.assistant.answer(secondQuestion);
+                theAnswer.append("\n// SECOND ANSWER\n");
                 theAnswer.append(secondAnswer);
+
+                String thirdQuestion = getThirdQuestion();
+                String thirdAnswer = chat.assistant.answer(thirdQuestion);
+                theAnswer.append("\n// THIRD ANSWER\n");
+                theAnswer.append(thirdAnswer);
+
+                String fourthQuestion = getFourthQuestion();
+                String fourthAnswer = chat.assistant.answer(fourthQuestion);
+                theAnswer.append("\n// FOURTH ANSWER\n");
+                theAnswer.append(fourthAnswer);
+
                 System.out.println("\n****************************************************************************************");
                 System.out.println("2nd. ANSWER: " + secondAnswer);
             }
@@ -92,6 +120,7 @@ public class OpenAiChatWithAugmentor {
             System.out.println("\n\n****************************************************************************************");
         }
     }
+
     public void saveAnswer(String path, String answer) {
         PrintWriter writer = null;
         try {
@@ -104,28 +133,42 @@ public class OpenAiChatWithAugmentor {
                 writer.close();
             }
         }
-        
-    }
-    protected String getSecondQuestion() {
-        return "Now do a second pass and provide:" +
-                    "1. a **more exact `" + PREFIX + "ButtonsState` reducer** that mirrors every `collect {}` branch from the fragment one-by-one, and" +
-                    "2. a **full `" + PREFIX + "MainActivityViewModel` Compose bridge** so your shared flows are integrated into the Compose screen exactly like the fragment did"; 
-    }
-    protected String[] getQuestions() {
-            String[] questions = {
-            "1. provide a jetpack Compose composable that implements the following jetpack views class \n" +
-            savedViewClass +
-            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" + 
-            savedViewModel +
-            "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
-            "4. Use dialog state, lifecycle collection of state/events for dialog handling but only if the viewModel uses a CustomDialog.\n" +
-            "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
-            "6. provide a full `" + PREFIX + "ButtonsState` with exact button coloring/visibility matching the XML behavior and the custom button component and using `SharedFlow<" + PREFIX + "UiEffect>` instead of multiple event types\n" +
-            "Use only android and jetpack compose references\n"
 
-            };
-            return questions;
     }
+
+    protected String getSecondQuestion() {
+        return "Now do a second pass and provide:"
+                + "1. a **more exact `" + PREFIX + "ButtonsState` reducer** that mirrors every `collect {}` branch from the fragment one-by-one, and"
+                + "2. a **full `" + PREFIX + "MainActivityViewModel` Compose bridge** so your shared flows are integrated into the Compose screen exactly like the fragment did";
+    }
+
+    protected String getThirdQuestion() {
+        return "Please do a third pass and provide a fully compiled single-file Compose screen + both VMs\n";
+    }
+
+    protected String getFourthQuestion() {
+        return "Do one more refinement pass and make this **compile against your exact existing `MainActivityViewModel` and Safe Args classes** by:"
+                + " - replacing the placeholder `WelcomeMainActivityViewModel` with your real shared VM adapter,"
+                + " - wiring `NavDirections` instead of `navigate(R.id...)`,"
+                + " - and matching your exact custom button component API.";
+    }
+
+    protected String[] getQuestions() {
+        String[] questions = {
+            "1. provide a jetpack Compose composable that implements the following jetpack views class \n"
+            + savedViewClass
+            + "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n"
+            + savedViewModel
+            + "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n"
+            + "4. Use dialog state, lifecycle collection of state/events for dialog handling but only if the viewModel uses a CustomDialog.\n"
+            + "5. Use state holders/data classes to fully replace the fragment button logic. \n"
+            + "6. provide a full `" + PREFIX + "ButtonsState` with exact button coloring/visibility matching the XML behavior and the custom button component and using `SharedFlow<" + PREFIX + "UiEffect>` instead of multiple event types\n"
+            + "Use only android and jetpack compose references\n"
+
+        };
+        return questions;
+    }
+
     public Assistant createAssistant() {
 
         List<Document> documents = FileSystemDocumentLoader.loadDocuments(documentsPath, new TextDocumentParser());
@@ -176,5 +219,5 @@ public class OpenAiChatWithAugmentor {
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
                 .build();
     }
-    
+
 }

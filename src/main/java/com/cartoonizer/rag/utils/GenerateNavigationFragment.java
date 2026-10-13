@@ -109,8 +109,9 @@ public class GenerateNavigationFragment {
             import ifac.td.taxi.ui.screen.__PREFIX__Screen
             class __PREFIX__NavigationFragment : Fragment() {
             
-                private val viewModel: __PREFIX__ComposeViewModel by viewModel()
-            
+                private val viewModel: __PREFIX__ViewModel by viewModel()
+                private val composeViewModel: __PREFIX__ComposeViewModel.fromViewModel(viewModel)
+                val uiState = composeViewModel.uiState.value
                 override fun onCreateView(
                     inflater: LayoutInflater,
                     container: ViewGroup?,

@@ -46,11 +46,16 @@ public class ProcessAnswerFileOld {
             private boolean printAlways;
             private String processedAnswerPath;
             private PrintWriter writer;
-
+            private boolean save;
             public AnswerProcessor(String pathOrigen, String processedAnswerPath) {
+                this(pathOrigen, processedAnswerPath, true);
+            }
+
+            public AnswerProcessor(String pathOrigen, String processedAnswerPath, boolean save) {
                 super(pathOrigen);
+                this.save = save;
                 this.processedAnswerPath = processedAnswerPath;
-                if (processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
+                if (save && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
                     try {
                         writer = new PrintWriter(processedAnswerPath);
                     } catch (Exception ex) {

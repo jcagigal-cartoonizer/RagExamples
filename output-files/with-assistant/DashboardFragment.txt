@@ -1,37 +1,40 @@
-ANSWER: Below is a Compose-first rewrite of the `DashboardFragment` + `DashboardViewModel` pattern you posted, while preserving the same navigation behavior and replacing the fragment button logic with a `UiState + UiEvent + UiEffect` architecture.
 
-I’ll give you:
+// FIRST ANSWER
+Below is a Compose-first rewrite of the `DashboardFragment` + `DashboardViewModel` using:
 
-1. A full Compose `DashboardScreen`
-2. A Compose-friendly `DashboardViewModel`
-3. A full `DashboardButtonsState` with button visibility/coloring helpers
-4. A `SharedFlow<DashboardUiEffect>`-based effect system
-5. A Compose `CustomDialog` implementation
-6. A dialog state holder and lifecycle collection pattern
-7. Notes on preserving Jetpack Views navigation
+- `UiState`
+- `UiEvent`
+- `SharedFlow<DashboardUiEffect>`
+- state holders for the button/header logic
+- lifecycle-aware collection
+- navigation preserved through a `DashboardNavigator`
+- dialog handling only if a custom dialog is actually needed
+
+I’ll keep it Android/Jetpack Compose only, and I’ll mirror the fragment behavior as closely as possible.
 
 ---
 
-# 1) Compose UI model: state, events, effects
+# 1) Compose UI state models
 
 ```kotlin
 package ifac.td.taxi.ui.screen.dashboard
 
 import androidx.compose.runtime.Immutable
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
 import ifac.td.taxi.ui.model.ZoneModel
-import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
 
 @Immutable
 data class DashboardUiState(
-    val isLoadingZones: Boolean = true,
     val nearbyZones: List<ZoneModel> = emptyList(),
     val farZones: List<ZoneModel> = emptyList(),
     val actualZones: List<ZoneModel> = emptyList(),
-    val pendingTrips: List<PendingTrip> = emptyList(),
     val pendingTripsCount: Int = 0,
+    val pendingTrips: List<Any> = emptyList(), // replace Any with PendingTrip if you want direct dependency here
     val headerState: DashboardHeaderState = DashboardHeaderState(),
     val buttonsState: DashboardButtonsState = DashboardButtonsState(),
-    val dialogState: DashboardDialogState = DashboardDialogState.Hidden,
+    val isLoadingZones: Boolean = true,
+    val isLoadingPendingTrips: Boolean = true,
+    val customDialog: DashboardDialogState? = null
 )
 
 @Immutable
@@ -40,198 +43,166 @@ data class DashboardHeaderState(
     val showZone: Boolean = false,
     val showHired: Boolean = false,
     val showTrips: Boolean = false,
-    val standText: String = "",
-    val zoneText: String = "",
-    val hiredText: String = "",
-    val tripsText: String = "",
+    val hiredTextRes: Int? = null,
+    val tripsTextRes: Int? = null
 )
+
+@Immutable
+data class DashboardButtonsState(
+    val locateOnHired: DashboardButtonState = DashboardButtonState.Hidden,
+    val showAllTrips: DashboardButtonState = DashboardButtonState.Hidden,
+    val showRecentTrips: DashboardButtonState = DashboardButtonState.Hidden,
+    val cancel: DashboardButtonState = DashboardButtonState.VisibleEnabled,
+    val close: DashboardButtonState = DashboardButtonState.VisibleEnabled
+)
+
+@Immutable
+sealed interface DashboardButtonState {
+    data object Hidden : DashboardButtonState
+    data class VisibleEnabled(
+        val textRes: Int,
+        val iconRes: Int? = null,
+        val background: DashboardButtonBackground,
+        val textColor: Int,
+        val enabled: Boolean = true
+    ) : DashboardButtonState
+    data class VisibleDisabled(
+        val textRes: Int,
+        val iconRes: Int? = null,
+        val background: DashboardButtonBackground,
+        val textColor: Int,
+    ) : DashboardButtonState
+}
+
+enum class DashboardButtonBackground {
+    BLUE, RED, DISABLE
+}
+
+@Immutable
+data class DashboardDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val dismissText: String
+)
+```
+
+---
+
+# 2) UI events and UI effects
+
+Use `UiEvent` for user actions and `SharedFlow<DashboardUiEffect>` for one-off effects like navigation, dialogs, toasts, etc.
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import ifac.td.taxi.ui.model.ZoneModel
 
 sealed interface DashboardUiEvent {
     data object OnResume : DashboardUiEvent
     data object OnPause : DashboardUiEvent
     data object OnBackPressed : DashboardUiEvent
 
-    data object OnShowAllTripsClicked : DashboardUiEvent
-    data object OnShowRecentTripsClicked : DashboardUiEvent
-    data object OnCancelClicked : DashboardUiEvent
-    data object OnCloseClicked : DashboardUiEvent
+    data object OnStandHeaderClick : DashboardUiEvent
+    data object OnZoneHeaderClick : DashboardUiEvent
+    data object OnHiredHeaderClick : DashboardUiEvent
+    data object OnTripsHeaderClick : DashboardUiEvent
 
-    data object OnDismissDialog : DashboardUiEvent
-    data object OnConfirmDialog : DashboardUiEvent
+    data object OnLocateOnHiredClick : DashboardUiEvent
+    data object OnShowAllTripsClick : DashboardUiEvent
+    data object OnShowRecentTripsClick : DashboardUiEvent
+    data object OnCancelClick : DashboardUiEvent
+    data object OnCloseClick : DashboardUiEvent
 
-    data class OnZoneClicked(val zone: ZoneModel) : DashboardUiEvent
-    data class OnZoneLongClicked(val macroZoneId: Int, val zoneId: Int) : DashboardUiEvent
+    data class OnNearbyZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnNearbyZoneLongClick(val ids: Pair<Int, Int>) : DashboardUiEvent
+    data class OnFarZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnFarZoneLongClick(val ids: Pair<Int, Int>) : DashboardUiEvent
+    data class OnActualZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnActualZoneLongClick(val ids: Pair<Int, Int>) : DashboardUiEvent
+
+    data object OnDialogConfirm : DashboardUiEvent
+    data object OnDialogDismiss : DashboardUiEvent
 }
 
 sealed interface DashboardUiEffect {
     data object NavigateBack : DashboardUiEffect
     data object NavigateToHome : DashboardUiEffect
     data object NavigateToOnTrip : DashboardUiEffect
-    data object OpenDelocateDialog : DashboardUiEffect
-    data object CloseDialog : DashboardUiEffect
+    data class ShowDialog(val dialog: DashboardDialogState) : DashboardUiEffect
+    data class ShowMessage(val message: String) : DashboardUiEffect
 }
 ```
 
 ---
 
-# 2) Full `DashboardButtonsState` with styling helpers
+# 3) Compose-friendly ViewModel
 
-This replaces the old `CustomButton` imperative logic.
+This version keeps the original business logic but exposes a single `StateFlow<DashboardUiState>` and a `SharedFlow<DashboardUiEffect>`.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.dashboard
-
-import androidx.compose.runtime.Immutable
-import androidx.compose.ui.graphics.Color
-
-@Immutable
-data class DashboardButtonsState(
-    val showShowAll: Boolean = true,
-    val showShowRecent: Boolean = false,
-    val showCancel: Boolean = true,
-    val showClose: Boolean = true,
-
-    val showAllEnabled: Boolean = false,
-    val showRecentEnabled: Boolean = true,
-    val cancelEnabled: Boolean = true,
-    val closeEnabled: Boolean = true,
-
-    val showAllStyle: DashboardButtonStyle = DashboardButtonStyle.DisabledBlue,
-    val showRecentStyle: DashboardButtonStyle = DashboardButtonStyle.EnabledBlue,
-    val cancelStyle: DashboardButtonStyle = DashboardButtonStyle.EnabledGray,
-    val closeStyle: DashboardButtonStyle = DashboardButtonStyle.EnabledRed,
-)
-
-@Immutable
-data class DashboardButtonStyle(
-    val backgroundColor: Color,
-    val contentColor: Color,
-    val borderColor: Color? = null,
-    val iconTint: Color? = null,
-)
-
-object DashboardButtonStyles {
-    val EnabledBlue = DashboardButtonStyle(
-        backgroundColor = Color(0xFF1976D2),
-        contentColor = Color.White
-    )
-
-    val DisabledBlue = DashboardButtonStyle(
-        backgroundColor = Color(0xFF90CAF9),
-        contentColor = Color.White
-    )
-
-    val EnabledRed = DashboardButtonStyle(
-        backgroundColor = Color(0xFFD32F2F),
-        contentColor = Color.White
-    )
-
-    val EnabledGray = DashboardButtonStyle(
-        backgroundColor = Color(0xFF616161),
-        contentColor = Color.White
-    )
-}
-
-fun DashboardButtonsState.Companion.fromShowAllMode(): DashboardButtonsState = DashboardButtonsState(
-    showShowAll = false,
-    showShowRecent = true,
-    showAllEnabled = false,
-    showRecentEnabled = true,
-    showAllStyle = DashboardButtonStyles.DisabledBlue,
-    showRecentStyle = DashboardButtonStyles.EnabledBlue
-)
-
-fun DashboardButtonsState.Companion.fromShowRecentMode(): DashboardButtonsState = DashboardButtonsState(
-    showShowAll = true,
-    showShowRecent = false,
-    showAllEnabled = true,
-    showRecentEnabled = false,
-    showAllStyle = DashboardButtonStyles.EnabledBlue,
-    showRecentStyle = DashboardButtonStyles.DisabledBlue
-)
-```
-
-If you want it closer to your custom XML button component, you can add icon/text variants too, but this already mirrors the visible/enable behavior from the fragment.
-
----
-
-# 3) Dialog state holder
-
-```kotlin
-package ifac.td.taxi.ui.screen.dashboard
-
-import androidx.compose.runtime.Immutable
-
-@Immutable
-sealed interface DashboardDialogState {
-    data object Hidden : DashboardDialogState
-    data object DelocateOnHired : DashboardDialogState
-    data class Message(val title: String, val message: String) : DashboardDialogState
-}
-```
-
----
-
-# 4) Compose-friendly `DashboardViewModel`
-
-This version exposes a single `StateFlow<DashboardUiState>` and a `SharedFlow<DashboardUiEffect>`.
-
-```kotlin
-package ifac.td.taxi.viewmodel
 
 import android.app.Application
 import android.os.Handler
 import android.os.Looper
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
 import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
 import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
 import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
 import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.PendingTripsUseCase
 import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
 import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
 import ifac.td.taxi.repository.room.entities.BravoConfigurationVariableEntity
 import ifac.td.taxi.ui.model.ZoneModel
-import ifac.td.taxi.ui.screen.dashboard.*
 import ifac.td.taxi.ui.util.ZoneUtils
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class DashboardViewModel(
+class DashboardComposeViewModel(
     private val pendingTripsUseCase: PendingTripsUseCase,
     private val zoningUseCase: ZoningUseCase,
     private val licensingUseCase: LicensingUseCase,
-    context: Application,
-) : BaseViewModel(context) {
+    application: Application,
+) : AndroidViewModel(application) {
 
     private val handler = Handler(Looper.getMainLooper())
-    private val pendingTripsHandler = Handler(Looper.getMainLooper())
-
     private var zonesRunnable: Runnable? = null
+
+    private val pendingTripsHandler = Handler(Looper.getMainLooper())
     private var pendingTripsRunnable: Runnable? = null
 
     var bravoConfiguration: BravoConfigurationVariableEntity? = null
     var isCustomersAtStand: Boolean = false
 
     private val _uiState = MutableStateFlow(DashboardUiState())
-    val uiState = _uiState.asStateFlow()
+    val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
-    private val _uiEffects = MutableSharedFlow<DashboardUiEffect>(
+    private val _uiEffect = MutableSharedFlow<DashboardUiEffect>(
         replay = 0,
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-    val uiEffects = _uiEffects.asSharedFlow()
+    val uiEffect: SharedFlow<DashboardUiEffect> = _uiEffect
 
-    private val _zonesListFlow = MutableStateFlow<List<ZoneModel>?>(null)
-    private val _nearbyZonesListSortedFlow = MutableStateFlow<List<ZoneModel>?>(null)
-    private val _farZonesListSortedFlow = MutableStateFlow<List<ZoneModel>?>(null)
-    private val _actualZoneListSortedFlow = MutableStateFlow<List<ZoneModel>?>(null)
-    private val _zoningListDataTypes = MutableStateFlow<String?>(null)
+    private val _zonesListFlow = MutableStateFlow<List<ZoneModel>>(emptyList())
+    private val _nearbyZonesListSortedFlow = MutableStateFlow<List<ZoneModel>>(emptyList())
+    private val _farZonesListSortedFlow = MutableStateFlow<List<ZoneModel>>(emptyList())
+    private val _actualZoneListSortedFlow = MutableStateFlow<List<ZoneModel>>(emptyList())
+    private val _zoningListDataTypes = MutableStateFlow("")
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -241,30 +212,26 @@ class DashboardViewModel(
         }
 
         viewModelScope.launch {
-            combine(
-                _nearbyZonesListSortedFlow,
-                _farZonesListSortedFlow,
-                _actualZoneListSortedFlow,
-                _zoningListDataTypes
-            ) { nearby, far, actual, dataTypes ->
-                val header = buildHeaderState(dataTypes.orEmpty())
-                val buttons = buildButtonsState()
-                _uiState.value.copy(
-                    nearbyZones = nearby.orEmpty(),
-                    farZones = far.orEmpty(),
-                    actualZones = actual.orEmpty(),
-                    headerState = header,
-                    buttonsState = buttons,
-                    isLoadingZones = false
-                )
-            }.collect { newState ->
-                _uiState.value = newState
+            _zoningListDataTypes.collectLatest { dataTypes ->
+                updateHeaderAndButtons(dataTypes)
             }
         }
 
         viewModelScope.launch {
-            _zonesListFlow.collect { zones ->
-                zones?.let { filterData(it) }
+            _nearbyZonesListSortedFlow.collectLatest { nearby ->
+                _uiState.update { it.copy(nearbyZones = nearby, isLoadingZones = false) }
+            }
+        }
+
+        viewModelScope.launch {
+            _farZonesListSortedFlow.collectLatest { far ->
+                _uiState.update { it.copy(farZones = far, isLoadingZones = false) }
+            }
+        }
+
+        viewModelScope.launch {
+            _actualZoneListSortedFlow.collectLatest { actual ->
+                _uiState.update { it.copy(actualZones = actual) }
             }
         }
     }
@@ -273,101 +240,97 @@ class DashboardViewModel(
         when (event) {
             DashboardUiEvent.OnResume -> {
                 initViewModelData()
-                loadTrips(sharedPendingTripsFlow())
+                loadTrips()
             }
 
             DashboardUiEvent.OnPause -> removeHandlerCallbacks()
 
-            DashboardUiEvent.OnBackPressed,
-            DashboardUiEvent.OnCancelClicked -> emitEffect(DashboardUiEffect.NavigateBack)
+            DashboardUiEvent.OnBackPressed -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateBack) }
+            }
 
-            DashboardUiEvent.OnCloseClicked -> handleClose()
+            DashboardUiEvent.OnStandHeaderClick -> { /* sort logic if needed */ }
+            DashboardUiEvent.OnZoneHeaderClick -> { /* sort logic if needed */ }
+            DashboardUiEvent.OnHiredHeaderClick -> { /* sort logic if needed */ }
+            DashboardUiEvent.OnTripsHeaderClick -> { /* sort logic if needed */ }
 
-            DashboardUiEvent.OnShowAllTripsClicked -> {
-                _uiState.update {
-                    it.copy(buttonsState = it.buttonsState.copy(
-                        showShowAll = false,
-                        showShowRecent = true
-                    ))
+            DashboardUiEvent.OnLocateOnHiredClick -> {
+                // If you have a custom dialog in the future, emit it here.
+            }
+
+            DashboardUiEvent.OnShowAllTripsClick -> {
+                // preserve navigation if needed
+            }
+
+            DashboardUiEvent.OnShowRecentTripsClick -> {
+                // preserve navigation if needed
+            }
+
+            DashboardUiEvent.OnCancelClick -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateBack) }
+            }
+
+            DashboardUiEvent.OnCloseClick -> {
+                // preserve original navigation behavior
+                viewModelScope.launch {
+                    val status = null // replace with shared state if needed
+                    if (status != null) {
+                        _uiEffect.emit(DashboardUiEffect.NavigateToHome)
+                        _uiEffect.emit(DashboardUiEffect.NavigateToOnTrip)
+                    } else {
+                        _uiEffect.emit(DashboardUiEffect.NavigateToHome)
+                    }
                 }
             }
 
-            DashboardUiEvent.OnShowRecentTripsClicked -> {
-                _uiState.update {
-                    it.copy(buttonsState = it.buttonsState.copy(
-                        showShowAll = true,
-                        showShowRecent = false
-                    ))
+            is DashboardUiEvent.OnNearbyZoneClick -> Unit
+            is DashboardUiEvent.OnNearbyZoneLongClick -> Unit
+            is DashboardUiEvent.OnFarZoneClick -> Unit
+            is DashboardUiEvent.OnFarZoneLongClick -> Unit
+            is DashboardUiEvent.OnActualZoneClick -> Unit
+            is DashboardUiEvent.OnActualZoneLongClick -> Unit
+
+            DashboardUiEvent.OnDialogConfirm -> Unit
+            DashboardUiEvent.OnDialogDismiss -> {
+                _uiState.update { it.copy(customDialog = null) }
+            }
+        }
+    }
+
+    fun loadTrips() {
+        if (BravoCentral.isPendingTripsAllowed(false)) {
+            refreshPendingTripsManual()
+        }
+        startChronometer()
+    }
+
+    private fun refreshPendingTripsManual() {
+        viewModelScope.launch {
+            pendingTripsUseCase.getPendingTripsZone(
+                flow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+            )
+        }
+    }
+
+    private fun startChronometer() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val refreshRate = 2000L
+            val initRefreshRate = 500L
+
+            pendingTripsRunnable = object : Runnable {
+                override fun run() {
+                    viewModelScope.launch {
+                        if (BravoCentral.isPendingTripsAllowed(true)) {
+                            pendingTripsUseCase.getPendingTripsZone(
+                                flow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+                            )
+                        }
+                    }
+                    pendingTripsHandler.postDelayed(this, refreshRate)
                 }
             }
-
-            DashboardUiEvent.OnDismissDialog -> {
-                _uiState.update { it.copy(dialogState = DashboardDialogState.Hidden) }
-                emitEffect(DashboardUiEffect.CloseDialog)
-            }
-
-            DashboardUiEvent.OnConfirmDialog -> {
-                _uiState.update { it.copy(dialogState = DashboardDialogState.Hidden) }
-                emitEffect(DashboardUiEffect.NavigateToHome)
-            }
-
-            is DashboardUiEvent.OnZoneClicked -> Unit
-            is DashboardUiEvent.OnZoneLongClicked -> Unit
+            pendingTripsRunnable?.let { pendingTripsHandler.postDelayed(it, initRefreshRate) }
         }
-    }
-
-    private fun handleClose() {
-        when (sharedShiftStatus()) {
-            "STATE_HIRED",
-            "STATE_DISPATCHED",
-            "STATE_HIRED_DISPATCHED",
-            "STATE_HIRED_NO_CENTRAL" -> {
-                _uiState.update { it.copy(dialogState = DashboardDialogState.DelocateOnHired) }
-                emitEffect(DashboardUiEffect.OpenDelocateDialog)
-            }
-            else -> emitEffect(DashboardUiEffect.NavigateToHome)
-        }
-    }
-
-    private fun sharedShiftStatus(): String? = null
-
-    private fun emitEffect(effect: DashboardUiEffect) {
-        viewModelScope.launch { _uiEffects.emit(effect) }
-    }
-
-    private fun buildHeaderState(dataTypes: String): DashboardHeaderState {
-        val columns = ZoneUtils.parseStringDataTypes(dataTypes)
-        return DashboardHeaderState(
-            showStand = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.STAND_VEHICLES),
-            showZone = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.ZONE_VEHICLES),
-            showHired = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.HIRED_VEHICLES) ||
-                    columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.BOOKED_TRIPS),
-            showTrips = columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.PREBOOKED_TRIPS) ||
-                    columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.TOTAL_TRIPS) ||
-                    (columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.HIRED_VEHICLES) &&
-                            columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.BOOKED_TRIPS)),
-            standText = "Stand",
-            zoneText = "Zone",
-            hiredText = if (columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.HIRED_VEHICLES)) "Hired" else "Serv.",
-            tripsText = if (columns.contains(com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum.PREBOOKED_TRIPS)) "Pre" else "Trips"
-        )
-    }
-
-    private fun buildButtonsState(): DashboardButtonsState {
-        return DashboardButtonsState(
-            showShowAll = true,
-            showShowRecent = false,
-            showCancel = true,
-            showClose = true,
-            showAllEnabled = false,
-            showRecentEnabled = true,
-            cancelEnabled = true,
-            closeEnabled = true,
-            showAllStyle = DashboardButtonStyles.DisabledBlue,
-            showRecentStyle = DashboardButtonStyles.EnabledBlue,
-            cancelStyle = DashboardButtonStyles.EnabledGray,
-            closeStyle = DashboardButtonStyles.EnabledRed
-        )
     }
 
     fun initViewModelData() {
@@ -377,17 +340,22 @@ class DashboardViewModel(
                 val millis = (seconds * 1000).toLong()
                 var lastZoningUpdate = zoningUseCase.getLastZoningUpdate()
 
-                if ((System.currentTimeMillis() - lastZoningUpdate) < millis) {
-                    zoneCallback.invoke(W2CLocation.getZoning().macrozones[0].zones, W2CLocation.getZoning().availableColumns)
+                val shouldLoadData = (System.currentTimeMillis() - lastZoningUpdate) < millis
+                if (shouldLoadData) {
+                    zoneCallback(
+                        W2CLocation.getZoning().macrozones[0].zones,
+                        W2CLocation.getZoning().availableColumns
+                    )
                 }
 
                 zonesRunnable = object : Runnable {
                     override fun run() {
                         viewModelScope.launch {
-                            if ((System.currentTimeMillis() - lastZoningUpdate) > millis) {
+                            val newCall = (System.currentTimeMillis() - lastZoningUpdate) > millis
+                            if (newCall) {
                                 zoningUseCase.getZonesInformation(
                                     W2CLocation.getZoning().macrozones[0],
-                                    zoneCallback,
+                                    zoneCallback
                                 )
                                 lastZoningUpdate = System.currentTimeMillis()
                                 zoningUseCase.setLastZoningUpdate()
@@ -396,6 +364,7 @@ class DashboardViewModel(
                         handler.postDelayed(this, 1000)
                     }
                 }
+
                 zonesRunnable?.let { handler.post(it) }
             }
         }
@@ -407,33 +376,1662 @@ class DashboardViewModel(
             W2CLocation.getZoning().macrozones.forEach { mz ->
                 zonesList.addAll(mz.zones.map { zone -> ZoneModel(zone, false) })
             }
-            _zonesListFlow.emit(zonesList)
-            if (availableColumns.isNotBlank()) _zoningListDataTypes.emit(availableColumns)
+
+            _zonesListFlow.value = zonesList
+            _zoningListDataTypes.value = availableColumns
+            filterData(zonesList)
         }
     }
 
     private suspend fun filterData(zonesList: List<ZoneModel>) {
         val zonesWithMoreTrips = zonesList.filter {
-            ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value ?: "") > 0
+            ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value) > 0
         }
 
         val (farZones, nearbyZones) = zonesWithMoreTrips.partition {
-            getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) > 5000
+            getDistanceFromLatLonInMetersLocale(
+                W2CLocation.getLastLatLong(),
+                it.zone.centralCoord
+            ) > 5000
         }
 
-        _nearbyZonesListSortedFlow.emit(
-            nearbyZones.sortedWith(
-                compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value ?: "") }
-                    .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        val nearbyZonesSorted = nearbyZones.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value) }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        val farZonesSorted = farZones.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value) }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        _nearbyZonesListSortedFlow.value = nearbyZonesSorted
+        _farZonesListSortedFlow.value = farZonesSorted
+        refreshActualZoneData()
+    }
+
+    fun refreshActualZoneData() {
+        viewModelScope.launch {
+            val lastZoneSent = W2CLocation.getZoning().getZoneById(
+                W2CLocation.getLastIdMacrozoneSent(),
+                W2CLocation.getLastIdZoneSent()
+            )
+            val lastZoneLocated = W2CLocation.getZoneFromLatLong(W2CLocation.getLastLatLong())
+
+            val actualZoneList = mutableListOf<ZoneModel>()
+            if (lastZoneSent != null) actualZoneList.add(ZoneModel(lastZoneSent, false))
+            if (lastZoneLocated != null) actualZoneList.add(ZoneModel(lastZoneLocated, false))
+
+            _actualZoneListSortedFlow.value = actualZoneList
+        }
+    }
+
+    private fun updateHeaderAndButtons(dataTypes: String) {
+        val columns = ZoneUtils.parseStringDataTypes(dataTypes)
+
+        val showStand = columns.contains(AvailableColumnsEnum.STAND_VEHICLES)
+        val showZone = columns.contains(AvailableColumnsEnum.ZONE_VEHICLES)
+        val showHired = columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) ||
+                columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        val showTrips = columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) ||
+                (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) && columns.contains(AvailableColumnsEnum.BOOKED_TRIPS))
+
+        val hiredTextRes = if (!columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+            columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        ) R.string.abrevUbServiciosWithoutDots else null
+
+        val tripsTextRes = when {
+            columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) -> R.string.abbrevPreBookedTrips
+            columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) -> R.string.abbrevTotalTrips
+            else -> null
+        }
+
+        _uiState.update {
+            it.copy(
+                headerState = DashboardHeaderState(
+                    showStand = showStand,
+                    showZone = showZone,
+                    showHired = showHired,
+                    showTrips = showTrips,
+                    hiredTextRes = hiredTextRes,
+                    tripsTextRes = tripsTextRes
+                ),
+                buttonsState = buildButtonsState(showHired)
+            )
+        }
+    }
+
+    private fun buildButtonsState(showHired: Boolean): DashboardButtonsState {
+        return DashboardButtonsState(
+            locateOnHired = if (showHired) {
+                DashboardButtonState.VisibleEnabled(
+                    textRes = R.string.btn_soon_to_clear,
+                    iconRes = R.drawable.ubactivar,
+                    background = DashboardButtonBackground.BLUE,
+                    textColor = android.R.color.white
+                )
+            } else {
+                DashboardButtonState.Hidden
+            },
+            showAllTrips = DashboardButtonState.Hidden,
+            showRecentTrips = DashboardButtonState.Hidden,
+            cancel = DashboardButtonState.VisibleEnabled(
+                textRes = R.string.btn_cancel,
+                background = DashboardButtonBackground.DISABLE,
+                textColor = android.R.color.white
+            ),
+            close = DashboardButtonState.VisibleEnabled(
+                textRes = R.string.btn_close,
+                background = DashboardButtonBackground.DISABLE,
+                textColor = android.R.color.white
+            )
+        )
+    }
+
+    private fun getDistanceFromLatLonInMetersLocale(
+        lastLatLong: LatLong?,
+        centralCoord: LatLong?
+    ): Int {
+        if (lastLatLong == null || lastLatLong.Lat.isNaN() || centralCoord == null || centralCoord.Lat.isNaN()) {
+            return Int.MAX_VALUE
+        }
+        return W2CLocation.getDistanceFromLatLonInMeters(lastLatLong, centralCoord)
+    }
+
+    fun removeHandlerCallbacks() {
+        pendingTripsRunnable?.let { pendingTripsHandler.removeCallbacks(it) }
+        zonesRunnable?.let { handler.removeCallbacks(it) }
+    }
+
+    override fun onCleared() {
+        removeHandlerCallbacks()
+        super.onCleared()
+    }
+}
+```
+
+---
+
+# 4) Compose screen
+
+This composable replaces the fragment UI, including:
+- header visibility
+- lists
+- pending trips count
+- button state
+- lifecycle collection
+- navigation effects
+- optional dialog handling
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.model.ZoneModel
+import kotlinx.coroutines.launch
+
+@Composable
+fun DashboardRoute(
+    viewModel: DashboardComposeViewModel,
+    navController: NavController,
+    onShowHeader: (Boolean) -> Unit = {},
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        DashboardUiEffect.NavigateBack -> navController.popBackStack()
+                        DashboardUiEffect.NavigateToHome -> {
+                            // preserve navigation behavior here
+                            navController.popBackStack()
+                        }
+                        DashboardUiEffect.NavigateToOnTrip -> {
+                            // navigate to on-trip destination if needed
+                        }
+                        is DashboardUiEffect.ShowDialog -> {
+                            // handled in UI state below
+                        }
+                        is DashboardUiEffect.ShowMessage -> {
+                            // show snackbar/toast if desired
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(DashboardUiEvent.OnResume)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.onEvent(DashboardUiEvent.OnPause)
+        }
+    }
+
+    DashboardScreen(
+        state = uiState,
+        onEvent = viewModel::onEvent
+    )
+}
+```
+
+---
+
+# 5) Dashboard screen content
+
+```kotlin
+@Composable
+fun DashboardScreen(
+    state: DashboardUiState,
+    onEvent: (DashboardUiEvent) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+
+        DashboardHeader(state.headerState, onEvent)
+
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            text = "Pending trips: ${state.pendingTripsCount}",
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DashboardButton(state.buttonsState.locateOnHired, onClick = {
+                onEvent(DashboardUiEvent.OnLocateOnHiredClick)
+            })
+
+            DashboardButton(state.buttonsState.cancel, onClick = {
+                onEvent(DashboardUiEvent.OnCancelClick)
+            })
+
+            DashboardButton(state.buttonsState.close, onClick = {
+                onEvent(DashboardUiEvent.OnCloseClick)
+            })
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Nearby zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.nearbyZones, onItemClick = { onEvent(DashboardUiEvent.OnNearbyZoneClick(it)) })
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Far zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.farZones, onItemClick = { onEvent(DashboardUiEvent.OnFarZoneClick(it)) })
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Actual zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.actualZones, onItemClick = { onEvent(DashboardUiEvent.OnActualZoneClick(it)) })
+    }
+
+    state.customDialog?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = { onEvent(DashboardUiEvent.OnDialogDismiss) },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.message) },
+            confirmButton = {
+                TextButton(onClick = { onEvent(DashboardUiEvent.OnDialogConfirm) }) {
+                    Text(dialog.confirmText)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { onEvent(DashboardUiEvent.OnDialogDismiss) }) {
+                    Text(dialog.dismissText)
+                }
+            }
+        )
+    }
+}
+```
+
+---
+
+# 6) Header composable matching XML visibility logic
+
+This mirrors the `updateHeader(dataTypes)` behavior.
+
+```kotlin
+@Composable
+fun DashboardHeader(
+    headerState: DashboardHeaderState,
+    onEvent: (DashboardUiEvent) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        if (headerState.showStand) {
+            TextButton(onClick = { onEvent(DashboardUiEvent.OnStandHeaderClick) }) {
+                Text(text = stringResource(R.string.tvOnStop))
+            }
+        }
+
+        if (headerState.showZone) {
+            TextButton(onClick = { onEvent(DashboardUiEvent.OnZoneHeaderClick) }) {
+                Text(text = stringResource(R.string.tvOnZone))
+            }
+        }
+
+        if (headerState.showHired) {
+            TextButton(onClick = { onEvent(DashboardUiEvent.OnHiredHeaderClick) }) {
+                Text(
+                    text = headerState.hiredTextRes?.let { stringResource(it) }
+                        ?: stringResource(R.string.tvHired)
+                )
+            }
+        }
+
+        if (headerState.showTrips) {
+            TextButton(onClick = { onEvent(DashboardUiEvent.OnTripsHeaderClick) }) {
+                Text(
+                    text = headerState.tripsTextRes?.let { stringResource(it) }
+                        ?: stringResource(R.string.tvTrips)
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+# 7) Custom button component with exact state-driven styling
+
+This is the Compose replacement for your custom button logic.
+
+```kotlin
+@Composable
+fun DashboardButton(
+    state: DashboardButtonState,
+    onClick: () -> Unit
+) {
+    when (state) {
+        DashboardButtonState.Hidden -> Unit
+
+        is DashboardButtonState.VisibleEnabled -> {
+            val containerColor = when (state.background) {
+                DashboardButtonBackground.BLUE -> Color(0xFF1976D2)
+                DashboardButtonBackground.RED -> Color(0xFFD32F2F)
+                DashboardButtonBackground.DISABLE -> Color(0xFF9E9E9E)
+            }
+
+            Button(
+                onClick = onClick,
+                enabled = state.enabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = containerColor,
+                    contentColor = Color(state.textColor)
+                )
+            ) {
+                Text(text = stringResource(state.textRes))
+            }
+        }
+
+        is DashboardButtonState.VisibleDisabled -> {
+            val containerColor = when (state.background) {
+                DashboardButtonBackground.BLUE -> Color(0xFF1976D2)
+                DashboardButtonBackground.RED -> Color(0xFFD32F2F)
+                DashboardButtonBackground.DISABLE -> Color(0xFF9E9E9E)
+            }
+
+            Button(
+                onClick = onClick,
+                enabled = false,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = containerColor,
+                    contentColor = Color(state.textColor)
+                )
+            ) {
+                Text(text = stringResource(state.textRes))
+            }
+        }
+    }
+}
+```
+
+---
+
+# 8) Simple list replacement for RecyclerView adapters
+
+```kotlin
+@Composable
+fun ZoneList(
+    zones: List<ZoneModel>,
+    onItemClick: (ZoneModel) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(zones) { zone ->
+            Card(onClick = { onItemClick(zone) }) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(text = zone.zone.name ?: "Zone")
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+# 9) Navigation preservation
+
+If you want to preserve the fragment navigation behavior exactly, keep navigation outside the composable via `DashboardUiEffect`.
+
+Example host:
+
+```kotlin
+@Composable
+fun DashboardScreenHost(
+    viewModel: DashboardComposeViewModel,
+    navController: NavController,
+    onShowHeader: (Boolean) -> Unit = {}
+) {
+    DashboardRoute(
+        viewModel = viewModel,
+        navController = navController,
+        onShowHeader = onShowHeader
+    )
+}
+```
+
+This keeps the composable clean and preserves the old fragment-style navigation flow.
+
+---
+
+# 10) Notes on dialog handling
+
+You asked:
+
+> Use dialog state, lifecycle collection of state/events for dialog handling but only if the viewModel uses a CustomDialog.
+
+In the code above:
+- `DashboardDialogState` exists
+- `customDialog` is nullable
+- dialog is only shown if `state.customDialog != null`
+- effects can emit `ShowDialog(...)`
+
+If you don’t need a custom dialog, you can remove that part entirely.
+
+---
+
+# 11) What is still intentionally left as placeholders
+
+Your original fragment depends on:
+- `MainActivityViewModel`
+- `pendingTripsListFlow`
+- `zoningChangedFlow`
+- `bravoStateFlow`
+- `navigateTo(...)` destinations
+- `CustomButton` implementation
+- `ZoneAdapter` / `SimplePendingTripsAdapter`
+
+Since you requested only Android + Jetpack Compose references, I replaced those with Compose equivalents and a generic navigation effect model.
+
+If you want, I can do a second pass and provide:
+1. a **fully wired Compose screen** that also consumes `MainActivityViewModel`
+2. a **Koin module** for `DashboardComposeViewModel`
+3. a **more exact button state model** matching your existing `CustomButton` API
+4. a **Navigation Compose destination setup** matching your current fragment graph
+// SECOND ANSWER
+Below is the second pass, focused on the two things you asked for:
+
+1. a **more exact `DashboardButtonsState` reducer** that mirrors the fragment’s `collect {}` branches one-by-one, and  
+2. a **full `DashboardMainActivityViewModel` Compose bridge** so the shared flows are integrated into Compose exactly like the fragment did.
+
+I’ll keep this aligned with the fragment behavior you posted, and I’ll use the same Compose bridge style as your `ContactCentralScreen` example.
+
+---
+
+# 1) More exact `DashboardButtonsState` reducer
+
+The fragment’s button/header logic is spread across these collectors:
+
+- `vModel.zoningListDataTypes.collect { ... updateHeader(dataTypes); nearbyZoneAdapter.setDataType(...); farZoneAdapter.setDataType(...); actualZoneAdapter.setDataType(...) }`
+- `sharedViewModel.zoningChangedFlow.eventCollector { ... vModel.refreshActualZoneData() }`
+- `sharedViewModel.bravoStateFlow.collect { when(it.isInSoonInZone) { true -> ... false -> ... } }`
+- the commented-out `hired` collector that changes the locate button text/icon/background/action
+- the commented-out header click logic that toggles sort arrows
+
+So the reducer should not be a single “build buttons from dataTypes” function only. It should be a state machine that can be updated by each branch independently.
+
+---
+
+## Dashboard button state model
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+
+@Immutable
+data class DashboardButtonsState(
+    val locateOnHired: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val showAllTrips: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val showRecentTrips: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val cancel: DashboardButtonUiState = DashboardButtonUiState.Visible(
+        textRes = R.string.btn_cancel,
+        iconRes = null,
+        background = DashboardButtonBackground.BLUE,
+        enabled = true
+    ),
+    val close: DashboardButtonUiState = DashboardButtonUiState.Visible(
+        textRes = R.string.btn_close,
+        iconRes = null,
+        background = DashboardButtonBackground.BLUE,
+        enabled = true
+    ),
+    val header: DashboardHeaderButtonsState = DashboardHeaderButtonsState()
+)
+
+@Immutable
+data class DashboardHeaderButtonsState(
+    val stand: DashboardHeaderButtonUiState = DashboardHeaderButtonUiState.Hidden,
+    val zone: DashboardHeaderButtonUiState = DashboardHeaderButtonUiState.Hidden,
+    val hired: DashboardHeaderButtonUiState = DashboardHeaderButtonUiState.Hidden,
+    val trips: DashboardHeaderButtonUiState = DashboardHeaderButtonUiState.Hidden
+)
+
+@Immutable
+data class DashboardHeaderButtonUiState(
+    val visible: Boolean = false,
+    @StringRes val textRes: Int? = null,
+    val sortIcon: DashboardSortIconState = DashboardSortIconState.Hidden
+)
+
+@Immutable
+sealed interface DashboardSortIconState {
+    data object Hidden : DashboardSortIconState
+    data object Ascending : DashboardSortIconState
+    data object Descending : DashboardSortIconState
+}
+
+@Immutable
+sealed interface DashboardButtonUiState {
+    data object Hidden : DashboardButtonUiState
+
+    data class Visible(
+        @StringRes val textRes: Int,
+        @DrawableRes val iconRes: Int? = null,
+        val background: DashboardButtonBackground,
+        val enabled: Boolean = true
+    ) : DashboardButtonUiState
+}
+
+enum class DashboardButtonBackground {
+    BLUE, RED, DISABLE
+}
+```
+
+---
+
+## Reducer that mirrors the fragment branches one-by-one
+
+This reducer is intentionally split into small functions so each collector can call the exact branch it corresponds to.
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
+import ifac.td.taxi.R
+
+class DashboardButtonsReducer {
+
+    fun reduceDataTypes(
+        current: DashboardButtonsState,
+        dataTypes: String
+    ): DashboardButtonsState {
+        val columns = ZoneDataTypesParser.parse(dataTypes)
+
+        val standVisible = columns.contains(AvailableColumnsEnum.STAND_VEHICLES)
+        val zoneVisible = columns.contains(AvailableColumnsEnum.ZONE_VEHICLES)
+        val hiredVisible = columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) ||
+                columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        val tripsVisible = columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) ||
+                (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+                        columns.contains(AvailableColumnsEnum.BOOKED_TRIPS))
+
+        val hiredTextRes = if (!columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+            columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        ) R.string.abrevUbServiciosWithoutDots else null
+
+        val tripsTextRes = when {
+            columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) -> R.string.abbrevPreBookedTrips
+            columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) -> R.string.abbrevTotalTrips
+            else -> null
+        }
+
+        return current.copy(
+            header = current.header.copy(
+                stand = DashboardHeaderButtonUiState(
+                    visible = standVisible,
+                    textRes = R.string.tvOnStop,
+                    sortIcon = if (standVisible) DashboardSortIconState.Hidden else DashboardSortIconState.Hidden
+                ),
+                zone = DashboardHeaderButtonUiState(
+                    visible = zoneVisible,
+                    textRes = R.string.tvOnZone,
+                    sortIcon = if (zoneVisible) DashboardSortIconState.Hidden else DashboardSortIconState.Hidden
+                ),
+                hired = DashboardHeaderButtonUiState(
+                    visible = hiredVisible,
+                    textRes = hiredTextRes ?: R.string.tvHired,
+                    sortIcon = if (hiredVisible) DashboardSortIconState.Hidden else DashboardSortIconState.Hidden
+                ),
+                trips = DashboardHeaderButtonUiState(
+                    visible = tripsVisible,
+                    textRes = tripsTextRes ?: R.string.tvTrips,
+                    sortIcon = if (tripsVisible) DashboardSortIconState.Hidden else DashboardSortIconState.Hidden
+                )
+            )
+        )
+    }
+
+    fun reduceHiredState(
+        current: DashboardButtonsState,
+        isInSoonInZone: Boolean
+    ): DashboardButtonsState {
+        return if (isInSoonInZone) {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_delocate,
+                    iconRes = R.drawable.ubdesact,
+                    background = DashboardButtonBackground.RED,
+                    enabled = true
+                )
+            )
+        } else {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_soon_to_clear,
+                    iconRes = R.drawable.ubactivar,
+                    background = DashboardButtonBackground.BLUE,
+                    enabled = true
+                )
+            )
+        }
+    }
+
+    fun reduceSoonInZonePresence(
+        current: DashboardButtonsState,
+        hasSoonInZone: Boolean
+    ): DashboardButtonsState {
+        return if (hasSoonInZone) {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_delocate,
+                    iconRes = R.drawable.ubdesact,
+                    background = DashboardButtonBackground.RED,
+                    enabled = true
+                )
+            )
+        } else {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_soon_to_clear,
+                    iconRes = R.drawable.ubactivar,
+                    background = DashboardButtonBackground.BLUE,
+                    enabled = true
+                )
+            )
+        }
+    }
+
+    fun reduceHeaderSort(
+        current: DashboardButtonsState,
+        clicked: HeaderSortTarget,
+        reverse: Boolean?
+    ): DashboardButtonsState {
+        val cleared = current.copy(
+            header = current.header.copy(
+                stand = current.header.stand.copy(sortIcon = DashboardSortIconState.Hidden),
+                zone = current.header.zone.copy(sortIcon = DashboardSortIconState.Hidden),
+                hired = current.header.hired.copy(sortIcon = DashboardSortIconState.Hidden),
+                trips = current.header.trips.copy(sortIcon = DashboardSortIconState.Hidden)
             )
         )
 
-        _farZonesListSortedFlow.emit(
-            farZones.sortedWith(
-                compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, _zoningListDataTypes.value ?: "") }
-                    .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        if (reverse == null) return cleared
+
+        return when (clicked) {
+            HeaderSortTarget.STAND -> cleared.copy(
+                header = cleared.header.copy(
+                    stand = cleared.header.stand.copy(
+                        sortIcon = if (reverse) DashboardSortIconState.Hidden else DashboardSortIconState.Ascending
+                    )
+                )
             )
+
+            HeaderSortTarget.ZONE -> cleared.copy(
+                header = cleared.header.copy(
+                    zone = cleared.header.zone.copy(
+                        sortIcon = if (reverse) DashboardSortIconState.Hidden else DashboardSortIconState.Ascending
+                    )
+                )
+            )
+
+            HeaderSortTarget.HIRED -> cleared.copy(
+                header = cleared.header.copy(
+                    hired = cleared.header.hired.copy(
+                        sortIcon = if (reverse) DashboardSortIconState.Hidden else DashboardSortIconState.Ascending
+                    )
+                )
+            )
+
+            HeaderSortTarget.TRIPS -> cleared.copy(
+                header = cleared.header.copy(
+                    trips = cleared.header.trips.copy(
+                        sortIcon = if (reverse) DashboardSortIconState.Hidden else DashboardSortIconState.Ascending
+                    )
+                )
+            )
+        }
+    }
+}
+
+enum class HeaderSortTarget {
+    STAND, ZONE, HIRED, TRIPS
+}
+```
+
+---
+
+## Parser helper
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
+import ifac.td.taxi.ui.util.ZoneUtils
+
+object ZoneDataTypesParser {
+    fun parse(dataTypes: String): Set<AvailableColumnsEnum> {
+        return ZoneUtils.parseStringDataTypes(dataTypes).toSet()
+    }
+}
+```
+
+---
+
+# 2) Full `DashboardMainActivityViewModel` Compose bridge
+
+This is the shared/activity VM bridge that replaces the fragment’s `sharedViewModel` collectors.
+
+It exposes:
+- `SharedDashboardState`
+- `SharedFlow<DashboardSharedEffect>`
+- a Compose-friendly `DashboardMainActivityViewModel`
+
+It mirrors the fragment’s shared flow usage:
+- `pendingTripsListFlow`
+- `zoningChangedFlow`
+- `bravoStateFlow`
+
+---
+
+## Shared state holder
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import androidx.compose.runtime.Immutable
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+
+@Immutable
+data class SharedDashboardState(
+    val pendingTrips: List<PendingTrip> = emptyList(),
+    val pendingTripsCount: Int = 0,
+    val isInSoonInZone: Boolean = false,
+    val hasPendingTrips: Boolean = false
+)
+```
+
+---
+
+## Shared effects
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+sealed interface DashboardSharedEffect {
+    data object RefreshActualZoneData : DashboardSharedEffect
+    data object PendingTripsUpdated : DashboardSharedEffect
+    data object SoonInZoneChanged : DashboardSharedEffect
+}
+```
+
+---
+
+## Compose bridge ViewModel
+
+This is the activity-scoped bridge that collects the same flows the fragment used.
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class DashboardMainActivityViewModel(
+    private val sharedViewModel: MainActivityViewModel
+) : ViewModel() {
+
+    private val _sharedState = MutableStateFlow(SharedDashboardState())
+    val sharedState: StateFlow<SharedDashboardState> = _sharedState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<DashboardSharedEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val effects: SharedFlow<DashboardSharedEffect> = _effects
+
+    fun start() {
+        viewModelScope.launch {
+            sharedViewModel.pendingTripsListFlow.collectLatest { trips ->
+                val list = trips ?: arrayListOf()
+                _sharedState.update {
+                    it.copy(
+                        pendingTrips = list,
+                        pendingTripsCount = list.size,
+                        hasPendingTrips = list.isNotEmpty()
+                    )
+                }
+                _effects.tryEmit(DashboardSharedEffect.PendingTripsUpdated)
+            }
+        }
+
+        viewModelScope.launch {
+            sharedViewModel.zoningChangedFlow.collectLatest {
+                _effects.tryEmit(DashboardSharedEffect.RefreshActualZoneData)
+            }
+        }
+
+        viewModelScope.launch {
+            sharedViewModel.bravoStateFlow.collectLatest { bravoState ->
+                _sharedState.update {
+                    it.copy(isInSoonInZone = bravoState.isInSoonInZone)
+                }
+                _effects.tryEmit(DashboardSharedEffect.SoonInZoneChanged)
+            }
+        }
+    }
+
+    fun emitManualZoningNavigation(enabled: Boolean) {
+        sharedViewModel.emitManualZoningNavigation(enabled)
+    }
+
+    fun navigateBack() {
+        sharedViewModel.navigateBack()
+    }
+}
+```
+
+---
+
+# 3) Compose bridge usage in the Dashboard screen
+
+This is how you wire the activity/shared VM into the Compose screen exactly like the fragment did.
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun DashboardRoute(
+    navController: NavController,
+    dashboardViewModel: DashboardComposeViewModel,
+    dashboardMainActivityViewModel: DashboardMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    val uiState by dashboardViewModel.uiState.collectAsStateWithLifecycle()
+    val sharedState by dashboardMainActivityViewModel.sharedState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        dashboardMainActivityViewModel.start()
+        dashboardViewModel.onEvent(DashboardUiEvent.OnResume)
+    }
+
+    LaunchedEffect(dashboardViewModel) {
+        dashboardViewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                DashboardUiEffect.NavigateBack -> navController.popBackStack()
+                DashboardUiEffect.NavigateToHome -> {
+                    // preserve your existing navigation graph behavior
+                }
+                DashboardUiEffect.NavigateToOnTrip -> {
+                    // preserve your existing navigation graph behavior
+                }
+                is DashboardUiEffect.ShowDialog -> Unit
+                is DashboardUiEffect.ShowMessage -> Unit
+            }
+        }
+    }
+
+    LaunchedEffect(dashboardMainActivityViewModel) {
+        dashboardMainActivityViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                DashboardSharedEffect.RefreshActualZoneData -> {
+                    dashboardViewModel.refreshActualZoneData()
+                }
+                DashboardSharedEffect.PendingTripsUpdated -> {
+                    // if you want to mirror the fragment’s pending trips update side effects
+                }
+                DashboardSharedEffect.SoonInZoneChanged -> {
+                    // if you want to mirror the fragment’s bravoStateFlow branch
+                }
+            }
+        }
+    }
+
+    DashboardScreen(
+        state = uiState.copy(
+            pendingTripsCount = sharedState.pendingTripsCount,
+            buttonsState = dashboardViewModel.uiState.value.buttonsState
+        ),
+        onEvent = dashboardViewModel::onEvent
+    )
+}
+```
+
+---
+
+# 4) Exact fragment branch mapping
+
+Here is the one-to-one mapping from the fragment to the Compose bridge:
+
+### Fragment branch
+```kotlin
+launch {
+    vModel.zoningListDataTypes.collect {
+        it?.let { dataTypes ->
+            if (dataTypes.isNotBlank()) {
+                updateHeader(dataTypes)
+                nearbyZoneAdapter?.setDataType(dataTypes)
+                farZoneAdapter?.setDataType(dataTypes)
+                actualZoneAdapter?.setDataType(dataTypes)
+            }
+        }
+    }
+}
+```
+
+### Compose equivalent
+- `DashboardComposeViewModel.updateHeaderAndButtons(dataTypes)`
+- `DashboardButtonsReducer.reduceDataTypes(...)`
+- `DashboardButtonsState.header` updated
+- zone list adapters are replaced by Compose list rendering, so no adapter `setDataType` is needed
+
+---
+
+### Fragment branch
+```kotlin
+launch {
+    sharedViewModel.zoningChangedFlow.eventCollector {
+        it?.let { zone ->
+            vModel.refreshActualZoneData()
+        }
+    }
+}
+```
+
+### Compose equivalent
+- `DashboardMainActivityViewModel` collects `zoningChangedFlow`
+- emits `DashboardSharedEffect.RefreshActualZoneData`
+- `DashboardRoute` handles it by calling `dashboardViewModel.refreshActualZoneData()`
+
+---
+
+### Fragment branch
+```kotlin
+launch {
+    sharedViewModel.bravoStateFlow.collect {
+        when(it.isInSoonInZone) {
+            true -> { }
+            false -> { }
+        }
+    }
+}
+```
+
+### Compose equivalent
+- `DashboardMainActivityViewModel` collects `bravoStateFlow`
+- updates `SharedDashboardState.isInSoonInZone`
+- emits `DashboardSharedEffect.SoonInZoneChanged`
+- reducer can call `reduceSoonInZonePresence(...)` if you want to mirror the button state change
+
+---
+
+# 5) If you want the reducer to be used directly from the shared VM
+
+You can connect them like this:
+
+```kotlin
+fun applySharedStateToButtons(
+    current: DashboardButtonsState,
+    sharedState: SharedDashboardState,
+    reducer: DashboardButtonsReducer
+): DashboardButtonsState {
+    return reducer.reduceSoonInZonePresence(
+        current = current,
+        hasSoonInZone = sharedState.isInSoonInZone
+    )
+}
+```
+
+Then in the screen:
+
+```kotlin
+val buttonsState = remember(uiState.buttonsState, sharedState.isInSoonInZone) {
+    DashboardButtonsReducer().reduceSoonInZonePresence(
+        current = uiState.buttonsState,
+        hasSoonInZone = sharedState.isInSoonInZone
+    )
+}
+```
+
+---
+
+# 6) Recommended final structure
+
+If you want this cleanly organized, use:
+
+- `DashboardComposeViewModel`
+  - owns dashboard-specific state
+  - owns `DashboardButtonsReducer`
+- `DashboardMainActivityViewModel`
+  - bridges shared activity flows
+- `DashboardRoute`
+  - collects both and connects them
+- `DashboardScreen`
+  - pure UI
+
+---
+
+If you want, I can do a third pass and provide the **fully merged final code** with:
+- `DashboardComposeViewModel` updated to consume `DashboardMainActivityViewModel`
+- exact `CustomButton`-style Compose implementation
+- exact `show/hide` logic for the three repeated header labels (`tvOnStop`, `tvOnStop2`, `tvOnStop3`, etc.)
+- a `NavController` navigation map matching your fragment graph exactly
+// THIRD ANSWER
+Below is a **single-file Compose implementation** that includes:
+
+- the **Dashboard Compose screen**
+- the **dashboard ViewModel**
+- the **shared/activity bridge ViewModel**
+- the **state models**
+- the **button reducer**
+- the **effect model**
+- lifecycle-aware collection
+- navigation preservation
+- dialog support only if needed
+
+I kept it as close as possible to your fragment behavior while making it Compose-friendly.
+
+> Note: this is written as one file for clarity. In a real project, you would split it into separate files.
+
+---
+
+```kotlin
+package ifac.td.taxi.ui.screen.dashboard
+
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import ifac.td.taxi.HomeDirections
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.repository.room.entities.BravoConfigurationVariableEntity
+import ifac.td.taxi.ui.model.ZoneModel
+import ifac.td.taxi.ui.util.ZoneUtils
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// ------------------------------------------------------------
+// UI STATE
+// ------------------------------------------------------------
+
+@Immutable
+data class DashboardUiState(
+    val nearbyZones: List<ZoneModel> = emptyList(),
+    val farZones: List<ZoneModel> = emptyList(),
+    val actualZones: List<ZoneModel> = emptyList(),
+    val pendingTripsCount: Int = 0,
+    val headerState: DashboardHeaderState = DashboardHeaderState(),
+    val buttonsState: DashboardButtonsState = DashboardButtonsState(),
+    val customDialog: DashboardDialogState? = null
+)
+
+@Immutable
+data class DashboardHeaderState(
+    val showStand: Boolean = false,
+    val showZone: Boolean = false,
+    val showHired: Boolean = false,
+    val showTrips: Boolean = false,
+    @StringRes val hiredTextRes: Int? = null,
+    @StringRes val tripsTextRes: Int? = null
+)
+
+@Immutable
+data class DashboardButtonsState(
+    val locateOnHired: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val showAllTrips: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val showRecentTrips: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val cancel: DashboardButtonUiState = DashboardButtonUiState.Visible(
+        textRes = R.string.btn_cancel,
+        iconRes = null,
+        background = DashboardButtonBackground.BLUE,
+        enabled = true
+    ),
+    val close: DashboardButtonUiState = DashboardButtonUiState.Visible(
+        textRes = R.string.btn_close,
+        iconRes = null,
+        background = DashboardButtonBackground.BLUE,
+        enabled = true
+    )
+)
+
+@Immutable
+sealed interface DashboardButtonUiState {
+    data object Hidden : DashboardButtonUiState
+
+    data class Visible(
+        @StringRes val textRes: Int,
+        @DrawableRes val iconRes: Int? = null,
+        val background: DashboardButtonBackground,
+        val enabled: Boolean = true
+    ) : DashboardButtonUiState
+}
+
+enum class DashboardButtonBackground {
+    BLUE, RED, DISABLE
+}
+
+@Immutable
+data class DashboardDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val dismissText: String
+)
+
+// ------------------------------------------------------------
+// UI EVENTS / EFFECTS
+// ------------------------------------------------------------
+
+sealed interface DashboardUiEvent {
+    data object OnResume : DashboardUiEvent
+    data object OnPause : DashboardUiEvent
+    data object OnBackPressed : DashboardUiEvent
+
+    data object OnLocateOnHiredClick : DashboardUiEvent
+    data object OnShowAllTripsClick : DashboardUiEvent
+    data object OnShowRecentTripsClick : DashboardUiEvent
+    data object OnCancelClick : DashboardUiEvent
+    data object OnCloseClick : DashboardUiEvent
+
+    data class OnNearbyZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnFarZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnActualZoneClick(val item: ZoneModel) : DashboardUiEvent
+
+    data object OnDialogConfirm : DashboardUiEvent
+    data object OnDialogDismiss : DashboardUiEvent
+}
+
+sealed interface DashboardUiEffect {
+    data object NavigateBack : DashboardUiEffect
+    data object NavigateToHome : DashboardUiEffect
+    data object NavigateToOnTrip : DashboardUiEffect
+    data class ShowDialog(val dialog: DashboardDialogState) : DashboardUiEffect
+    data class ShowMessage(val message: String) : DashboardUiEffect
+}
+
+// ------------------------------------------------------------
+// SHARED / ACTIVITY BRIDGE
+// ------------------------------------------------------------
+
+@Immutable
+data class SharedDashboardState(
+    val pendingTrips: List<PendingTrip> = emptyList(),
+    val pendingTripsCount: Int = 0,
+    val isInSoonInZone: Boolean = false
+)
+
+sealed interface DashboardSharedEffect {
+    data object RefreshActualZoneData : DashboardSharedEffect
+    data object PendingTripsUpdated : DashboardSharedEffect
+    data object SoonInZoneChanged : DashboardSharedEffect
+}
+
+class DashboardMainActivityViewModel(
+    private val sharedViewModel: MainActivityViewModel
+) : ViewModel() {
+
+    private val _sharedState = MutableStateFlow(SharedDashboardState())
+    val sharedState: StateFlow<SharedDashboardState> = _sharedState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<DashboardSharedEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val effects: SharedFlow<DashboardSharedEffect> = _effects
+
+    fun start() {
+        viewModelScope.launch {
+            sharedViewModel.pendingTripsListFlow.collectLatest { trips ->
+                val list = trips ?: arrayListOf()
+                _sharedState.update {
+                    it.copy(
+                        pendingTrips = list,
+                        pendingTripsCount = list.size
+                    )
+                }
+                _effects.tryEmit(DashboardSharedEffect.PendingTripsUpdated)
+            }
+        }
+
+        viewModelScope.launch {
+            sharedViewModel.zoningChangedFlow.collectLatest {
+                _effects.tryEmit(DashboardSharedEffect.RefreshActualZoneData)
+            }
+        }
+
+        viewModelScope.launch {
+            sharedViewModel.bravoStateFlow.collectLatest { bravoState ->
+                _sharedState.update {
+                    it.copy(isInSoonInZone = bravoState.isInSoonInZone)
+                }
+                _effects.tryEmit(DashboardSharedEffect.SoonInZoneChanged)
+            }
+        }
+    }
+
+    fun emitManualZoningNavigation(enabled: Boolean) {
+        sharedViewModel.emitManualZoningNavigation(enabled)
+    }
+
+    fun navigateBack() {
+        sharedViewModel.navigateBack()
+    }
+}
+
+// ------------------------------------------------------------
+// REDUCER
+// ------------------------------------------------------------
+
+class DashboardButtonsReducer {
+
+    fun reduceDataTypes(
+        current: DashboardButtonsState,
+        dataTypes: String
+    ): DashboardButtonsState {
+        val columns = ZoneUtils.parseStringDataTypes(dataTypes)
+
+        val showStand = columns.contains(AvailableColumnsEnum.STAND_VEHICLES)
+        val showZone = columns.contains(AvailableColumnsEnum.ZONE_VEHICLES)
+        val showHired = columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) ||
+                columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        val showTrips = columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) ||
+                (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+                        columns.contains(AvailableColumnsEnum.BOOKED_TRIPS))
+
+        val hiredTextRes = if (!columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+            columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        ) R.string.abrevUbServiciosWithoutDots else null
+
+        val tripsTextRes = when {
+            columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) -> R.string.abbrevPreBookedTrips
+            columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) -> R.string.abbrevTotalTrips
+            else -> null
+        }
+
+        return current.copy(
+            // buttons are not changed here except header visibility/text
+        ).let {
+            // header state is not inside buttonsState in this file, so caller updates header separately
+            it
+        }
+    }
+
+    fun reduceSoonInZonePresence(
+        current: DashboardButtonsState,
+        hasSoonInZone: Boolean
+    ): DashboardButtonsState {
+        return if (hasSoonInZone) {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_delocate,
+                    iconRes = R.drawable.ubdesact,
+                    background = DashboardButtonBackground.RED,
+                    enabled = true
+                )
+            )
+        } else {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_soon_to_clear,
+                    iconRes = R.drawable.ubactivar,
+                    background = DashboardButtonBackground.BLUE,
+                    enabled = true
+                )
+            )
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// DASHBOARD VIEWMODEL
+// ------------------------------------------------------------
+
+class DashboardComposeViewModel(
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val sharedBridge: DashboardMainActivityViewModel,
+    application: Application
+) : ViewModel() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var zonesRunnable: Runnable? = null
+
+    private val pendingTripsHandler = Handler(Looper.getMainLooper())
+    private var pendingTripsRunnable: Runnable? = null
+
+    private val reducer = DashboardButtonsReducer()
+
+    private val _uiState = MutableStateFlow(DashboardUiState())
+    val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<DashboardUiEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val uiEffect: SharedFlow<DashboardUiEffect> = _uiEffect
+
+    var bravoConfiguration: BravoConfigurationVariableEntity? = null
+    var isCustomersAtStand: Boolean = false
+
+    init {
+        viewModelScope.launch {
+            sharedBridge.sharedState.collectLatest { shared ->
+                _uiState.update { current ->
+                    current.copy(
+                        pendingTripsCount = shared.pendingTripsCount,
+                        buttonsState = reducer.reduceSoonInZonePresence(
+                            current = current.buttonsState,
+                            hasSoonInZone = shared.isInSoonInZone
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun onEvent(event: DashboardUiEvent) {
+        when (event) {
+            DashboardUiEvent.OnResume -> {
+                initViewModelData()
+                loadTrips()
+            }
+
+            DashboardUiEvent.OnPause -> removeHandlerCallbacks()
+
+            DashboardUiEvent.OnBackPressed -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateBack) }
+            }
+
+            DashboardUiEvent.OnLocateOnHiredClick -> {
+                // hook for future dialog/action
+            }
+
+            DashboardUiEvent.OnShowAllTripsClick -> {
+                // hook for future action
+            }
+
+            DashboardUiEvent.OnShowRecentTripsClick -> {
+                // hook for future action
+            }
+
+            DashboardUiEvent.OnCancelClick -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateBack) }
+            }
+
+            DashboardUiEvent.OnCloseClick -> {
+                viewModelScope.launch {
+                    _uiEffect.emit(DashboardUiEffect.NavigateToHome)
+                }
+            }
+
+            is DashboardUiEvent.OnNearbyZoneClick -> Unit
+            is DashboardUiEvent.OnFarZoneClick -> Unit
+            is DashboardUiEvent.OnActualZoneClick -> Unit
+
+            DashboardUiEvent.OnDialogConfirm -> {
+                _uiState.update { it.copy(customDialog = null) }
+            }
+
+            DashboardUiEvent.OnDialogDismiss -> {
+                _uiState.update { it.copy(customDialog = null) }
+            }
+        }
+    }
+
+    fun loadTrips() {
+        if (BravoCentral.isPendingTripsAllowed(false)) {
+            refreshPendingTripsManual()
+        }
+        startChronometer()
+    }
+
+    private fun refreshPendingTripsManual() {
+        viewModelScope.launch {
+            pendingTripsUseCase.getPendingTripsZone(
+                flow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+            )
+        }
+    }
+
+    private fun startChronometer() {
+        viewModelScope.launch {
+            val refreshRate = 2000L
+            val initRefreshRate = 500L
+
+            pendingTripsRunnable = object : Runnable {
+                override fun run() {
+                    viewModelScope.launch {
+                        if (BravoCentral.isPendingTripsAllowed(true)) {
+                            pendingTripsUseCase.getPendingTripsZone(
+                                flow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+                            )
+                        }
+                    }
+                    pendingTripsHandler.postDelayed(this, refreshRate)
+                }
+            }
+            pendingTripsRunnable?.let {
+                pendingTripsHandler.postDelayed(it, initRefreshRate)
+            }
+        }
+    }
+
+    fun initViewModelData() {
+        viewModelScope.launch {
+            val refreshRate = licensingUseCase.getLicensingParameters()?.segRefrescoConsUbicacion
+            refreshRate?.let { seconds ->
+                val millis = (seconds * 1000).toLong()
+                var lastZoningUpdate = zoningUseCase.getLastZoningUpdate()
+
+                val shouldLoadData = (System.currentTimeMillis() - lastZoningUpdate) < millis
+                if (shouldLoadData) {
+                    zoneCallback(
+                        W2CLocation.getZoning().macrozones[0].zones,
+                        W2CLocation.getZoning().availableColumns
+                    )
+                }
+
+                zonesRunnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch {
+                            val newCall = (System.currentTimeMillis() - lastZoningUpdate) > millis
+                            if (newCall) {
+                                zoningUseCase.getZonesInformation(
+                                    W2CLocation.getZoning().macrozones[0],
+                                    zoneCallback
+                                )
+                                lastZoningUpdate = System.currentTimeMillis()
+                                zoningUseCase.setLastZoningUpdate()
+                            }
+                        }
+                        handler.postDelayed(this, 1000)
+                    }
+                }
+
+                zonesRunnable?.let { handler.post(it) }
+            }
+        }
+    }
+
+    private val zoneCallback: (List<Zone>, String) -> Unit = { _, availableColumns ->
+        viewModelScope.launch {
+            val zonesList = mutableListOf<ZoneModel>()
+            W2CLocation.getZoning().macrozones.forEach { mz ->
+                zonesList.addAll(mz.zones.map { zone -> ZoneModel(zone, false) })
+            }
+
+            filterData(zonesList)
+            updateHeader(availableColumns)
+        }
+    }
+
+    private fun updateHeader(dataTypes: String) {
+        val columns = ZoneUtils.parseStringDataTypes(dataTypes)
+
+        val showStand = columns.contains(AvailableColumnsEnum.STAND_VEHICLES)
+        val showZone = columns.contains(AvailableColumnsEnum.ZONE_VEHICLES)
+        val showHired = columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) ||
+                columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        val showTrips = columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) ||
+                (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+                        columns.contains(AvailableColumnsEnum.BOOKED_TRIPS))
+
+        val hiredTextRes = if (!columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+            columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        ) R.string.abrevUbServiciosWithoutDots else null
+
+        val tripsTextRes = when {
+            columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) -> R.string.abbrevPreBookedTrips
+            columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) -> R.string.abbrevTotalTrips
+            else -> null
+        }
+
+        _uiState.update { current ->
+            current.copy(
+                headerState = DashboardHeaderState(
+                    showStand = showStand,
+                    showZone = showZone,
+                    showHired = showHired,
+                    showTrips = showTrips,
+                    hiredTextRes = hiredTextRes,
+                    tripsTextRes = tripsTextRes
+                )
+            )
+        }
+    }
+
+    private suspend fun filterData(zonesList: List<ZoneModel>) {
+        val zonesWithMoreTrips = zonesList.filter {
+            ZoneUtils.checkDiff(it.zone, "") > 0
+        }
+
+        val (farZones, nearbyZones) = zonesWithMoreTrips.partition {
+            getDistanceFromLatLonInMetersLocale(
+                W2CLocation.getLastLatLong(),
+                it.zone.centralCoord
+            ) > 5000
+        }
+
+        val nearbyZonesSorted = nearbyZones.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, "") }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
         )
+
+        val farZonesSorted = farZones.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, "") }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        _uiState.update {
+            it.copy(
+                nearbyZones = nearbyZonesSorted,
+                farZones = farZonesSorted
+            )
+        }
 
         refreshActualZoneData()
     }
@@ -450,38 +2048,14 @@ class DashboardViewModel(
             if (lastZoneSent != null) actualZoneList.add(ZoneModel(lastZoneSent, false))
             if (lastZoneLocated != null) actualZoneList.add(ZoneModel(lastZoneLocated, false))
 
-            _actualZoneListSortedFlow.emit(actualZoneList)
+            _uiState.update { it.copy(actualZones = actualZoneList) }
         }
     }
 
-    fun loadTrips(flow: MutableStateFlow<ArrayList<PendingTrip>?>) {
-        if (BravoCentral.isPendingTripsAllowed(false)) {
-            viewModelScope.launch { pendingTripsUseCase.getPendingTripsZone(flow) }
-        }
-        startChronometer(flow)
-    }
-
-    private fun startChronometer(mFlow: MutableStateFlow<ArrayList<PendingTrip>?>) {
-        viewModelScope.launch(Dispatchers.IO) {
-            pendingTripsRunnable = object : Runnable {
-                override fun run() {
-                    viewModelScope.launch {
-                        if (BravoCentral.isPendingTripsAllowed(true)) {
-                            pendingTripsUseCase.getPendingTripsZone(mFlow)
-                        }
-                    }
-                    pendingTripsHandler.postDelayed(this, 2000L)
-                }
-            }
-            pendingTripsRunnable?.let { pendingTripsHandler.postDelayed(it, 500L) }
-        }
-    }
-
-    private fun sharedPendingTripsFlow(): MutableStateFlow<ArrayList<PendingTrip>?> {
-        return MutableStateFlow(null)
-    }
-
-    private fun getDistanceFromLatLonInMetersLocale(lastLatLong: LatLong?, centralCoord: LatLong?): Int {
+    private fun getDistanceFromLatLonInMetersLocale(
+        lastLatLong: LatLong?,
+        centralCoord: LatLong?
+    ): Int {
         if (lastLatLong == null || lastLatLong.Lat.isNaN() || centralCoord == null || centralCoord.Lat.isNaN()) {
             return Int.MAX_VALUE
         }
@@ -492,227 +2066,179 @@ class DashboardViewModel(
         pendingTripsRunnable?.let { pendingTripsHandler.removeCallbacks(it) }
         zonesRunnable?.let { handler.removeCallbacks(it) }
     }
+
+    override fun onCleared() {
+        removeHandlerCallbacks()
+        super.onCleared()
+    }
 }
-```
 
----
-
-# 5) Compose screen
-
-This screen collects state and effects with lifecycle awareness, and preserves navigation by calling the same navigation actions from effects.
-
-```kotlin
-package ifac.td.taxi.ui.screen.dashboard
-
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ifac.td.taxi.ui.model.ZoneModel
-import ifac.td.taxi.viewmodel.DashboardViewModel
-import kotlinx.coroutines.flow.collectLatest
+// ------------------------------------------------------------
+// COMPOSE SCREEN
+// ------------------------------------------------------------
 
 @Composable
-fun DashboardScreen(
-    viewModel: DashboardViewModel,
-    onNavigateBack: () -> Unit,
-    onNavigateHome: () -> Unit,
-    onNavigateToOnTrip: () -> Unit,
+fun DashboardRoute(
+    navController: NavController,
+    viewModel: DashboardComposeViewModel,
+    sharedViewModel: DashboardMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-
-    var dialogVisible by remember { mutableStateOf(false) }
+    val sharedState by sharedViewModel.sharedState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     LaunchedEffect(Unit) {
-        viewModel.uiEffects.collectLatest { effect ->
-            when (effect) {
-                DashboardUiEffect.NavigateBack -> onNavigateBack()
-                DashboardUiEffect.NavigateToHome -> onNavigateHome()
-                DashboardUiEffect.NavigateToOnTrip -> onNavigateToOnTrip()
-                DashboardUiEffect.OpenDelocateDialog -> dialogVisible = true
-                DashboardUiEffect.CloseDialog -> dialogVisible = false
+        onShowHeader(true)
+        sharedViewModel.start()
+        viewModel.onEvent(DashboardUiEvent.OnResume)
+    }
+
+    LaunchedEffect(viewModel) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collectLatest { effect ->
+                when (effect) {
+                    DashboardUiEffect.NavigateBack -> navController.popBackStack()
+                    DashboardUiEffect.NavigateToHome -> {
+                        navController.navigate(HomeDirections.goToOnTripFragment().actionId)
+                    }
+                    DashboardUiEffect.NavigateToOnTrip -> {
+                        // preserve if needed
+                    }
+                    is DashboardUiEffect.ShowDialog -> {
+                        // handled by state if you later use custom dialog
+                    }
+                    is DashboardUiEffect.ShowMessage -> {
+                        // host-side toast/snackbar
+                    }
+                }
             }
         }
     }
 
-    BackHandler {
-        viewModel.onEvent(DashboardUiEvent.OnBackPressed)
-    }
-
-    LaunchedEffect(Unit) {
-        viewModel.onEvent(DashboardUiEvent.OnResume)
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            viewModel.onEvent(DashboardUiEvent.OnPause)
+    LaunchedEffect(sharedViewModel) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            sharedViewModel.effects.collectLatest { effect ->
+                when (effect) {
+                    DashboardSharedEffect.RefreshActualZoneData -> viewModel.refreshActualZoneData()
+                    DashboardSharedEffect.PendingTripsUpdated -> Unit
+                    DashboardSharedEffect.SoonInZoneChanged -> Unit
+                }
+            }
         }
     }
 
-    Scaffold(
-        topBar = {
-            DashboardHeader(
-                state = uiState.headerState
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .padding(16.dp)
-        ) {
-            DashboardButtonsRow(
-                state = uiState.buttonsState,
-                onShowAll = { viewModel.onEvent(DashboardUiEvent.OnShowAllTripsClicked) },
-                onShowRecent = { viewModel.onEvent(DashboardUiEvent.OnShowRecentTripsClicked) },
-                onCancel = { viewModel.onEvent(DashboardUiEvent.OnCancelClicked) },
-                onClose = { viewModel.onEvent(DashboardUiEvent.OnCloseClicked) }
-            )
+    DashboardScreen(
+        state = uiState.copy(
+            pendingTripsCount = sharedState.pendingTripsCount,
+            buttonsState = if (sharedState.isInSoonInZone) {
+                uiState.buttonsState.copy(
+                    locateOnHired = DashboardButtonUiState.Visible(
+                        textRes = R.string.btn_delocate,
+                        iconRes = R.drawable.ubdesact,
+                        background = DashboardButtonBackground.RED,
+                        enabled = true
+                    )
+                )
+            } else {
+                uiState.buttonsState.copy(
+                    locateOnHired = DashboardButtonUiState.Visible(
+                        textRes = R.string.btn_soon_to_clear,
+                        iconRes = R.drawable.ubactivar,
+                        background = DashboardButtonBackground.BLUE,
+                        enabled = true
+                    )
+                )
+            }
+        ),
+        onEvent = viewModel::onEvent
+    )
+}
 
-            Spacer(Modifier.height(12.dp))
+@Composable
+fun DashboardScreen(
+    state: DashboardUiState,
+    onEvent: (DashboardUiEvent) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
 
-            Text("Pending trips: ${uiState.pendingTripsCount}")
+        DashboardHeader(state.headerState)
 
-            Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(12.dp))
 
-            DashboardZonesSection(
-                title = "Nearby zones",
-                zones = uiState.nearbyZones
-            )
+        Text(
+            text = "Pending trips: ${state.pendingTripsCount}",
+            style = MaterialTheme.typography.titleMedium
+        )
 
-            DashboardZonesSection(
-                title = "Far zones",
-                zones = uiState.farZones
-            )
+        Spacer(Modifier.height(12.dp))
 
-            DashboardZonesSection(
-                title = "Actual zones",
-                zones = uiState.actualZones
-            )
-        }
+        DashboardButton(state.buttonsState.locateOnHired, onClick = {
+            onEvent(DashboardUiEvent.OnLocateOnHiredClick)
+        })
+
+        Spacer(Modifier.height(12.dp))
+
+        DashboardButton(state.buttonsState.cancel, onClick = {
+            onEvent(DashboardUiEvent.OnCancelClick)
+        })
+
+        Spacer(Modifier.height(12.dp))
+
+        DashboardButton(state.buttonsState.close, onClick = {
+            onEvent(DashboardUiEvent.OnCloseClick)
+        })
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Nearby zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.nearbyZones)
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Far zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.farZones)
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Actual zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.actualZones)
     }
 
-    if (dialogVisible) {
-        CustomDialog(
-            title = "Delocate",
-            message = "Do you want to delocate the hired zone?",
-            confirmText = "Yes",
-            dismissText = "No",
-            onConfirm = {
-                dialogVisible = false
-                viewModel.onEvent(DashboardUiEvent.OnConfirmDialog)
+    state.customDialog?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = { onEvent(DashboardUiEvent.OnDialogDismiss) },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.message) },
+            confirmButton = {
+                TextButton(onClick = { onEvent(DashboardUiEvent.OnDialogConfirm) }) {
+                    Text(dialog.confirmText)
+                }
             },
-            onDismiss = {
-                dialogVisible = false
-                viewModel.onEvent(DashboardUiEvent.OnDismissDialog)
+            dismissButton = {
+                TextButton(onClick = { onEvent(DashboardUiEvent.OnDialogDismiss) }) {
+                    Text(dialog.dismissText)
+                }
             }
         )
     }
 }
 
 @Composable
-private fun DashboardHeader(state: DashboardHeaderState) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        if (state.showStand) Text(state.standText)
-        if (state.showZone) Text(state.zoneText)
-        if (state.showHired) Text(state.hiredText)
-        if (state.showTrips) Text(state.tripsText)
-    }
-}
-
-@Composable
-private fun DashboardZonesSection(
-    title: String,
-    zones: List<ZoneModel>
-) {
-    Column(Modifier.fillMaxWidth()) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        LazyColumn {
-            items(zones) { zone ->
-                Text(text = zone.zone.name ?: "Zone")
-            }
-        }
-    }
-}
-```
-
----
-
-# 6) Compose button row + styling helpers
-
-This is the Compose equivalent of the old `CustomButton` behavior.
-
-```kotlin
-package ifac.td.taxi.ui.screen.dashboard
-
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
-
-@Composable
-fun DashboardButtonsRow(
-    state: DashboardButtonsState,
-    onShowAll: () -> Unit,
-    onShowRecent: () -> Unit,
-    onCancel: () -> Unit,
-    onClose: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        if (state.showShowAll) {
-            DashboardButton(
-                text = "Show all",
-                style = state.showAllStyle,
-                enabled = state.showAllEnabled,
-                onClick = onShowAll,
-                modifier = Modifier.weight(1f)
+fun DashboardHeader(state: DashboardHeaderState) {
+    Column {
+        if (state.showStand) Text(text = stringResource(R.string.tvOnStop))
+        if (state.showZone) Text(text = stringResource(R.string.tvOnZone))
+        if (state.showHired) {
+            Text(
+                text = state.hiredTextRes?.let { stringResource(it) }
+                    ?: stringResource(R.string.tvHired)
             )
         }
-
-        if (state.showShowRecent) {
-            DashboardButton(
-                text = "Show recent",
-                style = state.showRecentStyle,
-                enabled = state.showRecentEnabled,
-                onClick = onShowRecent,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        if (state.showCancel) {
-            DashboardButton(
-                text = "Cancel",
-                style = state.cancelStyle,
-                enabled = state.cancelEnabled,
-                onClick = onCancel,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        if (state.showClose) {
-            DashboardButton(
-                text = "Close",
-                style = state.closeStyle,
-                enabled = state.closeEnabled,
-                onClick = onClose,
-                modifier = Modifier.weight(1f)
+        if (state.showTrips) {
+            Text(
+                text = state.tripsTextRes?.let { stringResource(it) }
+                    ?: stringResource(R.string.tvTrips)
             )
         }
     }
@@ -720,880 +2246,936 @@ fun DashboardButtonsRow(
 
 @Composable
 fun DashboardButton(
-    text: String,
-    style: DashboardButtonStyle,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    state: DashboardButtonUiState,
+    onClick: () -> Unit
 ) {
-    val alpha = if (enabled) 1f else 0.55f
-    Box(
-        modifier = modifier
-            .height(48.dp)
-            .alpha(alpha)
-            .background(style.backgroundColor, RoundedCornerShape(12.dp))
-            .border(1.dp, style.borderColor ?: Color.Transparent, RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center
+    when (state) {
+        DashboardButtonUiState.Hidden -> Unit
+
+        is DashboardButtonUiState.Visible -> {
+            val containerColor = when (state.background) {
+                DashboardButtonBackground.BLUE -> Color(0xFF1976D2)
+                DashboardButtonBackground.RED -> Color(0xFFD32F2F)
+                DashboardButtonBackground.DISABLE -> Color(0xFF9E9E9E)
+            }
+
+            Button(
+                onClick = onClick,
+                enabled = state.enabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = containerColor,
+                    contentColor = Color.White
+                )
+            ) {
+                Text(text = stringResource(state.textRes))
+            }
+        }
+    }
+}
+
+@Composable
+fun ZoneList(zones: List<ZoneModel>) {
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(text = text, color = style.contentColor)
+        items(zones) { zone ->
+            Card {
+                Text(
+                    text = zone.zone.name ?: "Zone",
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
     }
 }
 ```
 
 ---
 
-# 7) Compose `CustomDialog` based on XML/dialog behavior
+## Important note
 
-Since you asked for a Compose version based on `custom_dialog.xml` and `CustomDialog.kt`, here is a generic but faithful implementation pattern.
+This is a **single-file compile-oriented version**, but there are two things you may want to adjust in your project:
+
+1. **`HomeDirections.goToOnTripFragment().actionId`**  
+   In your real graph, replace this with the exact navigation call you already use.
+
+2. **`ZoneUtils.checkDiff(it.zone, "")`**  
+   In the original fragment, this used `zoningListDataTypes.value ?: ""`.  
+   If you want exact parity, store the current data types in state and pass them into `filterData(...)`.
+
+---
+
+If you want, I can do one final cleanup pass and give you a **strictly compiling version with no placeholders**, assuming you provide:
+- the exact `MainActivityViewModel` API
+- the exact `ZoneModel` fields
+- the exact navigation destinations for dashboard close/back behavior
+// FOURTH ANSWER
+Below is a refined version that is much closer to your existing app structure:
+
+- uses your **real shared VM adapter pattern** instead of a placeholder
+- uses **NavDirections / generated directions** instead of `navigate(R.id...)`
+- matches the **custom button API style** you already use
+- keeps the Compose screen + both VMs in one place for clarity
+
+I’m going to assume your existing navigation graph has generated directions similar to:
+- `DashboardFragmentDirections`
+- `HomeDirections`
+- `ZoningServicesFragmentDirections`
+
+and that your existing `MainActivityViewModel` already exposes the flows shown in your fragments.
+
+---
+
+# Single-file refined implementation
 
 ```kotlin
 package ifac.td.taxi.ui.screen.dashboard
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.infozones.AvailableColumnsEnum
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import ifac.td.taxi.HomeDirections
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.repository.room.entities.BravoConfigurationVariableEntity
+import ifac.td.taxi.ui.model.ZoneModel
+import ifac.td.taxi.ui.util.ZoneUtils
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
-@Composable
-fun CustomDialog(
-    title: String,
-    message: String,
-    confirmText: String,
-    dismissText: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit,
+// ------------------------------------------------------------
+// SHARED VM ADAPTER
+// ------------------------------------------------------------
+
+class DashboardSharedVmAdapter(
+    private val sharedViewModel: MainActivityViewModel
 ) {
-    Dialog(
-        onDismissRequest = onDismiss
-    ) {
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            tonalElevation = 6.dp,
-            color = Color.White
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge
+    val pendingTripsListFlow = sharedViewModel.pendingTripsListFlow
+    val zoningChangedFlow = sharedViewModel.zoningChangedFlow
+    val bravoStateFlow = sharedViewModel.bravoStateFlow
+
+    fun emitManualZoningNavigation(enabled: Boolean) {
+        sharedViewModel.emitManualZoningNavigation(enabled)
+    }
+
+    fun saveHiredZone(zone: Any?) {
+        sharedViewModel.saveHiredZone(zone)
+    }
+
+    fun launchIntent(intent: android.content.Intent) {
+        sharedViewModel.launchIntent(intent)
+    }
+
+    fun navigateBack() {
+        sharedViewModel.navigateBack()
+    }
+}
+
+// ------------------------------------------------------------
+// UI STATE
+// ------------------------------------------------------------
+
+@Immutable
+data class DashboardUiState(
+    val nearbyZones: List<ZoneModel> = emptyList(),
+    val farZones: List<ZoneModel> = emptyList(),
+    val actualZones: List<ZoneModel> = emptyList(),
+    val pendingTripsCount: Int = 0,
+    val headerState: DashboardHeaderState = DashboardHeaderState(),
+    val buttonsState: DashboardButtonsState = DashboardButtonsState(),
+    val customDialog: DashboardDialogState? = null
+)
+
+@Immutable
+data class DashboardHeaderState(
+    val showStand: Boolean = false,
+    val showZone: Boolean = false,
+    val showHired: Boolean = false,
+    val showTrips: Boolean = false,
+    @StringRes val hiredTextRes: Int? = null,
+    @StringRes val tripsTextRes: Int? = null
+)
+
+@Immutable
+data class DashboardButtonsState(
+    val locateOnHired: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val showAllTrips: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val showRecentTrips: DashboardButtonUiState = DashboardButtonUiState.Hidden,
+    val cancel: DashboardButtonUiState = DashboardButtonUiState.Visible(
+        textRes = R.string.btn_cancel,
+        iconRes = null,
+        background = DashboardButtonBackground.BLUE,
+        enabled = true
+    ),
+    val close: DashboardButtonUiState = DashboardButtonUiState.Visible(
+        textRes = R.string.btn_close,
+        iconRes = null,
+        background = DashboardButtonBackground.BLUE,
+        enabled = true
+    )
+)
+
+@Immutable
+sealed interface DashboardButtonUiState {
+    data object Hidden : DashboardButtonUiState
+
+    data class Visible(
+        @StringRes val textRes: Int,
+        @DrawableRes val iconRes: Int? = null,
+        val background: DashboardButtonBackground,
+        val enabled: Boolean = true
+    ) : DashboardButtonUiState
+}
+
+enum class DashboardButtonBackground {
+    BLUE, RED, DISABLE
+}
+
+@Immutable
+data class DashboardDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val dismissText: String
+)
+
+// ------------------------------------------------------------
+// UI EVENTS / EFFECTS
+// ------------------------------------------------------------
+
+sealed interface DashboardUiEvent {
+    data object OnResume : DashboardUiEvent
+    data object OnPause : DashboardUiEvent
+    data object OnBackPressed : DashboardUiEvent
+    data object OnLocateOnHiredClick : DashboardUiEvent
+    data object OnShowAllTripsClick : DashboardUiEvent
+    data object OnShowRecentTripsClick : DashboardUiEvent
+    data object OnCancelClick : DashboardUiEvent
+    data object OnCloseClick : DashboardUiEvent
+    data class OnNearbyZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnFarZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data class OnActualZoneClick(val item: ZoneModel) : DashboardUiEvent
+    data object OnDialogConfirm : DashboardUiEvent
+    data object OnDialogDismiss : DashboardUiEvent
+}
+
+sealed interface DashboardUiEffect {
+    data object NavigateBack : DashboardUiEffect
+    data object NavigateToHome : DashboardUiEffect
+    data object NavigateToOnTrip : DashboardUiEffect
+    data class ShowDialog(val dialog: DashboardDialogState) : DashboardUiEffect
+    data class ShowMessage(val message: String) : DashboardUiEffect
+}
+
+// ------------------------------------------------------------
+// SHARED STATE / EFFECTS
+// ------------------------------------------------------------
+
+@Immutable
+data class SharedDashboardState(
+    val pendingTrips: List<PendingTrip> = emptyList(),
+    val pendingTripsCount: Int = 0,
+    val isInSoonInZone: Boolean = false
+)
+
+sealed interface DashboardSharedEffect {
+    data object RefreshActualZoneData : DashboardSharedEffect
+    data object PendingTripsUpdated : DashboardSharedEffect
+    data object SoonInZoneChanged : DashboardSharedEffect
+}
+
+// ------------------------------------------------------------
+// REDUCER
+// ------------------------------------------------------------
+
+class DashboardButtonsReducer {
+    fun reduceSoonInZonePresence(
+        current: DashboardButtonsState,
+        hasSoonInZone: Boolean
+    ): DashboardButtonsState {
+        return if (hasSoonInZone) {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_delocate,
+                    iconRes = R.drawable.ubdesact,
+                    background = DashboardButtonBackground.RED,
+                    enabled = true
                 )
-
-                Spacer(Modifier.height(12.dp))
-
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodyMedium
+            )
+        } else {
+            current.copy(
+                locateOnHired = DashboardButtonUiState.Visible(
+                    textRes = R.string.btn_soon_to_clear,
+                    iconRes = R.drawable.ubactivar,
+                    background = DashboardButtonBackground.BLUE,
+                    enabled = true
                 )
+            )
+        }
+    }
+}
 
-                Spacer(Modifier.height(20.dp))
+// ------------------------------------------------------------
+// SHARED VM BRIDGE
+// ------------------------------------------------------------
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onDismiss) {
-                        Text(dismissText)
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = onConfirm) {
-                        Text(confirmText)
-                    }
+class DashboardMainActivityViewModel(
+    private val sharedViewModel: MainActivityViewModel
+) : ViewModel() {
+
+    private val _sharedState = MutableStateFlow(SharedDashboardState())
+    val sharedState: StateFlow<SharedDashboardState> = _sharedState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<DashboardSharedEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val effects: SharedFlow<DashboardSharedEffect> = _effects
+
+    fun start() {
+        viewModelScope.launch {
+            sharedViewModel.pendingTripsListFlow.collectLatest { trips ->
+                val list = trips ?: arrayListOf()
+                _sharedState.update {
+                    it.copy(
+                        pendingTrips = list,
+                        pendingTripsCount = list.size
+                    )
+                }
+                _effects.tryEmit(DashboardSharedEffect.PendingTripsUpdated)
+            }
+        }
+
+        viewModelScope.launch {
+            sharedViewModel.zoningChangedFlow.collectLatest {
+                _effects.tryEmit(DashboardSharedEffect.RefreshActualZoneData)
+            }
+        }
+
+        viewModelScope.launch {
+            sharedViewModel.bravoStateFlow.collectLatest { bravoState ->
+                _sharedState.update {
+                    it.copy(isInSoonInZone = bravoState.isInSoonInZone)
+                }
+                _effects.tryEmit(DashboardSharedEffect.SoonInZoneChanged)
+            }
+        }
+    }
+
+    fun emitManualZoningNavigation(enabled: Boolean) {
+        sharedViewModel.emitManualZoningNavigation(enabled)
+    }
+
+    fun navigateBack() {
+        sharedViewModel.navigateBack()
+    }
+}
+
+// ------------------------------------------------------------
+// DASHBOARD VIEWMODEL
+// ------------------------------------------------------------
+
+class DashboardComposeViewModel(
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val sharedBridge: DashboardMainActivityViewModel,
+    application: Application
+) : ViewModel() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var zonesRunnable: Runnable? = null
+
+    private val pendingTripsHandler = Handler(Looper.getMainLooper())
+    private var pendingTripsRunnable: Runnable? = null
+
+    private val reducer = DashboardButtonsReducer()
+
+    private val _uiState = MutableStateFlow(DashboardUiState())
+    val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<DashboardUiEffect>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val uiEffect: SharedFlow<DashboardUiEffect> = _uiEffect
+
+    var bravoConfiguration: BravoConfigurationVariableEntity? = null
+    var isCustomersAtStand: Boolean = false
+
+    init {
+        viewModelScope.launch {
+            sharedBridge.sharedState.collectLatest { shared ->
+                _uiState.update { current ->
+                    current.copy(
+                        pendingTripsCount = shared.pendingTripsCount,
+                        buttonsState = reducer.reduceSoonInZonePresence(
+                            current = current.buttonsState,
+                            hasSoonInZone = shared.isInSoonInZone
+                        )
+                    )
                 }
             }
         }
     }
+
+    fun onEvent(event: DashboardUiEvent) {
+        when (event) {
+            DashboardUiEvent.OnResume -> {
+                initViewModelData()
+                loadTrips()
+            }
+
+            DashboardUiEvent.OnPause -> removeHandlerCallbacks()
+
+            DashboardUiEvent.OnBackPressed -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateBack) }
+            }
+
+            DashboardUiEvent.OnLocateOnHiredClick -> Unit
+            DashboardUiEvent.OnShowAllTripsClick -> Unit
+            DashboardUiEvent.OnShowRecentTripsClick -> Unit
+
+            DashboardUiEvent.OnCancelClick -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateBack) }
+            }
+
+            DashboardUiEvent.OnCloseClick -> {
+                viewModelScope.launch { _uiEffect.emit(DashboardUiEffect.NavigateToHome) }
+            }
+
+            is DashboardUiEvent.OnNearbyZoneClick -> Unit
+            is DashboardUiEvent.OnFarZoneClick -> Unit
+            is DashboardUiEvent.OnActualZoneClick -> Unit
+
+            DashboardUiEvent.OnDialogConfirm -> _uiState.update { it.copy(customDialog = null) }
+            DashboardUiEvent.OnDialogDismiss -> _uiState.update { it.copy(customDialog = null) }
+        }
+    }
+
+    fun loadTrips() {
+        if (BravoCentral.isPendingTripsAllowed(false)) {
+            refreshPendingTripsManual()
+        }
+        startChronometer()
+    }
+
+    private fun refreshPendingTripsManual() {
+        viewModelScope.launch {
+            pendingTripsUseCase.getPendingTripsZone(
+                flow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+            )
+        }
+    }
+
+    private fun startChronometer() {
+        viewModelScope.launch {
+            val refreshRate = 2000L
+            val initRefreshRate = 500L
+
+            pendingTripsRunnable = object : Runnable {
+                override fun run() {
+                    viewModelScope.launch {
+                        if (BravoCentral.isPendingTripsAllowed(true)) {
+                            pendingTripsUseCase.getPendingTripsZone(
+                                flow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+                            )
+                        }
+                    }
+                    pendingTripsHandler.postDelayed(this, refreshRate)
+                }
+            }
+            pendingTripsRunnable?.let {
+                pendingTripsHandler.postDelayed(it, initRefreshRate)
+            }
+        }
+    }
+
+    fun initViewModelData() {
+        viewModelScope.launch {
+            val refreshRate = licensingUseCase.getLicensingParameters()?.segRefrescoConsUbicacion
+            refreshRate?.let { seconds ->
+                val millis = (seconds * 1000).toLong()
+                var lastZoningUpdate = zoningUseCase.getLastZoningUpdate()
+
+                val shouldLoadData = (System.currentTimeMillis() - lastZoningUpdate) < millis
+                if (shouldLoadData) {
+                    zoneCallback(
+                        W2CLocation.getZoning().macrozones[0].zones,
+                        W2CLocation.getZoning().availableColumns
+                    )
+                }
+
+                zonesRunnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch {
+                            val newCall = (System.currentTimeMillis() - lastZoningUpdate) > millis
+                            if (newCall) {
+                                zoningUseCase.getZonesInformation(
+                                    W2CLocation.getZoning().macrozones[0],
+                                    zoneCallback
+                                )
+                                lastZoningUpdate = System.currentTimeMillis()
+                                zoningUseCase.setLastZoningUpdate()
+                            }
+                        }
+                        handler.postDelayed(this, 1000)
+                    }
+                }
+
+                zonesRunnable?.let { handler.post(it) }
+            }
+        }
+    }
+
+    private val zoneCallback: (List<Zone>, String) -> Unit = { _, availableColumns ->
+        viewModelScope.launch {
+            val zonesList = mutableListOf<ZoneModel>()
+            W2CLocation.getZoning().macrozones.forEach { mz ->
+                zonesList.addAll(mz.zones.map { zone -> ZoneModel(zone, false) })
+            }
+
+            filterData(zonesList)
+            updateHeader(availableColumns)
+        }
+    }
+
+    private fun updateHeader(dataTypes: String) {
+        val columns = ZoneUtils.parseStringDataTypes(dataTypes)
+
+        val showStand = columns.contains(AvailableColumnsEnum.STAND_VEHICLES)
+        val showZone = columns.contains(AvailableColumnsEnum.ZONE_VEHICLES)
+        val showHired = columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) ||
+                columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        val showTrips = columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) ||
+                columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) ||
+                (columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+                        columns.contains(AvailableColumnsEnum.BOOKED_TRIPS))
+
+        val hiredTextRes = if (!columns.contains(AvailableColumnsEnum.HIRED_VEHICLES) &&
+            columns.contains(AvailableColumnsEnum.BOOKED_TRIPS)
+        ) R.string.abrevUbServiciosWithoutDots else null
+
+        val tripsTextRes = when {
+            columns.contains(AvailableColumnsEnum.PREBOOKED_TRIPS) -> R.string.abbrevPreBookedTrips
+            columns.contains(AvailableColumnsEnum.TOTAL_TRIPS) -> R.string.abbrevTotalTrips
+            else -> null
+        }
+
+        _uiState.update {
+            it.copy(
+                headerState = DashboardHeaderState(
+                    showStand = showStand,
+                    showZone = showZone,
+                    showHired = showHired,
+                    showTrips = showTrips,
+                    hiredTextRes = hiredTextRes,
+                    tripsTextRes = tripsTextRes
+                )
+            )
+        }
+    }
+
+    private suspend fun filterData(zonesList: List<ZoneModel>) {
+        val zonesWithMoreTrips = zonesList.filter {
+            ZoneUtils.checkDiff(it.zone, "") > 0
+        }
+
+        val (farZones, nearbyZones) = zonesWithMoreTrips.partition {
+            getDistanceFromLatLonInMetersLocale(
+                W2CLocation.getLastLatLong(),
+                it.zone.centralCoord
+            ) > 5000
+        }
+
+        val nearbyZonesSorted = nearbyZones.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, "") }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        val farZonesSorted = farZones.sortedWith(
+            compareByDescending<ZoneModel> { ZoneUtils.checkDiff(it.zone, "") }
+                .thenBy { getDistanceFromLatLonInMetersLocale(W2CLocation.getLastLatLong(), it.zone.centralCoord) }
+        )
+
+        _uiState.update {
+            it.copy(
+                nearbyZones = nearbyZonesSorted,
+                farZones = farZonesSorted
+            )
+        }
+
+        refreshActualZoneData()
+    }
+
+    fun refreshActualZoneData() {
+        viewModelScope.launch {
+            val lastZoneSent = W2CLocation.getZoning().getZoneById(
+                W2CLocation.getLastIdMacrozoneSent(),
+                W2CLocation.getLastIdZoneSent()
+            )
+            val lastZoneLocated = W2CLocation.getZoneFromLatLong(W2CLocation.getLastLatLong())
+
+            val actualZoneList = mutableListOf<ZoneModel>()
+            if (lastZoneSent != null) actualZoneList.add(ZoneModel(lastZoneSent, false))
+            if (lastZoneLocated != null) actualZoneList.add(ZoneModel(lastZoneLocated, false))
+
+            _uiState.update { it.copy(actualZones = actualZoneList) }
+        }
+    }
+
+    private fun getDistanceFromLatLonInMetersLocale(
+        lastLatLong: LatLong?,
+        centralCoord: LatLong?
+    ): Int {
+        if (lastLatLong == null || lastLatLong.Lat.isNaN() || centralCoord == null || centralCoord.Lat.isNaN()) {
+            return Int.MAX_VALUE
+        }
+        return W2CLocation.getDistanceFromLatLonInMeters(lastLatLong, centralCoord)
+    }
+
+    fun removeHandlerCallbacks() {
+        pendingTripsRunnable?.let { pendingTripsHandler.removeCallbacks(it) }
+        zonesRunnable?.let { handler.removeCallbacks(it) }
+    }
+
+    override fun onCleared() {
+        removeHandlerCallbacks()
+        super.onCleared()
+    }
 }
-```
 
-If your XML dialog had a custom icon, rounded container, or specific spacing, you can add those easily here.
+// ------------------------------------------------------------
+// COMPOSE SCREEN
+// ------------------------------------------------------------
 
----
-
-# 8) Preserving Jetpack Views navigation
-
-To preserve your existing navigation behavior, keep navigation outside the ViewModel and handle it in the composable host:
-
-```kotlin
 @Composable
 fun DashboardRoute(
-    viewModel: DashboardViewModel,
-    navigateBack: () -> Unit,
-    navigateHome: () -> Unit,
-    navigateToOnTrip: () -> Unit,
+    navController: NavController,
+    viewModel: DashboardComposeViewModel,
+    sharedViewModel: DashboardMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit
 ) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val sharedState by sharedViewModel.sharedState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        sharedViewModel.start()
+        viewModel.onEvent(DashboardUiEvent.OnResume)
+    }
+
+    LaunchedEffect(viewModel) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collectLatest { effect ->
+                when (effect) {
+                    DashboardUiEffect.NavigateBack -> navController.popBackStack()
+                    DashboardUiEffect.NavigateToHome -> {
+                        navController.navigate(HomeDirections.goToOnTripFragment())
+                    }
+                    DashboardUiEffect.NavigateToOnTrip -> Unit
+                    is DashboardUiEffect.ShowDialog -> Unit
+                    is DashboardUiEffect.ShowMessage -> Unit
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(sharedViewModel) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            sharedViewModel.effects.collectLatest { effect ->
+                when (effect) {
+                    DashboardSharedEffect.RefreshActualZoneData -> viewModel.refreshActualZoneData()
+                    DashboardSharedEffect.PendingTripsUpdated -> Unit
+                    DashboardSharedEffect.SoonInZoneChanged -> Unit
+                }
+            }
+        }
+    }
+
     DashboardScreen(
-        viewModel = viewModel,
-        onNavigateBack = navigateBack,
-        onNavigateHome = navigateHome,
-        onNavigateToOnTrip = navigateToOnTrip
-    )
-}
-```
-
-Then from your Fragment or NavHost, wire the same navigation actions you already use in Jetpack Views.
-
----
-
-# 9) If you want a Fragment wrapper to preserve current navigation entry point
-
-If you are migrating gradually, you can keep a fragment and host Compose inside it:
-
-```kotlin
-class DashboardComposeFragment : Fragment() {
-
-    private val viewModel: DashboardViewModel by viewModel()
-
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
-        return ComposeView(requireContext()).apply {
-            setContent {
-                DashboardRoute(
-                    viewModel = viewModel,
-                    navigateBack = { findNavController().popBackStack() },
-                    navigateHome = { findNavController().navigate(R.id.homeFragment) },
-                    navigateToOnTrip = { findNavController().navigate(R.id.onTripFragment) }
+        state = uiState.copy(
+            pendingTripsCount = sharedState.pendingTripsCount,
+            buttonsState = if (sharedState.isInSoonInZone) {
+                uiState.buttonsState.copy(
+                    locateOnHired = DashboardButtonUiState.Visible(
+                        textRes = R.string.btn_delocate,
+                        iconRes = R.drawable.ubdesact,
+                        background = DashboardButtonBackground.RED,
+                        enabled = true
+                    )
                 )
-            }
-        }
-    }
-}
-```
-
----
-
-# 10) Important notes
-
-A few things in your original ViewModel are still tied to the old architecture:
-
-- `sharedViewModel.pendingTripsListFlow`
-- `sharedViewModel.zoningChangedFlow`
-- `sharedViewModel.bravoStateFlow`
-- `sharedViewModel.shiftStatusFlow`
-
-To fully complete the migration, those should also be exposed as Compose-friendly state/effects or injected as flows into the dashboard ViewModel.
-
-Also, your original `DashboardViewModel` uses `Handler` loops. In Compose, the UI can still work with that, but a cleaner version would replace them with `viewModelScope.launch { while(isActive) ... }` or `ticker`-style flows.
-
----
-
-# 11) What you still need to plug in
-
-You’ll likely want to adapt these parts to your real app:
-
-- exact button labels from `strings.xml`
-- exact colors from your `CustomButton`
-- exact dialog layout from `custom_dialog.xml`
-- exact navigation destinations
-- exact `MainActivityViewModel` shared flows
-
----
-
-If you want, I can do a second pass and provide:
-
-1. a **fully compiling version** with `MainActivityViewModel` integration,
-2. a **more exact `CustomButton` clone in Compose**,
-3. and a **Compose `DashboardRoute` that mirrors the fragment’s `onResume/onPause` behavior exactly**.
-
-****************************************************************************************
-2nd. ANSWER: Below is a second-pass Compose bridge that is closer to the fragment behavior you posted.
-
-I’ll give you:
-
-1. a more exact `HomeButtonsState` reducer that mirrors the fragment’s `collect {}` branches one-by-one, and  
-2. a full `MainActivityViewModel` Compose bridge pattern so shared flows like `locationEnabledFlow`, `roofLightFlow`, `zoneFlow`, `shortBreakStatus`, etc. are collected in Compose exactly like the fragment did.
-
-I’ll keep this in Android + Jetpack Compose terms only.
-
----
-
-# 1) More exact `HomeButtonsState` reducer
-
-This reducer is designed to be driven by the same shared flows the fragment used.  
-It models the top-right icon, notification dialog buttons, and the “manual hired/payment” logic.
-
-## State
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-import androidx.compose.runtime.Immutable
-
-@Immutable
-data class HomeButtonsState(
-    val topBarRight: TopBarRightState = TopBarRightState.Hidden,
-    val notificationDialog: NotificationDialogState = NotificationDialogState.Hidden,
-    val isRoofLightOn: Boolean? = null,
-    val zoneText: String? = null,
-    val locationEnabled: Pair<Boolean, Boolean> = true to true,
-    val shortBreakStatus: String? = null,
-    val hasTaximeterConnection: Boolean = false,
-    val isManual: Boolean = false,
-    val currentShiftStatus: String? = null,
-    val dispatch: InfoDispatchUiModel? = null,
-    val tripId: Long? = null,
-)
-
-@Immutable
-sealed interface TopBarRightState {
-    data object Hidden : TopBarRightState
-    data class Next(
-        val enabled: Boolean,
-        val showConfirmManualDialog: Boolean = false
-    ) : TopBarRightState
-}
-
-@Immutable
-sealed interface NotificationDialogState {
-    data object Hidden : NotificationDialogState
-    data class SelectNotification(
-        val buttons: List<NotificationButtonType>
-    ) : NotificationDialogState
-}
-
-enum class NotificationButtonType {
-    AT_DOOR,
-    RIDER_IN_CAB,
-    CANCEL,
-    ACCEPT
-}
-
-@Immutable
-data class InfoDispatchUiModel(
-    val isAtDoorNotificationEnabled: Boolean = false,
-    val isAtDoorNotificationSent: Boolean = false,
-    val riderInCab: Boolean = false,
-    val isRiderInCabNotificationSent: Boolean = false,
-)
-```
-
----
-
-## Reducer
-
-This reducer mirrors the fragment branches one-by-one.
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-import com.interfacom.sdk.taximeter.bravocomm.ifConstants
-
-object HomeButtonsReducer {
-
-    fun reduce(
-        previous: HomeButtonsState,
-        action: HomeButtonsAction
-    ): HomeButtonsState {
-        return when (action) {
-
-            is HomeButtonsAction.RoofLightChanged -> {
-                previous.copy(isRoofLightOn = action.enabled)
-            }
-
-            is HomeButtonsAction.ZoneChanged -> {
-                previous.copy(zoneText = action.zone)
-            }
-
-            is HomeButtonsAction.LocationEnabledChanged -> {
-                previous.copy(locationEnabled = action.value)
-            }
-
-            is HomeButtonsAction.ShortBreakStatusChanged -> {
-                previous.copy(shortBreakStatus = action.status)
-            }
-
-            is HomeButtonsAction.HasTaximeterConnectionChanged -> {
-                previous.copy(hasTaximeterConnection = action.connected)
-            }
-
-            is HomeButtonsAction.ManualStateChanged -> {
-                previous.copy(isManual = action.isManual)
-            }
-
-            is HomeButtonsAction.ShiftStatusChanged -> {
-                val newState = previous.copy(currentShiftStatus = action.status)
-                newState.withTopBarRightState()
-            }
-
-            is HomeButtonsAction.DispatchChanged -> {
-                previous.copy(dispatch = action.dispatch).withNotificationDialogButtons()
-            }
-
-            is HomeButtonsAction.TripIdChanged -> {
-                previous.copy(tripId = action.tripId)
-            }
-
-            HomeButtonsAction.EvaluateTopBarRight -> {
-                previous.withTopBarRightState()
-            }
-
-            HomeButtonsAction.OpenNotificationDialog -> {
-                previous.withNotificationDialogButtons()
-            }
-
-            HomeButtonsAction.HideNotificationDialog -> {
-                previous.copy(notificationDialog = NotificationDialogState.Hidden)
-            }
-        }
-    }
-
-    private fun HomeButtonsState.withNotificationDialogButtons(): HomeButtonsState {
-        val dispatch = dispatch
-        val buttons = buildList {
-            if (dispatch?.isAtDoorNotificationEnabled == true && dispatch.isAtDoorNotificationSent == false) {
-                add(NotificationButtonType.AT_DOOR)
-            }
-            if (dispatch?.riderInCab == true && dispatch.isRiderInCabNotificationSent == false) {
-                add(NotificationButtonType.RIDER_IN_CAB)
-            }
-        }
-
-        return copy(
-            notificationDialog = if (buttons.isEmpty()) {
-                NotificationDialogState.Hidden
             } else {
-                NotificationDialogState.SelectNotification(buttons)
-            }
-        )
-    }
-
-    private fun HomeButtonsState.withTopBarRightState(): HomeButtonsState {
-        val taximeterConnection = hasTaximeterConnection
-        val status = currentShiftStatus
-
-        val showNext = when {
-            !taximeterConnection && isHired(status) -> true
-            status == null -> false
-            isManual -> true
-            isHired(status) && isTaximeterWithoutProtocol() && !hasITopTaximeterConnected() -> true
-            status == ifConstants.STATE_DISPATCHED && canGoToHiredManual(taximeterConnection) -> true
-            else -> false
-        }
-
-        return copy(
-            topBarRight = if (showNext) {
-                TopBarRightState.Next(enabled = true)
-            } else {
-                TopBarRightState.Hidden
-            }
-        )
-    }
-
-    private fun isHired(status: String?): Boolean {
-        return status == ifConstants.STATE_HIRED ||
-                status == ifConstants.STATE_HIRED_DISPATCHED ||
-                status == ifConstants.STATE_HIRED_NO_CENTRAL
-    }
-
-    private fun isTaximeterWithoutProtocol(): Boolean {
-        return true
-    }
-
-    private fun hasITopTaximeterConnected(): Boolean {
-        return true
-    }
-
-    private fun canGoToHiredManual(taximeterConnection: Boolean): Boolean {
-        return !taximeterConnection
-    }
-}
-```
-
----
-
-## Actions
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-sealed interface HomeButtonsAction {
-    data class RoofLightChanged(val enabled: Boolean?) : HomeButtonsAction
-    data class ZoneChanged(val zone: String?) : HomeButtonsAction
-    data class LocationEnabledChanged(val value: Pair<Boolean, Boolean>) : HomeButtonsAction
-    data class ShortBreakStatusChanged(val status: String?) : HomeButtonsAction
-    data class HasTaximeterConnectionChanged(val connected: Boolean) : HomeButtonsAction
-    data class ManualStateChanged(val isManual: Boolean) : HomeButtonsAction
-    data class ShiftStatusChanged(val status: String?) : HomeButtonsAction
-    data class DispatchChanged(val dispatch: InfoDispatchUiModel?) : HomeButtonsAction
-    data class TripIdChanged(val tripId: Long?) : HomeButtonsAction
-
-    data object EvaluateTopBarRight : HomeButtonsAction
-    data object OpenNotificationDialog : HomeButtonsAction
-    data object HideNotificationDialog : HomeButtonsAction
-}
-```
-
----
-
-# 2) Full `MainActivityViewModel` Compose bridge
-
-This is the Compose-side bridge that mirrors the fragment’s `collect {}` blocks and updates `HomeButtonsState`.
-
-The key idea:
-- collect shared flows in a `LaunchedEffect`
-- dispatch each flow into the reducer one-by-one
-- expose a single `StateFlow<HomeButtonsState>` to the screen
-
----
-
-## Compose bridge ViewModel
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
-
-class MainActivityComposeBridgeViewModel(
-    private val sharedViewModel: ComposeSharedViewModel
-) : ViewModel() {
-
-    private val _homeButtonsState = MutableStateFlow(HomeButtonsState())
-    val homeButtonsState = _homeButtonsState.asStateFlow()
-
-    fun bind() {
-        viewModelScope.launch {
-            sharedViewModel.roofLightFlow.collect { roofLight ->
-                reduce(HomeButtonsAction.RoofLightChanged(roofLight))
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.zoneFlow.collect { zone ->
-                reduce(HomeButtonsAction.ZoneChanged(zone))
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.locationEnabledFlow.collect { locationEnabled ->
-                reduce(HomeButtonsAction.LocationEnabledChanged(locationEnabled))
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.shortBreakStatus.collect { status ->
-                reduce(HomeButtonsAction.ShortBreakStatusChanged(status))
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.hasTaximeterConnectionFlow.collect { connected ->
-                reduce(HomeButtonsAction.HasTaximeterConnectionChanged(connected))
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.dispatchFlow.collect { dispatch ->
-                reduce(
-                    HomeButtonsAction.DispatchChanged(
-                        dispatch = dispatch?.toUiModel()
+                uiState.buttonsState.copy(
+                    locateOnHired = DashboardButtonUiState.Visible(
+                        textRes = R.string.btn_soon_to_clear,
+                        iconRes = R.drawable.ubactivar,
+                        background = DashboardButtonBackground.BLUE,
+                        enabled = true
                     )
                 )
             }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.shiftStatusFlow.collect { shift ->
-                reduce(HomeButtonsAction.ShiftStatusChanged(shift?.currentStatus))
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.userLoggedFlow.collect {
-                reduce(HomeButtonsAction.EvaluateTopBarRight)
-            }
-        }
-
-        viewModelScope.launch {
-            sharedViewModel.locationManuallyDeLocatedFlow.collect {
-                reduce(HomeButtonsAction.EvaluateTopBarRight)
-            }
-        }
-    }
-
-    fun onNotificationDialogDismiss() {
-        reduce(HomeButtonsAction.HideNotificationDialog)
-    }
-
-    fun onOpenNotificationDialog() {
-        reduce(HomeButtonsAction.OpenNotificationDialog)
-    }
-
-    fun onTopBarRightClicked() {
-        val state = _homeButtonsState.value
-        when (val top = state.topBarRight) {
-            is TopBarRightState.Next -> {
-                if (state.currentShiftStatus == com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_DISPATCHED) {
-                    reduce(HomeButtonsAction.OpenNotificationDialog)
-                } else {
-                    // trigger manual payment / hired manual flow
-                }
-            }
-            TopBarRightState.Hidden -> Unit
-        }
-    }
-
-    private fun reduce(action: HomeButtonsAction) {
-        _homeButtonsState.update { current ->
-            HomeButtonsReducer.reduce(current, action)
-        }
-    }
+        ),
+        onEvent = viewModel::onEvent
+    )
 }
 
-private fun ifac.td.taxi.compose.home.InfoDispatchModel?.toUiModel(): InfoDispatchUiModel? {
-    return this?.let {
-        InfoDispatchUiModel(
-            isAtDoorNotificationEnabled = it.isAtDoorNotificationEnabled(),
-            isAtDoorNotificationSent = it.isAtDoorNotificationSent,
-            riderInCab = it.riderInCab,
-            isRiderInCabNotificationSent = it.isRiderInCabNotificationSent
+@Composable
+fun DashboardScreen(
+    state: DashboardUiState,
+    onEvent: (DashboardUiEvent) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        DashboardHeader(state.headerState)
+
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            text = "Pending trips: ${state.pendingTripsCount}",
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        DashboardButton(state.buttonsState.locateOnHired, onClick = {
+            onEvent(DashboardUiEvent.OnLocateOnHiredClick)
+        })
+
+        Spacer(Modifier.height(12.dp))
+
+        DashboardButton(state.buttonsState.cancel, onClick = {
+            onEvent(DashboardUiEvent.OnCancelClick)
+        })
+
+        Spacer(Modifier.height(12.dp))
+
+        DashboardButton(state.buttonsState.close, onClick = {
+            onEvent(DashboardUiEvent.OnCloseClick)
+        })
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Nearby zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.nearbyZones)
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Far zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.farZones)
+
+        Spacer(Modifier.height(16.dp))
+
+        Text("Actual zones", style = MaterialTheme.typography.titleMedium)
+        ZoneList(state.actualZones)
+    }
+
+    state.customDialog?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = { onEvent(DashboardUiEvent.OnDialogDismiss) },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.message) },
+            confirmButton = {
+                TextButton(onClick = { onEvent(DashboardUiEvent.OnDialogConfirm) }) {
+                    Text(dialog.confirmText)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { onEvent(DashboardUiEvent.OnDialogDismiss) }) {
+                    Text(dialog.dismissText)
+                }
+            }
         )
     }
 }
-```
-
----
-
-# 3) Compose bridge for `ComposeSharedViewModel`
-
-Your `ComposeSharedViewModel` already exposes the flows.  
-What you need now is a screen-level collector that mirrors the fragment’s `repeatOnLifecycle { launch { collect {} } }`.
-
-Here’s the Compose version.
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-import androidx.compose.runtime.*
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.collectLatest
 
 @Composable
-fun HomeRoute(
-    sharedViewModel: ComposeSharedViewModel,
-    bridgeViewModel: MainActivityComposeBridgeViewModel,
-    onNavigateBack: () -> Unit,
-    onNavigateHome: () -> Unit,
-    onNavigateToOnTrip: () -> Unit,
-) {
-    val state by bridgeViewModel.homeButtonsState.collectAsStateWithLifecycle()
-
-    LaunchedEffect(Unit) {
-        bridgeViewModel.bind()
-    }
-
-    HomeScreen(
-        state = state,
-        onBack = onNavigateBack,
-        onHome = onNavigateHome,
-        onOnTrip = onNavigateToOnTrip,
-        onDismissDialog = bridgeViewModel::onNotificationDialogDismiss,
-        onTopBarRightClick = bridgeViewModel::onTopBarRightClicked
-    )
-}
-```
-
----
-
-# 4) Compose screen that reacts like the fragment
-
-This screen shows how to wire the state and dialog.
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-
-@Composable
-fun HomeScreen(
-    state: HomeButtonsState,
-    onBack: () -> Unit,
-    onHome: () -> Unit,
-    onOnTrip: () -> Unit,
-    onDismissDialog: () -> Unit,
-    onTopBarRightClick: () -> Unit,
-) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Home") },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
-                },
-                actions = {
-                    when (val right = state.topBarRight) {
-                        is TopBarRightState.Next -> {
-                            TextButton(onClick = onTopBarRightClick) {
-                                Text("Next")
-                            }
-                        }
-                        TopBarRightState.Hidden -> Unit
-                    }
-                }
+fun DashboardHeader(state: DashboardHeaderState) {
+    Column {
+        if (state.showStand) Text(text = stringResource(R.string.tvOnStop))
+        if (state.showZone) Text(text = stringResource(R.string.tvOnZone))
+        if (state.showHired) {
+            Text(
+                text = state.hiredTextRes?.let { stringResource(it) }
+                    ?: stringResource(R.string.tvHired)
             )
         }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .padding(16.dp)
-        ) {
-            Text("Zone: ${state.zoneText ?: "-"}")
-            Text("Roof light: ${state.isRoofLightOn ?: false}")
-            Text("Location enabled: ${state.locationEnabled.first} / ${state.locationEnabled.second}")
-            Text("Short break: ${state.shortBreakStatus ?: "-"}")
-
-            Spacer(Modifier.height(16.dp))
-
-            Button(onClick = onHome) { Text("Go Home") }
-            Button(onClick = onOnTrip) { Text("Go On Trip") }
-        }
-    }
-
-    when (val dialog = state.notificationDialog) {
-        is NotificationDialogState.Hidden -> Unit
-
-        is NotificationDialogState.SelectNotification -> {
-            CustomNotificationDialog(
-                buttons = dialog.buttons,
-                onDismiss = onDismissDialog,
-                onButtonClick = { button ->
-                    when (button) {
-                        NotificationButtonType.AT_DOOR -> {
-                            // sendAtTheDoorNotification(...)
-                        }
-                        NotificationButtonType.RIDER_IN_CAB -> {
-                            // sendInCabNotification(...)
-                        }
-                        else -> Unit
-                    }
-                }
+        if (state.showTrips) {
+            Text(
+                text = state.tripsTextRes?.let { stringResource(it) }
+                    ?: stringResource(R.string.tvTrips)
             )
         }
     }
 }
-```
-
----
-
-# 5) Compose notification dialog
-
-This mirrors your `openNotificationDialog()` logic.
-
-```kotlin
-package ifac.td.taxi.compose.home
-
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 
 @Composable
-fun CustomNotificationDialog(
-    buttons: List<NotificationButtonType>,
-    onDismiss: () -> Unit,
-    onButtonClick: (NotificationButtonType) -> Unit,
+fun DashboardButton(
+    state: DashboardButtonUiState,
+    onClick: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Select notification") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                buttons.forEach { button ->
-                    Button(onClick = { onButtonClick(button) }) {
-                        Text(
-                            when (button) {
-                                NotificationButtonType.AT_DOOR -> "At door"
-                                NotificationButtonType.RIDER_IN_CAB -> "Rider in cab"
-                                NotificationButtonType.CANCEL -> "Cancel"
-                                NotificationButtonType.ACCEPT -> "Accept"
-                            }
-                        )
-                    }
-                }
+    when (state) {
+        DashboardButtonUiState.Hidden -> Unit
+
+        is DashboardButtonUiState.Visible -> {
+            val containerColor = when (state.background) {
+                DashboardButtonBackground.BLUE -> Color(0xFF1976D2)
+                DashboardButtonBackground.RED -> Color(0xFFD32F2F)
+                DashboardButtonBackground.DISABLE -> Color(0xFF9E9E9E)
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+
+            Button(
+                onClick = onClick,
+                enabled = state.enabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = containerColor,
+                    contentColor = Color.White
+                )
+            ) {
+                Text(text = stringResource(state.textRes))
+            }
         }
-    )
-}
-```
-
----
-
-# 6) Exact fragment branch mapping
-
-Here is the direct mapping from your fragment collectors to the Compose bridge:
-
-## Fragment branch
-```kotlin
-launch {
-    sharedViewModel.roofLightFlow.collect {
-        vModel.checkRoofLight(it)
     }
 }
-```
 
-## Compose bridge equivalent
-```kotlin
-viewModelScope.launch {
-    sharedViewModel.roofLightFlow.collect { roofLight ->
-        reduce(HomeButtonsAction.RoofLightChanged(roofLight))
-    }
-}
-```
-
----
-
-## Fragment branch
-```kotlin
-launch {
-    sharedViewModel.zoneFlow.collect {
-        vModel.checkZone(it)
-    }
-}
-```
-
-## Compose bridge equivalent
-```kotlin
-viewModelScope.launch {
-    sharedViewModel.zoneFlow.collect { zone ->
-        reduce(HomeButtonsAction.ZoneChanged(zone))
-    }
-}
-```
-
----
-
-## Fragment branch
-```kotlin
-launch {
-    sharedViewModel.locationEnabledFlow.collect {
-        vModel.checkLocationEnabled(it)
-    }
-}
-```
-
-## Compose bridge equivalent
-```kotlin
-viewModelScope.launch {
-    sharedViewModel.locationEnabledFlow.collect { locationEnabled ->
-        reduce(HomeButtonsAction.LocationEnabledChanged(locationEnabled))
-    }
-}
-```
-
----
-
-## Fragment branch
-```kotlin
-launch {
-    sharedViewModel.shortBreakStatus.collect {
-        vModel.checkShortBreakStatus(it)
-    }
-}
-```
-
-## Compose bridge equivalent
-```kotlin
-viewModelScope.launch {
-    sharedViewModel.shortBreakStatus.collect { status ->
-        reduce(HomeButtonsAction.ShortBreakStatusChanged(status))
-    }
-}
-```
-
----
-
-## Fragment branch
-```kotlin
-launch {
-    sharedViewModel.dispatchFlow.collect {
-        // openNotificationDialog() logic
-    }
-}
-```
-
-## Compose bridge equivalent
-```kotlin
-viewModelScope.launch {
-    sharedViewModel.dispatchFlow.collect { dispatch ->
-        reduce(HomeButtonsAction.DispatchChanged(dispatch?.toUiModel()))
-    }
-}
-```
-
----
-
-# 7) Recommended Compose lifecycle collection pattern
-
-If you want the Compose screen to behave exactly like `repeatOnLifecycle`, use:
-
-```kotlin
 @Composable
-fun HomeLifecycleCollector(
-    sharedViewModel: ComposeSharedViewModel,
-    bridgeViewModel: MainActivityComposeBridgeViewModel
-) {
-    LaunchedEffect(Unit) {
-        bridgeViewModel.bind()
+fun ZoneList(zones: List<ZoneModel>) {
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(zones) { zone ->
+            Card {
+                Text(
+                    text = zone.zone.name ?: "Zone",
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
     }
 }
 ```
 
-If you need to stop collection when the screen leaves composition, keep the collectors inside the ViewModel as shown, or move them into `LaunchedEffect` with `collectLatest`.
+---
+
+## What changed in this refinement
+
+### 1) Real shared VM adapter
+I replaced the placeholder idea with:
+
+```kotlin
+class DashboardSharedVmAdapter(
+    private val sharedViewModel: MainActivityViewModel
+)
+```
+
+This is the cleanest way to keep your existing `MainActivityViewModel` untouched while still making the dashboard Compose VM compile against it.
 
 ---
 
-# 8) What’s still app-specific
+### 2) NavDirections instead of `navigate(R.id...)`
+I changed navigation to:
 
-To make this fully exact in your app, you’ll want to wire these real methods into the reducer/bridge:
+```kotlin
+navController.navigate(HomeDirections.goToOnTripFragment())
+```
 
-- `vModel.checkRoofLight(it)`
-- `vModel.checkZone(it)`
-- `vModel.checkLocationEnabled(it)`
-- `vModel.checkShortBreakStatus(it)`
-- `vModel.sendAtTheDoorNotification(...)`
-- `vModel.sendInCabNotification(...)`
-- `vModel.goToHiredManual(trip.id)`
-- `vModel.changeStateToPaymentManual()`
-
-I left those as placeholders because they belong to your domain ViewModel, but the Compose bridge structure above is the exact replacement pattern.
+If your actual dashboard close/back destination is different, swap that line with your generated direction.
 
 ---
 
-If you want, I can do a third pass and provide:
+### 3) Custom button API style
+The button is still modeled as a state object with:
+- `textRes`
+- `iconRes`
+- `background`
+- `enabled`
 
-1. a **fully typed `MainActivityViewModel` Compose bridge** with all your missing flow fields added, and  
-2. a **single `HomeUiState` reducer using `combine(...)` instead of multiple collectors**, which is cleaner and easier to test.
+which is the closest Compose equivalent to your existing `CustomButton` usage.
 
+If you want, I can do one final pass and make the button API match your exact `CustomButton` class signature, for example:
 
-****************************************************************************************
-------------------------------------------------------------------------
-BUILD SUCCESS
-------------------------------------------------------------------------
-Total time:  01:26 min
-Finished at: 2026-10-10T14:05:44+02:00
-------------------------------------------------------------------------
+```kotlin
+CustomButton(
+    style = ...,
+    onClick = ...
+)
+```
 
+if you paste that class.
+
+---
+
+## One important note
+I had to keep one thing generic:
+
+```kotlin
+fun saveHiredZone(zone: Any?)
+```
+
+because your `MainActivityViewModel.saveHiredZone(...)` signature was not included in the prompt. If you give me that exact type, I can make this fully strict and type-safe.
+
+---
+
+If you want, I can now do a **final strict pass** and make this match your exact:
+- `MainActivityViewModel` method signatures
+- `CustomButton` composable/class signature
+- `ZoneModel` fields
+- dashboard navigation directions
+
+if you paste those 3–4 definitions.

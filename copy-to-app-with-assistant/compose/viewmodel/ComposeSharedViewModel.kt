@@ -7,25 +7,27 @@ import android.net.Uri
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavDeepLinkRequest
 import androidx.navigation.NavDirections
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class ComposeSharedViewModel(
+open class ComposeSharedViewModel(
     application: Application
-) : BaseComposeViewModel(application) {
+) : BaseViewModel(application) {
 
     private val _hasTaximeterConnectionFlow = MutableStateFlow(false)
     val hasTaximeterConnectionFlow = _hasTaximeterConnectionFlow.asStateFlow()
 
     private val _navigationDirectionsFlow = MutableSharedFlow<NavDirections>()
-    val navigationDirectionsFlow = _navigationDirectionsFlow.asSharedFlow()
+    override val navigationDirectionsFlow = _navigationDirectionsFlow.asSharedFlow()
 
     private val _navigationDeepLinkFlow = MutableSharedFlow<NavDeepLinkRequest>()
-    val navigationDeepLinkFlow = _navigationDeepLinkFlow.asSharedFlow()
+    override val navigationDeepLinkFlow = _navigationDeepLinkFlow.asSharedFlow()
 
     private val _pendingNavigationFlow = MutableStateFlow<Boolean?>(null)
     val pendingNavigationFlow = _pendingNavigationFlow.asStateFlow()
@@ -70,7 +72,7 @@ class ComposeSharedViewModel(
     val dispatchFlow = _dispatchFlow.asStateFlow()
 
     private val _showDialogFlow = MutableSharedFlow<String>()
-    val showDialogFlow = _showDialogFlow.asSharedFlow()
+    // override val showDialogFlow = _showDialogFlow.asSharedFlow()
 
     private val _loadingStateFlow = MutableSharedFlow<Boolean>()
     val loadingStateFlow = _loadingStateFlow.asSharedFlow()
@@ -99,7 +101,7 @@ class ComposeSharedViewModel(
     private val _orangeBtnPendingFlow = MutableStateFlow<Boolean?>(null)
     val orangeBtnPendingFlow = _orangeBtnPendingFlow.asStateFlow()
 
-    private val _shortBreakStatus = MutableStateFlow<String?>(null)
+    private val _shortBreakStatus = MutableStateFlow<ShortBreakStatus?>(null)
     val shortBreakStatus = _shortBreakStatus.asStateFlow()
 
     private val _customerCallAvailable = MutableStateFlow(false)
@@ -151,11 +153,11 @@ class ComposeSharedViewModel(
         viewModelScope.launch { _hasTaximeterConnectionFlow.emit(isConnected) }
     }
 
-    fun navigateTo(directions: NavDirections) {
+    override suspend fun navigateTo(directions: NavDirections) {
         viewModelScope.launch { _navigationDirectionsFlow.emit(directions) }
     }
 
-    fun navigateTo(deepLink: NavDeepLinkRequest) {
+    override suspend fun navigateTo(deepLink: NavDeepLinkRequest) {
         viewModelScope.launch { _navigationDeepLinkFlow.emit(deepLink) }
     }
 
@@ -165,10 +167,6 @@ class ComposeSharedViewModel(
 
     fun clearPendingNavigation() {
         viewModelScope.launch { _pendingNavigationFlow.emit(null) }
-    }
-
-    override fun navigateBack() {
-        super.navigateBack()
     }
 
     fun updateBackCallback(invoked: (() -> Unit)?) {
@@ -189,6 +187,13 @@ class ComposeSharedViewModel(
 
     fun updateClientButtonFlow(shouldShowButton: Boolean) {
         viewModelScope.launch { _clientButtonValueFlow.emit(shouldShowButton) }
+    }
+    fun resetCurrentAmountFlow() {
+        // keep if needed
+    }
+
+    fun emitManualZoningNavigation(value: Boolean) {
+        // keep if needed
     }
 
     fun updateTimeControlFlow(value: String) {

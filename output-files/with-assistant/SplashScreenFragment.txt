@@ -1,315 +1,103 @@
 
 // FIRST ANSWER
-Below is a Compose-first version of your splash screen flow that preserves the original Jetpack Views navigation behavior, replaces the fragment logic with a `UiState + UiEvent + UiEffect` architecture, and uses `SharedFlow<SplashScreenUiEffect>` for one-shot navigation/effects.
+Below is a Compose-first version of your splash screen that preserves the original navigation behavior, replaces the fragment logic with a `UiState + UiEvent + UiEffect` architecture, and uses a `SharedFlow<SplashScreenUiEffect>` for one-shot navigation/effects.
 
-I’m also including a Compose-friendly `SplashScreenViewModel`, a `SplashScreenButtonsState` holder, and a custom button component pattern.  
-Since your original splash screen has no dialog, I’m **not** adding dialog state handling here.
+I’m also including:
 
----
+- a Compose `SplashScreenViewModel`
+- a `SplashScreenButtonsState` holder
+- a custom button component
+- a Compose screen that mirrors the fragment behavior
+- a small navigation bridge pattern to preserve Jetpack Navigation behavior
 
-## 1) Compose UI: Splash screen composable
-
-This composable:
-- hides header/bottom bar through callbacks
-- starts the splash video on lifecycle `ON_RESUME`
-- ends splash after timeout or video completion/error
-- preserves navigation behavior:
-  - `showLegalTextWindow(false)` then navigate based on `showLegalTextFlow`
-  - `showLegalTextWindow(true)` then navigate to welcome
-- uses lifecycle-aware collection for effects
-
-```kotlin
-package ifac.td.taxi.ui.screen.compose
-
-import android.graphics.Color
-import android.net.Uri
-import android.widget.VideoView
-import androidx.annotation.RawRes
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color as ComposeColor
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import ifac.td.taxi.R
-import ifac.td.taxi.viewmodel.MainActivityViewModel
-import ifac.td.taxi.viewmodel.SplashScreenUiEffect
-import ifac.td.taxi.viewmodel.SplashScreenUiEvent
-import ifac.td.taxi.viewmodel.SplashScreenViewModel
-
-@Composable
-fun SplashScreenRoute(
-    viewModel: SplashScreenViewModel,
-    sharedViewModel: MainActivityViewModel,
-    onHideHeader: (Boolean) -> Unit,
-    onHideBottomBar: (Boolean) -> Unit,
-    onNavigateToWelcome: () -> Unit,
-    onNavigateToLegalText: () -> Unit,
-    onBackPressedDisabled: () -> Unit = {},
-) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    LaunchedEffect(Unit) {
-        onHideHeader(false)
-        onHideBottomBar(false)
-        onBackPressedDisabled()
-        viewModel.onEvent(
-            SplashScreenUiEvent.CheckIsReconnecting(
-                reconnectionFlowValue = sharedViewModel.reconnectionFlow.value
-            )
-        )
-    }
-
-    LaunchedEffect(Unit) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                sharedViewModel.showLegalTextFlow.collectLatest { showLegal ->
-                    showLegal?.let {
-                        if (it) onNavigateToLegalText() else onNavigateToWelcome()
-                    }
-                }
-            }
-
-            launch {
-                viewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        SplashScreenUiEffect.EndSplashWithoutCheck -> {
-                            sharedViewModel.showLegalTextWindow(true)
-                            onNavigateToWelcome()
-                        }
-
-                        SplashScreenUiEffect.EndSplash -> {
-                            sharedViewModel.showLegalTextWindow(false)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    SplashScreenScreen(
-        onVideoPrepared = { viewModel.onEvent(SplashScreenUiEvent.VideoPrepared) },
-        onVideoCompleted = { viewModel.onEvent(SplashScreenUiEvent.VideoCompleted) },
-        onVideoError = { what, extra ->
-            viewModel.onEvent(SplashScreenUiEvent.VideoError(what, extra))
-        },
-        onTimeoutReached = { viewModel.onEvent(SplashScreenUiEvent.TimeoutReached) },
-        splashBackgroundRes = R.color.splash_background,
-        splashVideoRes = R.raw.new_splash
-    )
-}
-
-@Composable
-private fun SplashScreenScreen(
-    @RawRes splashVideoRes: Int,
-    @androidx.annotation.ColorRes splashBackgroundRes: Int,
-    onVideoPrepared: () -> Unit,
-    onVideoCompleted: () -> Unit,
-    onVideoError: (what: Int, extra: Int) -> Unit,
-    onTimeoutReached: () -> Unit,
-) {
-    val context = LocalContext.current
-    val backgroundColor = androidx.compose.ui.res.colorResource(id = splashBackgroundRes)
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundColor)
-    ) {
-        AndroidView(
-            factory = {
-                VideoView(it).apply {
-                    setZOrderOnTop(true)
-                    setBackgroundColor(Color.TRANSPARENT)
-
-                    setOnPreparedListener { mediaPlayer ->
-                        setBackgroundColor(Color.TRANSPARENT)
-                        mediaPlayer.isLooping = false
-                        mediaPlayer.start()
-                        onVideoPrepared()
-                    }
-
-                    setOnCompletionListener {
-                        onVideoCompleted()
-                    }
-
-                    setOnErrorListener { _, what, extra ->
-                        onVideoError(what, extra)
-                        true
-                    }
-
-                    setVideoURI(
-                        Uri.parse("android.resource://${context.packageName}/$splashVideoRes")
-                    )
-                }
-            },
-            update = { videoView ->
-                // no-op
-            }
-        )
-
-        LaunchedEffect(Unit) {
-            kotlinx.coroutines.delay(4800L)
-            onTimeoutReached()
-        }
-    }
-}
-```
+I’ll keep it Android/Compose-only.
 
 ---
 
-## 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+## 1) Compose UI model
 
-This replaces the old `MutableSharedFlow<Boolean>` with:
-- `UiState` for screen state
-- `UiEvent` for user/system events
-- `SharedFlow<SplashScreenUiEffect>` for one-shot navigation/effects
-
+### `SplashScreenUiState.kt`
 ```kotlin
-package ifac.td.taxi.viewmodel
-
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import ifac.td.taxi.domain.usecase.SessionUseCase
-import ifac.td.taxi.framework.util.Logs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
+package ifac.td.taxi.ui.screen
 
 data class SplashScreenUiState(
+    val isLoading: Boolean = true,
     val isVideoVisible: Boolean = true,
-    val isCheckingReconnection: Boolean = false,
     val isSkipped: Boolean = false,
+    val shouldSkipSplash: Boolean = false,
+    val showLegalText: Boolean? = null
 )
+```
+
+---
+
+### `SplashScreenUiEvent.kt`
+```kotlin
+package ifac.td.taxi.ui.screen
 
 sealed interface SplashScreenUiEvent {
-    data class CheckIsReconnecting(val reconnectionFlowValue: Boolean) : SplashScreenUiEvent
-    data object VideoPrepared : SplashScreenUiEvent
-    data object VideoCompleted : SplashScreenUiEvent
-    data class VideoError(val what: Int, val extra: Int) : SplashScreenUiEvent
-    data object TimeoutReached : SplashScreenUiEvent
-}
-
-sealed interface SplashScreenUiEffect {
-    data object EndSplash : SplashScreenUiEffect
-    data object EndSplashWithoutCheck : SplashScreenUiEffect
-}
-
-class SplashScreenViewModel(
-    application: Application,
-    private val sessionUseCase: SessionUseCase
-) : AndroidViewModel(application) {
-
-    private val TAG = "SplashScreenViewModel"
-    private val SPLASH_TIMEOUT = 4800L
-
-    private val _uiState = MutableStateFlow(SplashScreenUiState())
-    val uiState: StateFlow<SplashScreenUiState> = _uiState.asStateFlow()
-
-    private val _effects = MutableSharedFlow<SplashScreenUiEffect>()
-    val effects: SharedFlow<SplashScreenUiEffect> = _effects.asSharedFlow()
-
-    fun onEvent(event: SplashScreenUiEvent) {
-        when (event) {
-            is SplashScreenUiEvent.CheckIsReconnecting -> checkIsReconnecting(event.reconnectionFlowValue)
-            SplashScreenUiEvent.VideoPrepared -> {
-                _uiState.value = _uiState.value.copy(isVideoVisible = true)
-            }
-            SplashScreenUiEvent.VideoCompleted -> {
-                viewModelScope.launch {
-                    _effects.emit(SplashScreenUiEffect.EndSplash)
-                }
-            }
-            is SplashScreenUiEvent.VideoError -> {
-                Logs.e(TAG, "Error during video playback: what=${event.what}, extra=${event.extra}")
-                viewModelScope.launch {
-                    _effects.emit(SplashScreenUiEffect.EndSplash)
-                }
-            }
-            SplashScreenUiEvent.TimeoutReached -> {
-                viewModelScope.launch {
-                    _effects.emit(SplashScreenUiEffect.EndSplash)
-                }
-            }
-        }
-    }
-
-    private fun checkIsReconnecting(reconnectionFlowValue: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val serviceWasActive = sessionUseCase.getServiceWasActive()
-            Logs.d(
-                TAG,
-                "checkIsReconnecting serviceWasActive: $serviceWasActive, reconnectionFlowValue: $reconnectionFlowValue"
-            )
-            delay(50)
-
-            if (serviceWasActive) {
-                _effects.emit(SplashScreenUiEffect.EndSplashWithoutCheck)
-            } else {
-                _effects.emit(SplashScreenUiEffect.EndSplash)
-            }
-        }
-    }
+    data object OnScreenStarted : SplashScreenUiEvent
+    data object OnVideoCompleted : SplashScreenUiEvent
+    data object OnVideoError : SplashScreenUiEvent
+    data object OnSplashTimeout : SplashScreenUiEvent
+    data object OnBackPressed : SplashScreenUiEvent
+    data object OnSkipSplash : SplashScreenUiEvent
 }
 ```
 
 ---
 
-## 3) `SplashScreenButtonsState` + custom button component
-
-Your splash fragment doesn’t actually have buttons, but you explicitly asked for a full `SplashScreenButtonsState` and a custom button component using exact visibility/coloring matching XML behavior.
-
-Since no XML for splash buttons was provided, I’m giving you a **complete state holder pattern** that you can plug into the screen if you later add buttons.  
-If your XML has specific colors/visibility, replace the defaults below with your exact design values.
-
+### `SplashScreenUiEffect.kt`
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
-import androidx.compose.runtime.Immutable
+sealed interface SplashScreenUiEffect {
+    data object NavigateToWelcome : SplashScreenUiEffect
+    data object NavigateToLegalText : SplashScreenUiEffect
+    data object HideSplashVideo : SplashScreenUiEffect
+}
+```
+
+---
+
+## 2) Buttons state + custom button component
+
+You asked for a full `SplashScreenButtonsState` with exact button coloring/visibility matching XML behavior.  
+Your fragment doesn’t actually show buttons on the splash screen, so the equivalent Compose state should reflect that: no visible buttons, no enabled actions. This is the “exact behavior” of the fragment.
+
+### `SplashScreenButtonsState.kt`
+```kotlin
+package ifac.td.taxi.ui.screen
+
 import androidx.compose.ui.graphics.Color
 
-@Immutable
 data class SplashScreenButtonsState(
-    val primaryVisible: Boolean = false,
-    val secondaryVisible: Boolean = false,
-    val primaryEnabled: Boolean = true,
-    val secondaryEnabled: Boolean = true,
+    val showPrimaryButton: Boolean = false,
+    val showSecondaryButton: Boolean = false,
+    val showTertiaryButton: Boolean = false,
     val primaryText: String = "",
     val secondaryText: String = "",
-    val primaryBackgroundColor: Color = Color(0xFF1E88E5),
-    val primaryContentColor: Color = Color.White,
+    val tertiaryText: String = "",
+    val primaryBackgroundColor: Color = Color.Transparent,
     val secondaryBackgroundColor: Color = Color.Transparent,
-    val secondaryContentColor: Color = Color(0xFF1E88E5),
-    val primaryBorderColor: Color = Color(0xFF1E88E5),
-    val secondaryBorderColor: Color = Color(0xFF1E88E5),
+    val tertiaryBackgroundColor: Color = Color.Transparent,
+    val primaryTextColor: Color = Color.Transparent,
+    val secondaryTextColor: Color = Color.Transparent,
+    val tertiaryTextColor: Color = Color.Transparent,
+    val primaryEnabled: Boolean = false,
+    val secondaryEnabled: Boolean = false,
+    val tertiaryEnabled: Boolean = false
 )
 ```
 
-Custom button component:
+---
 
+### Custom button component
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -320,218 +108,524 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun SplashCustomButton(
+fun SplashScreenButton(
     text: String,
-    visible: Boolean,
-    enabled: Boolean,
     backgroundColor: Color,
-    contentColor: Color,
-    borderColor: Color,
-    onClick: () -> Unit
+    textColor: Color,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    if (!visible) return
-
-    Box(
-        modifier = Modifier
-            .defaultMinSize(minWidth = 120.dp, minHeight = 48.dp)
+    Text(
+        text = text,
+        color = textColor,
+        modifier = modifier
             .background(backgroundColor, RoundedCornerShape(12.dp))
-            .border(BorderStroke(1.dp, borderColor), RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled) { onClick() }
+            .defaultMinSize(minWidth = 120.dp, minHeight = 48.dp)
             .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        Text(text = text, color = contentColor)
+            .clickable(enabled = enabled) { onClick() }
+    )
+}
+```
+
+---
+
+## 3) Compose-friendly ViewModel
+
+This version keeps the original session check behavior, but exposes a Compose-friendly state/effect model.
+
+### `SplashScreenViewModel.kt`
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class SplashScreenViewModel(
+    application: Application,
+    private val sessionUseCase: SessionUseCase
+) : AndroidViewModel(application) {
+
+    private val TAG = "SplashScreenViewModel"
+
+    private val _uiState = MutableStateFlow(SplashScreenUiState())
+    val uiState: StateFlow<SplashScreenUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<SplashScreenUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    val buttonsState: SplashScreenButtonsState = SplashScreenButtonsState()
+
+    fun onEvent(event: SplashScreenUiEvent) {
+        when (event) {
+            SplashScreenUiEvent.OnScreenStarted -> checkIsReconnecting()
+            SplashScreenUiEvent.OnVideoCompleted -> emitEffect(SplashScreenUiEffect.HideSplashVideo)
+            SplashScreenUiEvent.OnVideoError -> emitEffect(SplashScreenUiEffect.HideSplashVideo)
+            SplashScreenUiEvent.OnSplashTimeout -> emitEffect(SplashScreenUiEffect.HideSplashVideo)
+            SplashScreenUiEvent.OnBackPressed -> Unit
+            SplashScreenUiEvent.OnSkipSplash -> {
+                _uiState.value = _uiState.value.copy(isSkipped = true, isVideoVisible = false)
+            }
+        }
+    }
+
+    private fun checkIsReconnecting() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val serviceWasActive = sessionUseCase.getServiceWasActive()
+            Logs.d(TAG, "checkIsReconnecting serviceWasActive: $serviceWasActive")
+            delay(50)
+            _uiState.value = _uiState.value.copy(shouldSkipSplash = serviceWasActive)
+        }
+    }
+
+    fun onSplashFinished(showLegal: Boolean) {
+        viewModelScope.launch {
+            emitEffect(
+                if (showLegal) SplashScreenUiEffect.NavigateToLegalText
+                else SplashScreenUiEffect.NavigateToWelcome
+            )
+        }
+    }
+
+    fun onSkipSplashAndNavigateToWelcome() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isSkipped = true, isVideoVisible = false)
+            emitEffect(SplashScreenUiEffect.NavigateToWelcome)
+        }
+    }
+
+    private suspend fun emitEffect(effect: SplashScreenUiEffect) {
+        _uiEffect.emit(effect)
     }
 }
 ```
 
 ---
 
-## 4) Optional: if you want the splash screen to fully own navigation
+## 4) Compose splash screen
 
-If you prefer the composable to directly navigate using callbacks, keep the route-level composable above.  
-That preserves the old fragment behavior cleanly and keeps navigation outside the UI layer.
+This screen mirrors the fragment behavior:
+
+- hides header/bottom bar via callbacks
+- starts splash logic on entry
+- plays a video-like splash area
+- ends after timeout or completion/error
+- preserves navigation via `NavController`
+- collects effects with lifecycle awareness
+- no dialog handling because the original ViewModel does not use a custom dialog
+
+> Note: Compose does not have a direct `VideoView` equivalent in core Compose. If you want a true video player, you’d normally use `AndroidView` with `VideoView` or ExoPlayer. Since you asked for Android/Compose references only, I’ll use `AndroidView` with `VideoView` to preserve the original behavior.
+
+### `SplashScreenRoute.kt`
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.graphics.Color
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.widget.VideoView
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun SplashScreenRoute(
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    showHeader: (Boolean) -> Unit,
+    showBottomBar: (Boolean) -> Unit,
+    getBravoService: () -> Any?,
+    showLegalTextWindow: (Boolean) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val splashTimeout = 4800L
+    val handler = remember { Handler(Looper.getMainLooper()) }
+
+    LaunchedEffect(Unit) {
+        showHeader(false)
+        showBottomBar(false)
+        viewModel.onEvent(SplashScreenUiEvent.OnScreenStarted)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                SplashScreenUiEffect.HideSplashVideo -> {
+                    showLegalTextWindow(false)
+                }
+                SplashScreenUiEffect.NavigateToWelcome -> {
+                    navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                    }
+                }
+                SplashScreenUiEffect.NavigateToLegalText -> {
+                    navController.navigate(R.id.action_splashScreenFragment_to_legalTextFragment) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.shouldSkipSplash) {
+        if (uiState.shouldSkipSplash && getBravoService() == null) {
+            viewModel.onSkipSplashAndNavigateToWelcome()
+            showLegalTextWindow(true)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            handler.removeCallbacksAndMessages(null)
+        }
+    }
+
+    AndroidView(
+        factory = {
+            VideoView(it).apply {
+                setZOrderOnTop(true)
+                setBackgroundColor(it.getColor(R.color.splash_background, null))
+
+                setOnPreparedListener { mediaPlayer ->
+                    Logs.d("SplashScreenRoute", "Video prepared, starting")
+                    setBackgroundColor(Color.TRANSPARENT)
+                    mediaPlayer.isLooping = false
+                    mediaPlayer.start()
+                }
+
+                setOnCompletionListener {
+                    Logs.d("SplashScreenRoute", "Video ended")
+                    viewModel.onEvent(SplashScreenUiEvent.OnVideoCompleted)
+                }
+
+                setOnErrorListener { _, what, extra ->
+                    Logs.e("SplashScreenRoute", "Error during video playback: what=$what, extra=$extra")
+                    viewModel.onEvent(SplashScreenUiEvent.OnVideoError)
+                    true
+                }
+
+                try {
+                    val videoUri = Uri.parse("android.resource://${context.packageName}/${R.raw.new_splash}")
+                    setVideoURI(videoUri)
+
+                    handler.postDelayed({
+                        if (!uiState.isSkipped) {
+                            viewModel.onEvent(SplashScreenUiEvent.OnSplashTimeout)
+                        }
+                    }, splashTimeout)
+                } catch (e: Exception) {
+                    Logs.e("SplashScreenRoute", "ERROR setUpVideo: ${e.localizedMessage}")
+                    viewModel.onEvent(SplashScreenUiEvent.OnVideoError)
+                }
+            }
+        },
+        modifier = Modifier
+    )
+}
+```
 
 ---
 
-## 5) Notes on preserving the original behavior
+## 5) Optional screen wrapper with back handling
 
-### Original fragment behavior preserved:
-- `showHeader(false)` and `showBottomBar(false)` on entry
-- checks reconnection state on start
-- plays splash video
-- ends splash on:
-  - video completion
-  - video error
-  - timeout
-  - reconnection condition
-- navigates to:
-  - legal text screen if `showLegalTextFlow` emits `true`
-  - welcome screen otherwise
-
-### What changed:
-- `Handler` replaced by Compose `LaunchedEffect + delay`
-- `VideoView` hosted via `AndroidView`
-- one-shot navigation/effects handled by `SharedFlow<SplashScreenUiEffect>`
-- state is now explicit and Compose-friendly
-
----
-
-## 6) If you want a more exact XML-to-Compose migration
-
-If you share:
-- `fragment_splash_screen.xml`
-- any custom button XML/style
-- `MainActivityViewModel`
-
-I can produce a **pixel-matched Compose version** with:
-- exact colors
-- exact visibility rules
-- exact button states
-- exact navigation wiring
-- optional `Scaffold`/`TopBar` integration
-
-If you want, I can also provide:
-1. a **full `NavHost` integration example**, or  
-2. a **Koin Compose ViewModel setup** for this screen.
-// SECOND ANSWER
-Below is a second-pass Compose bridge that mirrors the fragment more closely.
-
-I’m splitting it into:
-
-1. **A reducer-style `SplashScreenButtonsState`** that mirrors the fragment’s `collect {}` branches one-by-one.
-2. **A full `SplashScreenMainActivityViewModel` Compose bridge** that exposes the shared-flow behavior exactly like the fragment did, while keeping navigation/effects in Compose.
-
----
-
-# 1) Exact reducer-style `SplashScreenButtonsState`
-
-Even though the splash screen has no visible buttons, you asked for a reducer that mirrors the fragment’s `collect {}` branches one-by-one.  
-So this state holder models the exact branch outcomes:
-
-- `sharedViewModel.showLegalTextFlow.collect { ... }`
-- `vModel.serviceActiveFlow.collect { ... }`
-
-It also tracks the splash visibility and whether the splash was skipped.
+This preserves the “don’t let the user navigate back” behavior.
 
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
-import androidx.compose.runtime.Immutable
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.Composable
+import androidx.navigation.NavController
 
-@Immutable
+@Composable
+fun SplashScreenScreen(
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    showHeader: (Boolean) -> Unit,
+    showBottomBar: (Boolean) -> Unit,
+    getBravoService: () -> Any?,
+    showLegalTextWindow: (Boolean) -> Unit
+) {
+    BackHandler(enabled = true) {
+        // Don't let the user navigate back
+    }
+
+    SplashScreenRoute(
+        navController = navController,
+        viewModel = viewModel,
+        showHeader = showHeader,
+        showBottomBar = showBottomBar,
+        getBravoService = getBravoService,
+        showLegalTextWindow = showLegalTextWindow
+    )
+}
+```
+
+---
+
+## 6) Notes on preserving Jetpack Views navigation
+
+Your fragment used:
+
+- `iMainActivity.navigateTo(R.id.action_splashScreenFragment_to_welcomeFragment)`
+- `iMainActivity.navigateTo(R.id.action_splashScreenFragment_to_legalTextFragment)`
+
+In Compose, the equivalent is still `NavController.navigate(...)` using the same action IDs, so your existing navigation graph remains intact.
+
+If you’re using a shared activity interface, you can also wrap navigation in callbacks, but the above keeps the same Jetpack Navigation behavior.
+
+---
+
+## 7) About dialog state
+
+You requested dialog state/lifecycle collection only if the ViewModel uses a `CustomDialog`.
+
+This splash ViewModel does not use a dialog, so no dialog state is needed here.
+
+---
+
+## 8) If you want a more “Compose-native” video splash
+
+If you want, I can also provide a version that uses:
+
+- `AndroidView(VideoView)` as above, or
+- a fully Compose-hosted splash layout with an image/animation fallback
+
+But for exact parity with your fragment, `AndroidView(VideoView)` is the closest match.
+
+---
+
+## 9) Minimal integration example
+
+```kotlin
+@Composable
+fun SplashScreenDestination(
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    mainActivityViewModel: MainActivityViewModel
+) {
+    SplashScreenScreen(
+        navController = navController,
+        viewModel = viewModel,
+        showHeader = { mainActivityViewModel.showHeader(it) },
+        showBottomBar = { mainActivityViewModel.showBottomBar(it) },
+        getBravoService = { mainActivityViewModel.getBravoService() },
+        showLegalTextWindow = { mainActivityViewModel.showLegalTextWindow(it) }
+    )
+}
+```
+
+---
+
+If you want, I can next provide:
+
+1. a **Hilt/Koin Compose ViewModel factory version**, or  
+2. a **fully self-contained `MainActivityViewModel` Compose bridge** matching your current fragment architecture.
+// SECOND ANSWER
+Below is a second-pass version that is closer to the fragment’s exact behavior.
+
+I’m giving you:
+
+1. a **more exact `SplashScreenButtonsState` reducer** that mirrors the fragment’s `collect {}` branches one-by-one, and  
+2. a **full `SplashScreenMainActivityViewModel` Compose bridge** so the shared flows are wired into Compose the same way the fragment did.
+
+I’ll keep this aligned with your fragment logic and preserve Jetpack Navigation behavior.
+
+---
+
+# 1) Exact `SplashScreenButtonsState` reducer
+
+Even though the splash screen has no visible buttons, you asked for a reducer that mirrors every `collect {}` branch one-by-one.  
+So the reducer below models the fragment’s runtime branches as state transitions:
+
+- `setupComponents()`
+- `sharedViewModel.showLegalTextFlow.collect { ... }`
+- `vModel.serviceActiveFlow.collect { ... }`
+- `endSplash()`
+- `endSplashWithoutCheck()`
+
+This gives you a state holder that can drive Compose exactly like the fragment did.
+
+---
+
+## `SplashScreenButtonsState.kt`
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.ui.graphics.Color
+
 data class SplashScreenButtonsState(
-    val splashVisible: Boolean = true,
+    val showHeader: Boolean = false,
+    val showBottomBar: Boolean = false,
+
+    val isVideoVisible: Boolean = true,
     val isSkipped: Boolean = false,
+    val isSplashEnded: Boolean = false,
 
-    // Mirrors sharedViewModel.showLegalTextFlow.collect { ... }
-    val showLegalTextFlowValue: Boolean? = null,
-    val navigateToLegalText: Boolean = false,
-    val navigateToWelcome: Boolean = false,
-
-    // Mirrors vModel.serviceActiveFlow.collect { ... }
-    val serviceActiveFlowValue: Boolean? = null,
     val shouldSkipSplash: Boolean = false,
-    val shouldEndSplashWithoutCheck: Boolean = false,
+    val showLegalText: Boolean? = null,
 
-    // Mirrors endSplash() / endSplashWithoutCheck()
-    val showLegalTextWindowValue: Boolean? = null,
-    val hideVideoView: Boolean = false,
+    val navigateToWelcome: Boolean = false,
+    val navigateToLegalText: Boolean = false,
+
+    // Kept for completeness, but splash has no visible buttons in the fragment
+    val primaryButtonVisible: Boolean = false,
+    val secondaryButtonVisible: Boolean = false,
+    val tertiaryButtonVisible: Boolean = false,
+
+    val primaryButtonText: String = "",
+    val secondaryButtonText: String = "",
+    val tertiaryButtonText: String = "",
+
+    val primaryButtonBackground: Color = Color.Transparent,
+    val secondaryButtonBackground: Color = Color.Transparent,
+    val tertiaryButtonBackground: Color = Color.Transparent,
+
+    val primaryButtonTextColor: Color = Color.Transparent,
+    val secondaryButtonTextColor: Color = Color.Transparent,
+    val tertiaryButtonTextColor: Color = Color.Transparent,
+
+    val primaryButtonEnabled: Boolean = false,
+    val secondaryButtonEnabled: Boolean = false,
+    val tertiaryButtonEnabled: Boolean = false
 )
 ```
 
 ---
 
-## Reducer
-
-This reducer mirrors the fragment branches one-by-one.
-
+## `SplashScreenButtonsReducer.kt`
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
-sealed interface SplashScreenReducerAction {
-    data class ShowLegalTextFlowCollected(val value: Boolean?) : SplashScreenReducerAction
-    data class ServiceActiveFlowCollected(val value: Boolean) : SplashScreenReducerAction
-    data object EndSplash : SplashScreenReducerAction
-    data object EndSplashWithoutCheck : SplashScreenReducerAction
-    data object ResetNavigationFlags : SplashScreenReducerAction
-}
+object SplashScreenButtonsReducer {
 
-fun reduceSplashScreenButtonsState(
-    current: SplashScreenButtonsState,
-    action: SplashScreenReducerAction
-): SplashScreenButtonsState {
-    return when (action) {
-        is SplashScreenReducerAction.ShowLegalTextFlowCollected -> {
-            // Mirrors:
-            // sharedViewModel.showLegalTextFlow.collect {
-            //   it?.let { showLegal ->
-            //      if (showLegal) navigate legal
-            //      else navigate welcome
-            //   }
-            // }
-            if (action.value == null) {
+    fun reduce(
+        current: SplashScreenButtonsState,
+        event: SplashScreenUiEvent
+    ): SplashScreenButtonsState {
+        return when (event) {
+            SplashScreenUiEvent.OnScreenStarted -> {
                 current.copy(
-                    showLegalTextFlowValue = null,
-                    navigateToLegalText = false,
-                    navigateToWelcome = false
+                    showHeader = false,
+                    showBottomBar = false
                 )
-            } else if (action.value) {
+            }
+
+            SplashScreenUiEvent.OnVideoCompleted -> {
                 current.copy(
-                    showLegalTextFlowValue = true,
-                    navigateToLegalText = true,
-                    navigateToWelcome = false
+                    isVideoVisible = false,
+                    isSplashEnded = true,
+                    showLegalText = false
                 )
-            } else {
+            }
+
+            SplashScreenUiEvent.OnVideoError -> {
                 current.copy(
-                    showLegalTextFlowValue = false,
-                    navigateToLegalText = false,
+                    isVideoVisible = false,
+                    isSplashEnded = true,
+                    showLegalText = false
+                )
+            }
+
+            SplashScreenUiEvent.OnSplashTimeout -> {
+                current.copy(
+                    isVideoVisible = false,
+                    isSplashEnded = true,
+                    showLegalText = false
+                )
+            }
+
+            SplashScreenUiEvent.OnBackPressed -> current
+
+            SplashScreenUiEvent.OnSkipSplash -> {
+                current.copy(
+                    isSkipped = true,
+                    isVideoVisible = false,
+                    isSplashEnded = true,
+                    showLegalText = true,
                     navigateToWelcome = true
                 )
             }
         }
+    }
 
-        is SplashScreenReducerAction.ServiceActiveFlowCollected -> {
-            // Mirrors:
-            // vModel.serviceActiveFlow.collect { shouldSkipSplash ->
-            //   if (shouldSkipSplash && iMainActivity.getBravoService() == null) {
-            //      endSplashWithoutCheck()
-            //   }
-            // }
-            current.copy(
-                serviceActiveFlowValue = action.value,
-                shouldSkipSplash = action.value,
-                shouldEndSplashWithoutCheck = action.value
-            )
-        }
+    fun reduceFromSharedShowLegalText(
+        current: SplashScreenButtonsState,
+        showLegal: Boolean
+    ): SplashScreenButtonsState {
+        return current.copy(
+            showLegalText = showLegal,
+            navigateToLegalText = showLegal,
+            navigateToWelcome = !showLegal
+        )
+    }
 
-        SplashScreenReducerAction.EndSplash -> {
-            // Mirrors:
-            // endSplash()
+    fun reduceFromServiceActive(
+        current: SplashScreenButtonsState,
+        shouldSkipSplash: Boolean,
+        bravoServiceExists: Boolean
+    ): SplashScreenButtonsState {
+        return if (shouldSkipSplash && !bravoServiceExists) {
             current.copy(
-                splashVisible = false,
-                hideVideoView = true,
-                showLegalTextWindowValue = false
-            )
-        }
-
-        SplashScreenReducerAction.EndSplashWithoutCheck -> {
-            // Mirrors:
-            // endSplashWithoutCheck()
-            current.copy(
-                splashVisible = false,
                 isSkipped = true,
-                hideVideoView = true,
-                showLegalTextWindowValue = true,
-                shouldEndSplashWithoutCheck = true
+                isVideoVisible = false,
+                isSplashEnded = true,
+                showLegalText = true,
+                navigateToWelcome = true
             )
-        }
-
-        SplashScreenReducerAction.ResetNavigationFlags -> {
+        } else {
             current.copy(
-                navigateToLegalText = false,
-                navigateToWelcome = false
+                shouldSkipSplash = shouldSkipSplash
             )
         }
+    }
+
+    fun reduceEndSplash(
+        current: SplashScreenButtonsState
+    ): SplashScreenButtonsState {
+        return current.copy(
+            isVideoVisible = false,
+            isSplashEnded = true,
+            showLegalText = false
+        )
+    }
+
+    fun reduceEndSplashWithoutCheck(
+        current: SplashScreenButtonsState
+    ): SplashScreenButtonsState {
+        return current.copy(
+            isSkipped = true,
+            isVideoVisible = false,
+            isSplashEnded = true,
+            showLegalText = true,
+            navigateToWelcome = true
+        )
     }
 }
 ```
@@ -540,99 +634,54 @@ fun reduceSplashScreenButtonsState(
 
 # 2) Full `SplashScreenMainActivityViewModel` Compose bridge
 
-This is the Compose bridge for the shared `MainActivityViewModel` behavior.
+This is the shared/activity ViewModel bridge that replaces the fragment’s `sharedViewModel` usage.
 
 It exposes:
+
 - `reconnectionFlow`
 - `showLegalTextFlow`
-- `showLegalTextWindow(...)`
-- `navigateTo(...)`
-- `getBravoService()`
-- `showHeader(...)`
-- `showBottomBar(...)`
+- `showHeaderFlow`
+- `showBottomBarFlow`
+- `navigateToFlow` if you want to keep navigation centralized
+- helper methods:
+  - `showLegalTextWindow(...)`
+  - `showHeader(...)`
+  - `showBottomBar(...)`
+  - `navigateToWelcome()`
+  - `navigateToLegalText()`
+  - `getBravoService()`
 
-It also provides a Compose-friendly `UiState` and `UiEffect` pattern so the splash screen can observe and react exactly like the fragment.
+This mirrors the fragment’s dependency on `MainActivityViewModel`.
 
 ---
 
-## Compose bridge contract
-
+## `SplashScreenMainActivityViewModel.kt`
 ```kotlin
-package ifac.td.taxi.viewmodel
+package ifac.td.taxi.ui.screen
 
-import androidx.annotation.IdRes
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-
-data class SplashScreenMainActivityUiState(
-    val headerVisible: Boolean = true,
-    val bottomBarVisible: Boolean = true,
-    val legalTextWindowVisible: Boolean? = null,
-    val reconnectionValue: Boolean = false,
-)
-
-sealed interface SplashScreenMainActivityUiEffect {
-    data class NavigateTo(@IdRes val destinationId: Int) : SplashScreenMainActivityUiEffect
-    data object HideBackNavigation : SplashScreenMainActivityUiEffect
-}
-```
-
----
-
-## Full bridge ViewModel
-
-```kotlin
-package ifac.td.taxi.viewmodel
-
-import androidx.annotation.IdRes
-import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 class SplashScreenMainActivityViewModel : ViewModel() {
 
-    private val _uiState = MutableStateFlow(SplashScreenMainActivityUiState())
-    val uiState: StateFlow<SplashScreenMainActivityUiState> = _uiState.asStateFlow()
+    private val _showHeaderFlow = MutableStateFlow(true)
+    val showHeaderFlow: StateFlow<Boolean> = _showHeaderFlow.asStateFlow()
 
-    private val _showLegalTextFlow = MutableSharedFlow<Boolean?>()
-    val showLegalTextFlow: SharedFlow<Boolean?> = _showLegalTextFlow.asSharedFlow()
+    private val _showBottomBarFlow = MutableStateFlow(true)
+    val showBottomBarFlow: StateFlow<Boolean> = _showBottomBarFlow.asStateFlow()
 
-    private val _effects = MutableSharedFlow<SplashScreenMainActivityUiEffect>()
-    val effects: SharedFlow<SplashScreenMainActivityUiEffect> = _effects.asSharedFlow()
+    private val _showLegalTextFlow = MutableStateFlow<Boolean?>(null)
+    val showLegalTextFlow: StateFlow<Boolean?> = _showLegalTextFlow.asStateFlow()
+
+    private val _reconnectionFlow = MutableStateFlow(false)
+    val reconnectionFlow: StateFlow<Boolean> = _reconnectionFlow.asStateFlow()
+
+    private val _navigateToFlow = MutableStateFlow<Int?>(null)
+    val navigateToFlow: StateFlow<Int?> = _navigateToFlow.asStateFlow()
 
     private var bravoService: Any? = null
-
-    val reconnectionFlow = MutableStateFlow(false)
-
-    fun showHeader(visible: Boolean) {
-        _uiState.value = _uiState.value.copy(headerVisible = visible)
-    }
-
-    fun showBottomBar(visible: Boolean) {
-        _uiState.value = _uiState.value.copy(bottomBarVisible = visible)
-    }
-
-    fun showLegalTextWindow(show: Boolean) {
-        _uiState.value = _uiState.value.copy(legalTextWindowVisible = show)
-        _showLegalTextFlow.tryEmit(show)
-    }
-
-    fun navigateTo(@IdRes destinationId: Int) {
-        _effects.tryEmit(SplashScreenMainActivityUiEffect.NavigateTo(destinationId))
-    }
-
-    fun customBackPressed(block: () -> Unit) {
-        _effects.tryEmit(SplashScreenMainActivityUiEffect.HideBackNavigation)
-        block()
-    }
 
     fun setBravoService(service: Any?) {
         bravoService = service
@@ -640,122 +689,263 @@ class SplashScreenMainActivityViewModel : ViewModel() {
 
     fun getBravoService(): Any? = bravoService
 
-    fun setReconnectionValue(value: Boolean) {
-        reconnectionFlow.value = value
-        _uiState.value = _uiState.value.copy(reconnectionValue = value)
+    fun setReconnection(value: Boolean) {
+        _reconnectionFlow.value = value
+    }
+
+    fun showHeader(show: Boolean) {
+        _showHeaderFlow.value = show
+    }
+
+    fun showBottomBar(show: Boolean) {
+        _showBottomBarFlow.value = show
+    }
+
+    fun showLegalTextWindow(show: Boolean) {
+        _showLegalTextFlow.value = show
+    }
+
+    fun navigateToWelcome() {
+        _navigateToFlow.value = R.id.action_splashScreenFragment_to_welcomeFragment
+    }
+
+    fun navigateToLegalText() {
+        _navigateToFlow.value = R.id.action_splashScreenFragment_to_legalTextFragment
+    }
+
+    fun consumeNavigation() {
+        _navigateToFlow.value = null
     }
 }
 ```
 
+> Note: this uses `R.id...`, so place it in a module where `R` is available.
+
 ---
 
-# 3) Compose screen wiring that mirrors the fragment exactly
+# 3) Compose bridge that matches the fragment’s shared-flow behavior
 
-This is the important part: the Compose screen collects the shared flow and the splash VM flow exactly like the fragment did.
+This is the Compose equivalent of:
 
+- `setupComponents()`
+- `setupObservers()`
+- `onResume()`
+- `onPause()`
+- `endSplash()`
+- `endSplashWithoutCheck()`
+
+---
+
+## `SplashScreenRoute.kt`
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
-import androidx.compose.runtime.*
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
+import android.graphics.Color
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.widget.VideoView
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
 import ifac.td.taxi.R
-import ifac.td.taxi.viewmodel.SplashScreenMainActivityViewModel
-import ifac.td.taxi.viewmodel.SplashScreenUiEffect
-import ifac.td.taxi.viewmodel.SplashScreenUiEvent
-import ifac.td.taxi.viewmodel.SplashScreenViewModel
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.flow.collectLatest
 
 @Composable
 fun SplashScreenRoute(
-    splashViewModel: SplashScreenViewModel,
-    mainActivityViewModel: SplashScreenMainActivityViewModel,
-    onNavigateToWelcome: () -> Unit,
-    onNavigateToLegalText: () -> Unit,
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    sharedViewModel: SplashScreenMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onShowLegalTextWindow: (Boolean) -> Unit,
+    getBravoService: () -> Any?
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val sharedShowLegalText by sharedViewModel.showLegalTextFlow.collectAsStateWithLifecycle()
+    val sharedReconnection by sharedViewModel.reconnectionFlow.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) {
-        mainActivityViewModel.showHeader(false)
-        mainActivityViewModel.showBottomBar(false)
-        splashViewModel.onEvent(
-            SplashScreenUiEvent.CheckIsReconnecting(
-                reconnectionFlowValue = mainActivityViewModel.reconnectionFlow.value
-            )
-        )
+    val context = LocalContext.current
+    val handler = remember { Handler(Looper.getMainLooper()) }
+    val splashTimeout = 4800L
+
+    BackHandler(enabled = true) {
+        // Don't let the user navigate back
     }
 
     LaunchedEffect(Unit) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                mainActivityViewModel.showLegalTextFlow.collectLatest { showLegal ->
-                    showLegal?.let {
-                        if (it) onNavigateToLegalText() else onNavigateToWelcome()
+        onShowHeader(false)
+        onShowBottomBar(false)
+        viewModel.checkIsReconnecting(sharedReconnection)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                SplashScreenUiEffect.HideSplashVideo -> {
+                    onShowLegalTextWindow(false)
+                }
+
+                SplashScreenUiEffect.NavigateToWelcome -> {
+                    navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
                     }
                 }
-            }
 
-            launch {
-                splashViewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        SplashScreenUiEffect.EndSplash -> {
-                            mainActivityViewModel.showLegalTextWindow(false)
-                        }
-
-                        SplashScreenUiEffect.EndSplashWithoutCheck -> {
-                            mainActivityViewModel.showLegalTextWindow(true)
-                            onNavigateToWelcome()
-                        }
-                    }
-                }
-            }
-
-            launch {
-                mainActivityViewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        is SplashScreenMainActivityUiEffect.NavigateTo -> {
-                            // keep navigation in Compose host
-                        }
-                        SplashScreenMainActivityUiEffect.HideBackNavigation -> Unit
+                SplashScreenUiEffect.NavigateToLegalText -> {
+                    navController.navigate(R.id.action_splashScreenFragment_to_legalTextFragment) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
                     }
                 }
             }
         }
     }
 
-    SplashScreenScreen(
-        splashVideoRes = R.raw.new_splash,
-        splashBackgroundRes = R.color.splash_background,
-        onVideoPrepared = { splashViewModel.onEvent(SplashScreenUiEvent.VideoPrepared) },
-        onVideoCompleted = { splashViewModel.onEvent(SplashScreenUiEvent.VideoCompleted) },
-        onVideoError = { what, extra ->
-            splashViewModel.onEvent(SplashScreenUiEvent.VideoError(what, extra))
+    LaunchedEffect(sharedShowLegalText) {
+        sharedShowLegalText?.let { showLegal ->
+            if (showLegal) {
+                navController.navigate(R.id.action_splashScreenFragment_to_legalTextFragment) {
+                    launchSingleTop = true
+                    popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                }
+            } else {
+                navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                    launchSingleTop = true
+                    popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.shouldSkipSplash) {
+        Logs.d("SplashScreenFragment", "checkIsReconnecting shouldSkipSplash: ${uiState.shouldSkipSplash}")
+        if (uiState.shouldSkipSplash && getBravoService() == null) {
+            sharedViewModel.showLegalTextWindow(true)
+            navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                launchSingleTop = true
+                popUpTo(R.id.splashScreenFragment) { inclusive = true }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            handler.removeCallbacksAndMessages(null)
+        }
+    }
+
+    AndroidView(
+        factory = {
+            VideoView(it).apply {
+                setZOrderOnTop(true)
+                setBackgroundColor(it.getColor(R.color.splash_background, null))
+
+                setOnPreparedListener { mediaPlayer ->
+                    Logs.d("SplashScreenFragment", "setUpVideo -> Video prepared, starting")
+                    setBackgroundColor(Color.TRANSPARENT)
+                    mediaPlayer.isLooping = false
+                    mediaPlayer.start()
+                }
+
+                setOnCompletionListener {
+                    Logs.d("SplashScreenFragment", "setUpVideo -> Video ended")
+                    if (!uiState.isSkipped) {
+                        onShowLegalTextWindow(false)
+                    }
+                }
+
+                setOnErrorListener { _, what, extra ->
+                    Logs.e("SplashScreenFragment", "Error during video playback: what=$what, extra=$extra")
+                    if (!uiState.isSkipped) {
+                        onShowLegalTextWindow(false)
+                    }
+                    true
+                }
+
+                try {
+                    val videoUri = Uri.parse("android.resource://${context.packageName}/${R.raw.new_splash}")
+                    setVideoURI(videoUri)
+
+                    handler.postDelayed({
+                        if (!uiState.isSkipped) {
+                            onShowLegalTextWindow(false)
+                        }
+                    }, splashTimeout)
+                } catch (e: Exception) {
+                    Logs.e("SplashScreenFragment", "ERROR setUpVideo: ${e.localizedMessage}")
+                    if (!uiState.isSkipped) {
+                        onShowLegalTextWindow(false)
+                    }
+                }
+            }
         },
-        onTimeoutReached = { splashViewModel.onEvent(SplashScreenUiEvent.TimeoutReached) }
+        modifier = Modifier
     )
 }
 ```
 
 ---
 
-# 4) Exact branch mapping to the fragment
+# 4) Compose screen wrapper
+
+This is the “fragment replacement” entry point.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.runtime.Composable
+import androidx.navigation.NavController
+
+@Composable
+fun SplashScreenScreen(
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    sharedViewModel: SplashScreenMainActivityViewModel
+) {
+    SplashScreenRoute(
+        navController = navController,
+        viewModel = viewModel,
+        sharedViewModel = sharedViewModel,
+        onShowHeader = { sharedViewModel.showHeader(it) },
+        onShowBottomBar = { sharedViewModel.showBottomBar(it) },
+        onShowLegalTextWindow = { sharedViewModel.showLegalTextWindow(it) },
+        getBravoService = { sharedViewModel.getBravoService() }
+    )
+}
+```
+
+---
+
+# 5) How this mirrors the fragment exactly
 
 ## Fragment branch:
 ```kotlin
 sharedViewModel.showLegalTextFlow.collect {
     it?.let { showLegal ->
-        if (showLegal) navigate legal
-        else navigate welcome
+        if (showLegal) {
+            navigateToLegalText()
+        } else {
+            navigateToWelcome()
+        }
     }
 }
 ```
 
-### Compose equivalent:
-- `SplashScreenMainActivityViewModel.showLegalTextWindow(show: Boolean)`
-- emits into `showLegalTextFlow`
-- `SplashScreenRoute` collects it and navigates exactly the same way
+## Compose equivalent:
+- `sharedViewModel.showLegalTextFlow` is collected with `collectAsStateWithLifecycle()`
+- `LaunchedEffect(sharedShowLegalText)` performs the same branch
+- navigation uses the same action IDs
 
 ---
 
@@ -768,106 +958,68 @@ vModel.serviceActiveFlow.collect { shouldSkipSplash ->
 }
 ```
 
-### Compose equivalent:
-- `SplashScreenViewModel` emits `EndSplashWithoutCheck`
-- Compose route handles it by:
-  - `mainActivityViewModel.showLegalTextWindow(true)`
-  - navigate to welcome
-
-If you want the condition to be checked exactly in the UI layer, you can do this:
-
-```kotlin
-launch {
-    splashViewModel.serviceActiveFlow.collectLatest { shouldSkipSplash ->
-        if (shouldSkipSplash && mainActivityViewModel.getBravoService() == null) {
-            mainActivityViewModel.showLegalTextWindow(true)
-            onNavigateToWelcome()
-        }
-    }
-}
-```
-
-But the cleaner Compose bridge is to keep the condition in the ViewModel and emit the effect.
+## Compose equivalent:
+- `viewModel.checkIsReconnecting(sharedReconnection)`
+- `LaunchedEffect(uiState.shouldSkipSplash)` checks the same condition
+- if true and no bravo service, it:
+  - sets legal text window true
+  - navigates to welcome
 
 ---
 
-# 5) If you want the reducer to be even closer to the fragment
-
-You can split the reducer into two explicit reducers:
-
-- one for `showLegalTextFlow`
-- one for `serviceActiveFlow`
-
-That makes the one-to-one mapping even more obvious:
-
+## Fragment branch:
 ```kotlin
-fun reduceShowLegalTextFlow(
-    current: SplashScreenButtonsState,
-    value: Boolean?
-): SplashScreenButtonsState = when (value) {
-    null -> current.copy(showLegalTextFlowValue = null)
-    true -> current.copy(
-        showLegalTextFlowValue = true,
-        navigateToLegalText = true,
-        navigateToWelcome = false
-    )
-    false -> current.copy(
-        showLegalTextFlowValue = false,
-        navigateToLegalText = false,
-        navigateToWelcome = true
-    )
-}
-
-fun reduceServiceActiveFlow(
-    current: SplashScreenButtonsState,
-    value: Boolean
-): SplashScreenButtonsState = current.copy(
-    serviceActiveFlowValue = value,
-    shouldSkipSplash = value,
-    shouldEndSplashWithoutCheck = value
-)
+endSplash()
 ```
+
+## Compose equivalent:
+- `onShowLegalTextWindow(false)`
 
 ---
 
-If you want, I can do a **third pass** and give you the **complete final production-ready Compose implementation** with:
-- `NavController` navigation calls
-- `collectAsStateWithLifecycle`
-- `DisposableEffect` cleanup for the video
-- exact `VideoView` lifecycle handling
-- a Koin Compose setup for both ViewModels
+## Fragment branch:
+```kotlin
+endSplashWithoutCheck()
+```
+
+## Compose equivalent:
+- `sharedViewModel.showLegalTextWindow(true)`
+- navigate to welcome
+- mark skipped in reducer/state
+
+---
+
+# 6) Important note about the reducer
+
+Because the fragment’s `collect {}` blocks are side-effect driven, the reducer is best used as a **state mirror**, not as the sole source of navigation truth.
+
+So the recommended pattern is:
+
+- reducer updates `SplashScreenButtonsState`
+- `uiEffect` handles navigation
+- shared ViewModel bridge handles activity-level state like header/bottom bar/legal text
+
+That gives you the closest Compose equivalent to the fragment.
+
+---
+
+If you want, I can do a third pass and give you:
+
+1. a **single unified `SplashScreenViewModel`** that combines `UiState + ButtonsState + SharedFlow<UiEffect>` cleanly, and  
+2. a **fully wired `@Composable` screen with `rememberSaveable` state and no duplicated collectors**.
 // THIRD ANSWER
-Below is a **single Kotlin file** that compiles as a Compose screen plus both VMs, using only Android + Jetpack Compose references.
-
-It includes:
-- a Compose `SplashScreenRoute`
-- a Compose `SplashScreenContent`
-- a `SplashScreenViewModel`
-- a `SplashScreenMainActivityViewModel`
-- `UiState`, `UiEvent`, `UiEffect`
-- a reducer-style `SplashScreenButtonsState`
-- lifecycle-aware collection
-- `VideoView` via `AndroidView`
-- navigation callbacks that preserve the fragment behavior
-
-> Note: I kept the code self-contained. If your project already has `BaseViewModel`, `SessionUseCase`, or a real `MainActivityViewModel`, you can swap those in easily.
-
----
-
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
 import android.app.Application
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.widget.VideoView
-import androidx.annotation.IdRes
-import androidx.annotation.RawRes
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -877,12 +1029,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
 import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.framework.util.Logs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -894,127 +1047,76 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
-// -----------------------------------------------------------------------------
-// 1) UI STATE / EVENT / EFFECT
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// UI STATE / EFFECTS
+// ------------------------------------------------------------
 
-@Immutable
 data class SplashScreenUiState(
-    val isVideoVisible: Boolean = true,
     val isSkipped: Boolean = false,
-    val isCheckingReconnection: Boolean = false,
+    val isVideoVisible: Boolean = true,
+    val shouldSkipSplash: Boolean = false
 )
 
 sealed interface SplashScreenUiEvent {
-    data class CheckIsReconnecting(val reconnectionFlowValue: Boolean) : SplashScreenUiEvent
-    data object VideoPrepared : SplashScreenUiEvent
-    data object VideoCompleted : SplashScreenUiEvent
-    data class VideoError(val what: Int, val extra: Int) : SplashScreenUiEvent
-    data object TimeoutReached : SplashScreenUiEvent
+    data object OnScreenStarted : SplashScreenUiEvent
+    data object OnVideoCompleted : SplashScreenUiEvent
+    data object OnVideoError : SplashScreenUiEvent
+    data object OnSplashTimeout : SplashScreenUiEvent
+    data object OnBackPressed : SplashScreenUiEvent
 }
 
 sealed interface SplashScreenUiEffect {
-    data object EndSplash : SplashScreenUiEffect
-    data object EndSplashWithoutCheck : SplashScreenUiEffect
+    data object HideSplash : SplashScreenUiEffect
+    data object NavigateToWelcome : SplashScreenUiEffect
+    data object NavigateToLegalText : SplashScreenUiEffect
 }
 
-// -----------------------------------------------------------------------------
-// 2) REDUCER-STYLE BUTTON STATE MIRRORING FRAGMENT BRANCHES
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// MAIN ACTIVITY BRIDGE VM (Compose replacement for sharedViewModel)
+// ------------------------------------------------------------
 
-@Immutable
-data class SplashScreenButtonsState(
-    val splashVisible: Boolean = true,
-    val isSkipped: Boolean = false,
+class SplashScreenMainActivityViewModel : ViewModel() {
 
-    // Mirrors sharedViewModel.showLegalTextFlow.collect { ... }
-    val showLegalTextFlowValue: Boolean? = null,
-    val navigateToLegalText: Boolean = false,
-    val navigateToWelcome: Boolean = false,
+    private val _showHeaderFlow = MutableStateFlow(false)
+    val showHeaderFlow: StateFlow<Boolean> = _showHeaderFlow.asStateFlow()
 
-    // Mirrors vModel.serviceActiveFlow.collect { ... }
-    val serviceActiveFlowValue: Boolean? = null,
-    val shouldSkipSplash: Boolean = false,
-    val shouldEndSplashWithoutCheck: Boolean = false,
+    private val _showBottomBarFlow = MutableStateFlow(false)
+    val showBottomBarFlow: StateFlow<Boolean> = _showBottomBarFlow.asStateFlow()
 
-    // Mirrors endSplash() / endSplashWithoutCheck()
-    val showLegalTextWindowValue: Boolean? = null,
-    val hideVideoView: Boolean = false,
-)
+    private val _showLegalTextFlow = MutableStateFlow<Boolean?>(null)
+    val showLegalTextFlow: StateFlow<Boolean?> = _showLegalTextFlow.asStateFlow()
 
-sealed interface SplashScreenReducerAction {
-    data class ShowLegalTextFlowCollected(val value: Boolean?) : SplashScreenReducerAction
-    data class ServiceActiveFlowCollected(val value: Boolean) : SplashScreenReducerAction
-    data object EndSplash : SplashScreenReducerAction
-    data object EndSplashWithoutCheck : SplashScreenReducerAction
-    data object ResetNavigationFlags : SplashScreenReducerAction
-}
+    private val _reconnectionFlow = MutableStateFlow(false)
+    val reconnectionFlow: StateFlow<Boolean> = _reconnectionFlow.asStateFlow()
 
-fun reduceSplashScreenButtonsState(
-    current: SplashScreenButtonsState,
-    action: SplashScreenReducerAction
-): SplashScreenButtonsState {
-    return when (action) {
-        is SplashScreenReducerAction.ShowLegalTextFlowCollected -> {
-            if (action.value == null) {
-                current.copy(
-                    showLegalTextFlowValue = null,
-                    navigateToLegalText = false,
-                    navigateToWelcome = false
-                )
-            } else if (action.value) {
-                current.copy(
-                    showLegalTextFlowValue = true,
-                    navigateToLegalText = true,
-                    navigateToWelcome = false
-                )
-            } else {
-                current.copy(
-                    showLegalTextFlowValue = false,
-                    navigateToLegalText = false,
-                    navigateToWelcome = true
-                )
-            }
-        }
+    private var bravoService: Any? = null
 
-        is SplashScreenReducerAction.ServiceActiveFlowCollected -> {
-            current.copy(
-                serviceActiveFlowValue = action.value,
-                shouldSkipSplash = action.value,
-                shouldEndSplashWithoutCheck = action.value
-            )
-        }
+    fun setBravoService(service: Any?) {
+        bravoService = service
+    }
 
-        SplashScreenReducerAction.EndSplash -> {
-            current.copy(
-                splashVisible = false,
-                hideVideoView = true,
-                showLegalTextWindowValue = false
-            )
-        }
+    fun getBravoService(): Any? = bravoService
 
-        SplashScreenReducerAction.EndSplashWithoutCheck -> {
-            current.copy(
-                splashVisible = false,
-                isSkipped = true,
-                hideVideoView = true,
-                showLegalTextWindowValue = true,
-                shouldEndSplashWithoutCheck = true
-            )
-        }
+    fun showHeader(show: Boolean) {
+        _showHeaderFlow.value = show
+    }
 
-        SplashScreenReducerAction.ResetNavigationFlags -> {
-            current.copy(
-                navigateToLegalText = false,
-                navigateToWelcome = false
-            )
-        }
+    fun showBottomBar(show: Boolean) {
+        _showBottomBarFlow.value = show
+    }
+
+    fun showLegalTextWindow(show: Boolean) {
+        _showLegalTextFlow.value = show
+    }
+
+    fun setReconnection(value: Boolean) {
+        _reconnectionFlow.value = value
     }
 }
 
-// -----------------------------------------------------------------------------
-// 3) SPLASH SCREEN VIEWMODEL
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// SPLASH SCREEN VIEWMODEL
+// ------------------------------------------------------------
 
 class SplashScreenViewModel(
     application: Application,
@@ -1026,326 +1128,249 @@ class SplashScreenViewModel(
     private val _uiState = MutableStateFlow(SplashScreenUiState())
     val uiState: StateFlow<SplashScreenUiState> = _uiState.asStateFlow()
 
-    private val _effects = MutableSharedFlow<SplashScreenUiEffect>()
-    val effects: SharedFlow<SplashScreenUiEffect> = _effects.asSharedFlow()
-
-    private val _serviceActiveFlow = MutableSharedFlow<Boolean>()
-    val serviceActiveFlow: SharedFlow<Boolean> = _serviceActiveFlow.asSharedFlow()
+    private val _uiEffect = MutableSharedFlow<SplashScreenUiEffect>()
+    val uiEffect: SharedFlow<SplashScreenUiEffect> = _uiEffect.asSharedFlow()
 
     fun onEvent(event: SplashScreenUiEvent) {
         when (event) {
-            is SplashScreenUiEvent.CheckIsReconnecting -> checkIsReconnecting(event.reconnectionFlowValue)
-            SplashScreenUiEvent.VideoPrepared -> {
-                _uiState.value = _uiState.value.copy(isVideoVisible = true)
+            SplashScreenUiEvent.OnScreenStarted -> {
+                // no-op; kept for parity
             }
-            SplashScreenUiEvent.VideoCompleted -> {
+
+            SplashScreenUiEvent.OnVideoCompleted -> {
+                _uiState.value = _uiState.value.copy(isVideoVisible = false)
                 viewModelScope.launch {
-                    _effects.emit(SplashScreenUiEffect.EndSplash)
+                    _uiEffect.emit(SplashScreenUiEffect.HideSplash)
                 }
             }
-            is SplashScreenUiEvent.VideoError -> {
+
+            SplashScreenUiEvent.OnVideoError -> {
+                _uiState.value = _uiState.value.copy(isVideoVisible = false)
                 viewModelScope.launch {
-                    _effects.emit(SplashScreenUiEffect.EndSplash)
+                    _uiEffect.emit(SplashScreenUiEffect.HideSplash)
                 }
             }
-            SplashScreenUiEvent.TimeoutReached -> {
+
+            SplashScreenUiEvent.OnSplashTimeout -> {
+                _uiState.value = _uiState.value.copy(isVideoVisible = false)
                 viewModelScope.launch {
-                    _effects.emit(SplashScreenUiEffect.EndSplash)
+                    _uiEffect.emit(SplashScreenUiEffect.HideSplash)
                 }
             }
+
+            SplashScreenUiEvent.OnBackPressed -> Unit
         }
     }
 
     fun checkIsReconnecting(reconnectionFlowValue: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             val serviceWasActive = sessionUseCase.getServiceWasActive()
+            Logs.d(
+                TAG,
+                "checkIsReconnecting serviceWasActive: $serviceWasActive, reconnectionFlowValue: $reconnectionFlowValue"
+            )
             delay(50)
-            _serviceActiveFlow.emit(serviceWasActive)
+            _uiState.value = _uiState.value.copy(shouldSkipSplash = serviceWasActive)
         }
     }
-}
 
-// -----------------------------------------------------------------------------
-// 4) MAIN ACTIVITY VIEWMODEL COMPOSE BRIDGE
-// -----------------------------------------------------------------------------
-
-@Immutable
-data class SplashScreenMainActivityUiState(
-    val headerVisible: Boolean = true,
-    val bottomBarVisible: Boolean = true,
-    val legalTextWindowVisible: Boolean? = null,
-    val reconnectionValue: Boolean = false,
-)
-
-sealed interface SplashScreenMainActivityUiEffect {
-    data class NavigateTo(@IdRes val destinationId: Int) : SplashScreenMainActivityUiEffect
-    data object HideBackNavigation : SplashScreenMainActivityUiEffect
-}
-
-class SplashScreenMainActivityViewModel : AndroidViewModel(Application()) {
-
-    private val _uiState = MutableStateFlow(SplashScreenMainActivityUiState())
-    val uiState: StateFlow<SplashScreenMainActivityUiState> = _uiState.asStateFlow()
-
-    private val _showLegalTextFlow = MutableSharedFlow<Boolean?>()
-    val showLegalTextFlow: SharedFlow<Boolean?> = _showLegalTextFlow.asSharedFlow()
-
-    private val _effects = MutableSharedFlow<SplashScreenMainActivityUiEffect>()
-    val effects: SharedFlow<SplashScreenMainActivityUiEffect> = _effects.asSharedFlow()
-
-    private var bravoService: Any? = null
-
-    val reconnectionFlow = MutableStateFlow(false)
-
-    fun showHeader(visible: Boolean) {
-        _uiState.value = _uiState.value.copy(headerVisible = visible)
+    fun markSkipped() {
+        _uiState.value = _uiState.value.copy(isSkipped = true, isVideoVisible = false)
     }
 
-    fun showBottomBar(visible: Boolean) {
-        _uiState.value = _uiState.value.copy(bottomBarVisible = visible)
+    fun onEndSplash() {
+        _uiState.value = _uiState.value.copy(isVideoVisible = false)
     }
 
-    fun showLegalTextWindow(show: Boolean) {
-        _uiState.value = _uiState.value.copy(legalTextWindowVisible = show)
-        _showLegalTextFlow.tryEmit(show)
-    }
-
-    fun navigateTo(@IdRes destinationId: Int) {
-        _effects.tryEmit(SplashScreenMainActivityUiEffect.NavigateTo(destinationId))
-    }
-
-    fun customBackPressed(block: () -> Unit) {
-        _effects.tryEmit(SplashScreenMainActivityUiEffect.HideBackNavigation)
-        block()
-    }
-
-    fun setBravoService(service: Any?) {
-        bravoService = service
-    }
-
-    fun getBravoService(): Any? = bravoService
-
-    fun setReconnectionValue(value: Boolean) {
-        reconnectionFlow.value = value
-        _uiState.value = _uiState.value.copy(reconnectionValue = value)
+    fun onEndSplashWithoutCheck() {
+        _uiState.value = _uiState.value.copy(
+            isSkipped = true,
+            isVideoVisible = false
+        )
     }
 }
 
-// -----------------------------------------------------------------------------
-// 5) COMPOSE SCREEN
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// COMPOSE SCREEN
+// ------------------------------------------------------------
 
 @Composable
 fun SplashScreenRoute(
-    splashViewModel: SplashScreenViewModel,
-    mainActivityViewModel: SplashScreenMainActivityViewModel,
-    onNavigateToWelcome: () -> Unit,
-    onNavigateToLegalText: () -> Unit,
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    sharedViewModel: SplashScreenMainActivityViewModel
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val uiState by splashViewModel.uiState.collectAsStateWithLifecycle()
-    val mainUiState by mainActivityViewModel.uiState.collectAsStateWithLifecycle()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val showLegalText by sharedViewModel.showLegalTextFlow.collectAsStateWithLifecycle()
+    val reconnection by sharedViewModel.reconnectionFlow.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) {
-        mainActivityViewModel.showHeader(false)
-        mainActivityViewModel.showBottomBar(false)
-        splashViewModel.onEvent(
-            SplashScreenUiEvent.CheckIsReconnecting(
-                reconnectionFlowValue = mainActivityViewModel.reconnectionFlow.value
-            )
-        )
+    val context = LocalContext.current
+    val splashTimeout = 4800L
+    val handler = remember { Handler(Looper.getMainLooper()) }
+
+    BackHandler(enabled = true) {
+        // Don't let the user navigate back
     }
 
     LaunchedEffect(Unit) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                mainActivityViewModel.showLegalTextFlow.collectLatest { showLegal ->
-                    showLegal?.let {
-                        if (it) onNavigateToLegalText() else onNavigateToWelcome()
+        sharedViewModel.showHeader(false)
+        sharedViewModel.showBottomBar(false)
+        viewModel.checkIsReconnecting(reconnection)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                SplashScreenUiEffect.HideSplash -> {
+                    sharedViewModel.showLegalTextWindow(false)
+                }
+
+                SplashScreenUiEffect.NavigateToWelcome -> {
+                    navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
                     }
                 }
-            }
 
-            launch {
-                splashViewModel.serviceActiveFlow.collectLatest { shouldSkipSplash ->
-                    if (shouldSkipSplash && mainActivityViewModel.getBravoService() == null) {
-                        mainActivityViewModel.showLegalTextWindow(true)
-                        onNavigateToWelcome()
-                    }
-                }
-            }
-
-            launch {
-                splashViewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        SplashScreenUiEffect.EndSplash -> {
-                            mainActivityViewModel.showLegalTextWindow(false)
-                        }
-                        SplashScreenUiEffect.EndSplashWithoutCheck -> {
-                            mainActivityViewModel.showLegalTextWindow(true)
-                            onNavigateToWelcome()
-                        }
-                    }
-                }
-            }
-
-            launch {
-                mainActivityViewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        is SplashScreenMainActivityUiEffect.NavigateTo -> {
-                            // Navigation is handled by callbacks in this screen.
-                        }
-                        SplashScreenMainActivityUiEffect.HideBackNavigation -> Unit
+                SplashScreenUiEffect.NavigateToLegalText -> {
+                    navController.navigate(R.id.action_splashScreenFragment_to_legalTextFragment) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
                     }
                 }
             }
         }
     }
 
-    SplashScreenContent(
-        splashVisible = uiState.isVideoVisible,
-        splashBackgroundRes = R.color.splash_background,
-        splashVideoRes = R.raw.new_splash,
-        onVideoPrepared = { splashViewModel.onEvent(SplashScreenUiEvent.VideoPrepared) },
-        onVideoCompleted = { splashViewModel.onEvent(SplashScreenUiEvent.VideoCompleted) },
-        onVideoError = { what, extra ->
-            splashViewModel.onEvent(SplashScreenUiEvent.VideoError(what, extra))
+    LaunchedEffect(showLegalText) {
+        showLegalText?.let { showLegal ->
+            if (showLegal) {
+                navController.navigate(R.id.action_splashScreenFragment_to_legalTextFragment) {
+                    launchSingleTop = true
+                    popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                }
+            } else {
+                navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                    launchSingleTop = true
+                    popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.shouldSkipSplash) {
+        Logs.d("SplashScreenFragment", "checkIsReconnecting shouldSkipSplash: ${uiState.shouldSkipSplash}")
+        if (uiState.shouldSkipSplash && sharedViewModel.getBravoService() == null) {
+            viewModel.onEndSplashWithoutCheck()
+            sharedViewModel.showLegalTextWindow(true)
+            navController.navigate(R.id.action_splashScreenFragment_to_welcomeFragment) {
+                launchSingleTop = true
+                popUpTo(R.id.splashScreenFragment) { inclusive = true }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            handler.removeCallbacksAndMessages(null)
+        }
+    }
+
+    AndroidView(
+        factory = {
+            VideoView(it).apply {
+                setZOrderOnTop(true)
+                setBackgroundColor(it.getColor(R.color.splash_background, null))
+
+                setOnPreparedListener { mediaPlayer ->
+                    Logs.d("SplashScreenFragment", "setUpVideo -> Video prepared, starting")
+                    setBackgroundColor(Color.TRANSPARENT)
+                    mediaPlayer.isLooping = false
+                    mediaPlayer.start()
+                }
+
+                setOnCompletionListener {
+                    Logs.d("SplashScreenFragment", "setUpVideo -> Video ended")
+                    if (!uiState.isSkipped) {
+                        viewModel.onEndSplash()
+                        sharedViewModel.showLegalTextWindow(false)
+                    }
+                }
+
+                setOnErrorListener { _, what, extra ->
+                    Logs.e("SplashScreenFragment", "Error during video playback: what=$what, extra=$extra")
+                    if (!uiState.isSkipped) {
+                        viewModel.onEndSplash()
+                        sharedViewModel.showLegalTextWindow(false)
+                    }
+                    true
+                }
+
+                try {
+                    val videoUri = Uri.parse("android.resource://${context.packageName}/${R.raw.new_splash}")
+                    setVideoURI(videoUri)
+
+                    handler.postDelayed({
+                        if (!uiState.isSkipped) {
+                            viewModel.onEndSplash()
+                            sharedViewModel.showLegalTextWindow(false)
+                        }
+                    }, splashTimeout)
+                } catch (e: Exception) {
+                    Logs.e("SplashScreenFragment", "ERROR setUpVideo: ${e.localizedMessage}")
+                    if (!uiState.isSkipped) {
+                        viewModel.onEndSplash()
+                        sharedViewModel.showLegalTextWindow(false)
+                    }
+                }
+            }
         },
-        onTimeoutReached = { splashViewModel.onEvent(SplashScreenUiEvent.TimeoutReached) }
+        modifier = Modifier
     )
 }
-
-// -----------------------------------------------------------------------------
-// 6) COMPOSE CONTENT
-// -----------------------------------------------------------------------------
-
-@Composable
-private fun SplashScreenContent(
-    splashVisible: Boolean,
-    @RawRes splashVideoRes: Int,
-    splashBackgroundRes: Int,
-    onVideoPrepared: () -> Unit,
-    onVideoCompleted: () -> Unit,
-    onVideoError: (what: Int, extra: Int) -> Unit,
-    onTimeoutReached: () -> Unit,
-) {
-    val context = LocalContext.current
-    val backgroundColor = androidx.compose.ui.res.colorResource(id = splashBackgroundRes)
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundColor)
-    ) {
-        if (splashVisible) {
-            AndroidView(
-                factory = {
-                    VideoView(it).apply {
-                        setZOrderOnTop(true)
-                        setBackgroundColor(Color.TRANSPARENT)
-
-                        setOnPreparedListener { mediaPlayer ->
-                            setBackgroundColor(Color.TRANSPARENT)
-                            mediaPlayer.isLooping = false
-                            mediaPlayer.start()
-                            onVideoPrepared()
-                        }
-
-                        setOnCompletionListener {
-                            onVideoCompleted()
-                        }
-
-                        setOnErrorListener { _, what, extra ->
-                            onVideoError(what, extra)
-                            true
-                        }
-
-                        setVideoURI(
-                            Uri.parse("android.resource://${context.packageName}/$splashVideoRes")
-                        )
-                    }
-                },
-                update = { }
-            )
-        }
-
-        LaunchedEffect(Unit) {
-            kotlinx.coroutines.delay(4800L)
-            onTimeoutReached()
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// 7) MINIMAL SESSION USE CASE CONTRACT
-// -----------------------------------------------------------------------------
-
-interface SessionUseCase {
-    fun getServiceWasActive(): Boolean
-}
 ```
-
----
-
-## Important note
-
-This is a **single-file, self-contained Compose translation** that compiles structurally, but in a real app you should usually:
-- keep the two ViewModels in separate files
-- inject `SessionUseCase` properly
-- use your real `MainActivityViewModel` instead of the bridge stub if you already have one
-- use your real navigation host instead of callbacks if preferred
-
----
-
-## If you want the next step
-
-I can now give you a **real production version** with:
-- proper Koin injection
-- no fake `Application()` construction
-- your existing `MainActivityViewModel` adapted instead of stubbed
-- `NavController` navigation actions wired directly
-- cleanup with `DisposableEffect` for `VideoView` and timeout cancellation
 // FOURTH ANSWER
-Below is the refined version that is aligned to your existing architecture:
-
-- uses your **real shared VM shape** via a `ComposeSharedViewModel` adapter pattern
-- uses **Safe Args `NavDirections`** instead of `navigate(R.id...)`
-- matches the **custom button API style** from your `ContactCentralScreen` example
-- keeps the splash screen logic Compose-first and lifecycle-aware
-
-I’m giving you a **single-file screen + both VMs + shared adapter contract** so you can wire it into your project with minimal changes.
-
----
-
 ```kotlin
-package ifac.td.taxi.ui.screen.compose
+package ifac.td.taxi.ui.screen
 
 import android.app.Application
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.widget.VideoView
-import androidx.annotation.RawRes
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
 import androidx.navigation.NavDirections
 import ifac.td.taxi.R
+import ifac.td.taxi.compose.viewmodel.ComposeSharedViewModel
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.screen.SplashScreenFragmentDirections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -1357,444 +1382,313 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
-// -----------------------------------------------------------------------------
-// 1) SHARED VM ADAPTER CONTRACT
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// UI STATE / EFFECTS
+// ------------------------------------------------------------
 
-/**
- * Adapter contract for your existing shared activity VM.
- * In your app, implement this by delegating to your real MainActivityViewModel
- * or ComposeSharedViewModel.
- */
-interface SplashScreenSharedVmContract {
-    val reconnectionFlow: StateFlow<Boolean>
-    val showLegalTextFlow: StateFlow<Boolean?>
-
-    fun showHeader(visible: Boolean)
-    fun showBottomBar(visible: Boolean)
-    fun showLegalTextWindow(show: Boolean)
-    fun getBravoService(): Any?
-    fun customBackPressed(block: () -> Unit)
-    fun navigateTo(directions: NavDirections)
-}
-
-// -----------------------------------------------------------------------------
-// 2) SPLASH UI STATE / EVENT / EFFECT
-// -----------------------------------------------------------------------------
-
-@Immutable
 data class SplashScreenUiState(
-    val isVideoVisible: Boolean = true,
     val isSkipped: Boolean = false,
+    val isVideoVisible: Boolean = true,
+    val shouldSkipSplash: Boolean = false
 )
 
 sealed interface SplashScreenUiEvent {
-    data class CheckIsReconnecting(val reconnectionFlowValue: Boolean) : SplashScreenUiEvent
-    data object VideoPrepared : SplashScreenUiEvent
-    data object VideoCompleted : SplashScreenUiEvent
-    data class VideoError(val what: Int, val extra: Int) : SplashScreenUiEvent
-    data object TimeoutReached : SplashScreenUiEvent
+    data object OnScreenStarted : SplashScreenUiEvent
+    data object OnVideoCompleted : SplashScreenUiEvent
+    data object OnVideoError : SplashScreenUiEvent
+    data object OnSplashTimeout : SplashScreenUiEvent
+    data object OnBackPressed : SplashScreenUiEvent
 }
 
 sealed interface SplashScreenUiEffect {
-    data object EndSplash : SplashScreenUiEffect
-    data object EndSplashWithoutCheck : SplashScreenUiEffect
+    data object HideSplash : SplashScreenUiEffect
+    data object NavigateToWelcome : SplashScreenUiEffect
+    data object NavigateToLegalText : SplashScreenUiEffect
 }
 
-// -----------------------------------------------------------------------------
-// 3) REDUCER-STYLE STATE
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// BUTTON STATE + CUSTOM BUTTON API
+// ------------------------------------------------------------
 
-@Immutable
 data class SplashScreenButtonsState(
-    val splashVisible: Boolean = true,
+    val showHeader: Boolean = false,
+    val showBottomBar: Boolean = false,
+    val isVideoVisible: Boolean = true,
     val isSkipped: Boolean = false,
-
-    val showLegalTextFlowValue: Boolean? = null,
-    val navigateToLegalText: Boolean = false,
-    val navigateToWelcome: Boolean = false,
-
-    val serviceActiveFlowValue: Boolean? = null,
     val shouldSkipSplash: Boolean = false,
-    val shouldEndSplashWithoutCheck: Boolean = false,
-
-    val showLegalTextWindowValue: Boolean? = null,
-    val hideVideoView: Boolean = false,
+    val showLegalText: Boolean? = null
 )
 
-sealed interface SplashScreenReducerAction {
-    data class ShowLegalTextFlowCollected(val value: Boolean?) : SplashScreenReducerAction
-    data class ServiceActiveFlowCollected(val value: Boolean) : SplashScreenReducerAction
-    data object EndSplash : SplashScreenReducerAction
-    data object EndSplashWithoutCheck : SplashScreenReducerAction
-    data object ResetNavigationFlags : SplashScreenReducerAction
+@Composable
+fun SplashScreenButton(
+    text: String,
+    backgroundColor: ComposeColor,
+    textColor: ComposeColor,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Text(
+        text = text,
+        color = textColor,
+        modifier = modifier
+            .background(backgroundColor, RoundedCornerShape(12.dp))
+            .defaultMinSize(minWidth = 120.dp, minHeight = 48.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .clickable(enabled = enabled) { onClick() }
+    )
 }
 
-fun reduceSplashScreenButtonsState(
-    current: SplashScreenButtonsState,
-    action: SplashScreenReducerAction
-): SplashScreenButtonsState {
-    return when (action) {
-        is SplashScreenReducerAction.ShowLegalTextFlowCollected -> {
-            when (action.value) {
-                null -> current.copy(
-                    showLegalTextFlowValue = null,
-                    navigateToLegalText = false,
-                    navigateToWelcome = false
-                )
-                true -> current.copy(
-                    showLegalTextFlowValue = true,
-                    navigateToLegalText = true,
-                    navigateToWelcome = false
-                )
-                false -> current.copy(
-                    showLegalTextFlowValue = false,
-                    navigateToLegalText = false,
-                    navigateToWelcome = true
-                )
-            }
-        }
+// ------------------------------------------------------------
+// MAIN ACTIVITY BRIDGE ADAPTER
+// Uses your exact ComposeSharedViewModel and exposes the old fragment API.
+// ------------------------------------------------------------
 
-        is SplashScreenReducerAction.ServiceActiveFlowCollected -> current.copy(
-            serviceActiveFlowValue = action.value,
-            shouldSkipSplash = action.value,
-            shouldEndSplashWithoutCheck = action.value
-        )
+class SplashScreenMainActivityViewModelAdapter(
+    private val sharedViewModel: ComposeSharedViewModel
+) : ViewModel() {
 
-        SplashScreenReducerAction.EndSplash -> current.copy(
-            splashVisible = false,
-            hideVideoView = true,
-            showLegalTextWindowValue = false
-        )
+    val reconnectionFlow: StateFlow<Boolean> = sharedViewModel.reconnectionFlow
+    val showLegalTextFlow: StateFlow<Boolean?> = sharedViewModel.showLegalTextFlow
 
-        SplashScreenReducerAction.EndSplashWithoutCheck -> current.copy(
-            splashVisible = false,
-            isSkipped = true,
-            hideVideoView = true,
-            showLegalTextWindowValue = true,
-            shouldEndSplashWithoutCheck = true
-        )
+    fun showHeader(show: Boolean) {
+        // Splash fragment always hid header; keep as no-op bridge if your activity owns it elsewhere.
+        // If you already have a header flow in ComposeSharedViewModel, wire it here.
+    }
 
-        SplashScreenReducerAction.ResetNavigationFlags -> current.copy(
-            navigateToLegalText = false,
-            navigateToWelcome = false
-        )
+    fun showBottomBar(show: Boolean) {
+        // Splash fragment always hid bottom bar; keep as no-op bridge if your activity owns it elsewhere.
+    }
+
+    fun showLegalTextWindow(show: Boolean) {
+        sharedViewModel.setShowLegalText(show)
+    }
+
+    fun getBravoService(): Any? {
+        // Replace with your real service accessor if you expose it from ComposeSharedViewModel or another singleton.
+        return null
+    }
+
+    fun navigateToWelcome(): NavDirections {
+        return SplashScreenFragmentDirections.actionSplashScreenFragmentToWelcomeFragment()
+    }
+
+    fun navigateToLegalText(): NavDirections {
+        return SplashScreenFragmentDirections.actionSplashScreenFragmentToLegalTextFragment()
     }
 }
 
-// -----------------------------------------------------------------------------
-// 4) SPLASH VIEWMODEL
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// SPLASH SCREEN VIEWMODEL
+// ------------------------------------------------------------
 
 class SplashScreenViewModel(
     application: Application,
     private val sessionUseCase: SessionUseCase
 ) : AndroidViewModel(application) {
 
+    private val TAG = "SplashScreenViewModel"
+
     private val _uiState = MutableStateFlow(SplashScreenUiState())
     val uiState: StateFlow<SplashScreenUiState> = _uiState.asStateFlow()
 
-    private val _effects = MutableSharedFlow<SplashScreenUiEffect>()
-    val effects: SharedFlow<SplashScreenUiEffect> = _effects.asSharedFlow()
+    private val _buttonsState = MutableStateFlow(SplashScreenButtonsState())
+    val buttonsState: StateFlow<SplashScreenButtonsState> = _buttonsState.asStateFlow()
 
-    private val _serviceActiveFlow = MutableSharedFlow<Boolean>()
-    val serviceActiveFlow: SharedFlow<Boolean> = _serviceActiveFlow.asSharedFlow()
+    private val _uiEffect = MutableSharedFlow<SplashScreenUiEffect>()
+    val uiEffect: SharedFlow<SplashScreenUiEffect> = _uiEffect.asSharedFlow()
 
     fun onEvent(event: SplashScreenUiEvent) {
         when (event) {
-            is SplashScreenUiEvent.CheckIsReconnecting -> checkIsReconnecting(event.reconnectionFlowValue)
-            SplashScreenUiEvent.VideoPrepared -> {
-                _uiState.value = _uiState.value.copy(isVideoVisible = true)
+            SplashScreenUiEvent.OnScreenStarted -> Unit
+
+            SplashScreenUiEvent.OnVideoCompleted -> {
+                _uiState.value = _uiState.value.copy(isVideoVisible = false)
+                _buttonsState.value = _buttonsState.value.copy(isVideoVisible = false, showLegalText = false)
+                viewModelScope.launch { _uiEffect.emit(SplashScreenUiEffect.HideSplash) }
             }
-            SplashScreenUiEvent.VideoCompleted -> {
-                viewModelScope.launch { _effects.emit(SplashScreenUiEffect.EndSplash) }
+
+            SplashScreenUiEvent.OnVideoError -> {
+                _uiState.value = _uiState.value.copy(isVideoVisible = false)
+                _buttonsState.value = _buttonsState.value.copy(isVideoVisible = false, showLegalText = false)
+                viewModelScope.launch { _uiEffect.emit(SplashScreenUiEffect.HideSplash) }
             }
-            is SplashScreenUiEvent.VideoError -> {
-                viewModelScope.launch { _effects.emit(SplashScreenUiEffect.EndSplash) }
+
+            SplashScreenUiEvent.OnSplashTimeout -> {
+                _uiState.value = _uiState.value.copy(isVideoVisible = false)
+                _buttonsState.value = _buttonsState.value.copy(isVideoVisible = false, showLegalText = false)
+                viewModelScope.launch { _uiEffect.emit(SplashScreenUiEffect.HideSplash) }
             }
-            SplashScreenUiEvent.TimeoutReached -> {
-                viewModelScope.launch { _effects.emit(SplashScreenUiEffect.EndSplash) }
-            }
+
+            SplashScreenUiEvent.OnBackPressed -> Unit
         }
     }
 
     fun checkIsReconnecting(reconnectionFlowValue: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             val serviceWasActive = sessionUseCase.getServiceWasActive()
+            Logs.d(
+                TAG,
+                "checkIsReconnecting serviceWasActive: $serviceWasActive, reconnectionFlowValue: $reconnectionFlowValue"
+            )
             delay(50)
-            _serviceActiveFlow.emit(serviceWasActive)
+            _uiState.value = _uiState.value.copy(shouldSkipSplash = serviceWasActive)
+            _buttonsState.value = _buttonsState.value.copy(shouldSkipSplash = serviceWasActive)
         }
     }
-}
 
-// -----------------------------------------------------------------------------
-// 5) MAIN ACTIVITY SHARED VM ADAPTER
-// -----------------------------------------------------------------------------
-
-class SplashScreenMainActivityViewModel(
-    application: Application
-) : AndroidViewModel(application), SplashScreenSharedVmContract {
-
-    private val _reconnectionFlow = MutableStateFlow(false)
-    override val reconnectionFlow: StateFlow<Boolean> = _reconnectionFlow.asStateFlow()
-
-    private val _showLegalTextFlow = MutableStateFlow<Boolean?>(null)
-    override val showLegalTextFlow: StateFlow<Boolean?> = _showLegalTextFlow.asStateFlow()
-
-    private val _navigationDirectionsFlow = MutableSharedFlow<NavDirections>()
-    val navigationDirectionsFlow: SharedFlow<NavDirections> = _navigationDirectionsFlow.asSharedFlow()
-
-    private var bravoService: Any? = null
-
-    override fun showHeader(visible: Boolean) {
-        // delegate to your real activity VM or UI controller
+    fun onEndSplash() {
+        _uiState.value = _uiState.value.copy(isVideoVisible = false)
+        _buttonsState.value = _buttonsState.value.copy(isVideoVisible = false, showLegalText = false)
     }
 
-    override fun showBottomBar(visible: Boolean) {
-        // delegate to your real activity VM or UI controller
-    }
-
-    override fun showLegalTextWindow(show: Boolean) {
-        _showLegalTextFlow.value = show
-    }
-
-    override fun getBravoService(): Any? = bravoService
-
-    fun setBravoService(service: Any?) {
-        bravoService = service
-    }
-
-    fun setReconnectionValue(value: Boolean) {
-        _reconnectionFlow.value = value
-    }
-
-    override fun customBackPressed(block: () -> Unit) {
-        block()
-    }
-
-    override fun navigateTo(directions: NavDirections) {
-        _navigationDirectionsFlow.tryEmit(directions)
+    fun onEndSplashWithoutCheck() {
+        _uiState.value = _uiState.value.copy(isSkipped = true, isVideoVisible = false)
+        _buttonsState.value = _buttonsState.value.copy(
+            isSkipped = true,
+            isVideoVisible = false,
+            showLegalText = true
+        )
     }
 }
 
-// -----------------------------------------------------------------------------
-// 6) COMPOSE SCREEN
-// -----------------------------------------------------------------------------
+// ------------------------------------------------------------
+// COMPOSE SCREEN
+// ------------------------------------------------------------
 
 @Composable
 fun SplashScreenRoute(
-    navController: androidx.navigation.NavController,
-    splashViewModel: SplashScreenViewModel,
-    sharedViewModel: SplashScreenSharedVmContract,
-    onNavigateToWelcome: () -> Unit,
-    onNavigateToLegalText: () -> Unit,
+    navController: NavController,
+    viewModel: SplashScreenViewModel,
+    sharedViewModel: SplashScreenMainActivityViewModelAdapter
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val uiState by splashViewModel.uiState.collectAsStateWithLifecycle()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
+    val showLegalText by sharedViewModel.showLegalTextFlow.collectAsStateWithLifecycle()
+    val reconnection by sharedViewModel.reconnectionFlow.collectAsStateWithLifecycle()
+
+    val context = LocalContext.current
+    val splashTimeout = 4800L
+    val handler = remember { Handler(Looper.getMainLooper()) }
+
+    BackHandler(enabled = true) {
+        // Don't let the user navigate back
+    }
 
     LaunchedEffect(Unit) {
         sharedViewModel.showHeader(false)
         sharedViewModel.showBottomBar(false)
-        splashViewModel.onEvent(
-            SplashScreenUiEvent.CheckIsReconnecting(
-                reconnectionFlowValue = sharedViewModel.reconnectionFlow.value
-            )
-        )
+        viewModel.checkIsReconnecting(reconnection)
     }
 
-    LaunchedEffect(Unit) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                sharedViewModel.showLegalTextFlow.collectLatest { showLegal ->
-                    showLegal?.let {
-                        if (it) onNavigateToLegalText() else onNavigateToWelcome()
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                SplashScreenUiEffect.HideSplash -> {
+                    sharedViewModel.showLegalTextWindow(false)
+                }
+
+                SplashScreenUiEffect.NavigateToWelcome -> {
+                    navController.navigate(sharedViewModel.navigateToWelcome()) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                    }
+                }
+
+                SplashScreenUiEffect.NavigateToLegalText -> {
+                    navController.navigate(sharedViewModel.navigateToLegalText()) {
+                        launchSingleTop = true
+                        popUpTo(R.id.splashScreenFragment) { inclusive = true }
                     }
                 }
             }
+        }
+    }
 
-            launch {
-                splashViewModel.serviceActiveFlow.collectLatest { shouldSkipSplash ->
-                    if (shouldSkipSplash && sharedViewModel.getBravoService() == null) {
-                        sharedViewModel.showLegalTextWindow(true)
-                        onNavigateToWelcome()
-                    }
+    LaunchedEffect(showLegalText) {
+        showLegalText?.let { showLegal ->
+            if (showLegal) {
+                navController.navigate(sharedViewModel.navigateToLegalText()) {
+                    launchSingleTop = true
+                    popUpTo(R.id.splashScreenFragment) { inclusive = true }
+                }
+            } else {
+                navController.navigate(sharedViewModel.navigateToWelcome()) {
+                    launchSingleTop = true
+                    popUpTo(R.id.splashScreenFragment) { inclusive = true }
                 }
             }
+        }
+    }
 
-            launch {
-                splashViewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        SplashScreenUiEffect.EndSplash -> {
+    LaunchedEffect(uiState.shouldSkipSplash) {
+        Logs.d("SplashScreenFragment", "checkIsReconnecting shouldSkipSplash: ${uiState.shouldSkipSplash}")
+        if (uiState.shouldSkipSplash && sharedViewModel.getBravoService() == null) {
+            viewModel.onEndSplashWithoutCheck()
+            sharedViewModel.showLegalTextWindow(true)
+            navController.navigate(sharedViewModel.navigateToWelcome()) {
+                launchSingleTop = true
+                popUpTo(R.id.splashScreenFragment) { inclusive = true }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            handler.removeCallbacksAndMessages(null)
+        }
+    }
+
+    AndroidView(
+        factory = {
+            VideoView(it).apply {
+                setZOrderOnTop(true)
+                setBackgroundColor(it.getColor(R.color.splash_background, null))
+
+                setOnPreparedListener { mediaPlayer ->
+                    Logs.d("SplashScreenFragment", "setUpVideo -> Video prepared, starting")
+                    setBackgroundColor(Color.TRANSPARENT)
+                    mediaPlayer.isLooping = false
+                    mediaPlayer.start()
+                }
+
+                setOnCompletionListener {
+                    Logs.d("SplashScreenFragment", "setUpVideo -> Video ended")
+                    if (!buttonsState.isSkipped) {
+                        viewModel.onEndSplash()
+                        sharedViewModel.showLegalTextWindow(false)
+                    }
+                }
+
+                setOnErrorListener { _, what, extra ->
+                    Logs.e("SplashScreenFragment", "Error during video playback: what=$what, extra=$extra")
+                    if (!buttonsState.isSkipped) {
+                        viewModel.onEndSplash()
+                        sharedViewModel.showLegalTextWindow(false)
+                    }
+                    true
+                }
+
+                try {
+                    val videoUri = Uri.parse("android.resource://${context.packageName}/${R.raw.new_splash}")
+                    setVideoURI(videoUri)
+
+                    handler.postDelayed({
+                        if (!buttonsState.isSkipped) {
+                            viewModel.onEndSplash()
                             sharedViewModel.showLegalTextWindow(false)
                         }
-                        SplashScreenUiEffect.EndSplashWithoutCheck -> {
-                            sharedViewModel.showLegalTextWindow(true)
-                            onNavigateToWelcome()
-                        }
+                    }, splashTimeout)
+                } catch (e: Exception) {
+                    Logs.e("SplashScreenFragment", "ERROR setUpVideo: ${e.localizedMessage}")
+                    if (!buttonsState.isSkipped) {
+                        viewModel.onEndSplash()
+                        sharedViewModel.showLegalTextWindow(false)
                     }
                 }
             }
-
-            launch {
-                if (sharedViewModel is SplashScreenMainActivityViewModel) {
-                    sharedViewModel.navigationDirectionsFlow.collectLatest { directions ->
-                        navController.navigate(directions)
-                    }
-                }
-            }
-        }
-    }
-
-    SplashScreenContent(
-        splashVisible = uiState.isVideoVisible,
-        splashBackgroundRes = R.color.splash_background,
-        splashVideoRes = R.raw.new_splash,
-        onVideoPrepared = { splashViewModel.onEvent(SplashScreenUiEvent.VideoPrepared) },
-        onVideoCompleted = { splashViewModel.onEvent(SplashScreenUiEvent.VideoCompleted) },
-        onVideoError = { what, extra ->
-            splashViewModel.onEvent(SplashScreenUiEvent.VideoError(what, extra))
         },
-        onTimeoutReached = { splashViewModel.onEvent(SplashScreenUiEvent.TimeoutReached) }
+        modifier = Modifier.fillMaxSize()
     )
 }
-
-// -----------------------------------------------------------------------------
-// 7) COMPOSE CONTENT
-// -----------------------------------------------------------------------------
-
-@Composable
-private fun SplashScreenContent(
-    splashVisible: Boolean,
-    @RawRes splashVideoRes: Int,
-    splashBackgroundRes: Int,
-    onVideoPrepared: () -> Unit,
-    onVideoCompleted: () -> Unit,
-    onVideoError: (what: Int, extra: Int) -> Unit,
-    onTimeoutReached: () -> Unit,
-) {
-    val context = LocalContext.current
-    val backgroundColor = androidx.compose.ui.res.colorResource(id = splashBackgroundRes)
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundColor)
-    ) {
-        if (splashVisible) {
-            AndroidView(
-                factory = {
-                    VideoView(it).apply {
-                        setZOrderOnTop(true)
-                        setBackgroundColor(Color.TRANSPARENT)
-
-                        setOnPreparedListener { mediaPlayer ->
-                            setBackgroundColor(Color.TRANSPARENT)
-                            mediaPlayer.isLooping = false
-                            mediaPlayer.start()
-                            onVideoPrepared()
-                        }
-
-                        setOnCompletionListener {
-                            onVideoCompleted()
-                        }
-
-                        setOnErrorListener { _, what, extra ->
-                            onVideoError(what, extra)
-                            true
-                        }
-
-                        setVideoURI(
-                            Uri.parse("android.resource://${context.packageName}/$splashVideoRes")
-                        )
-                    }
-                },
-                update = { }
-            )
-        }
-
-        LaunchedEffect(Unit) {
-            kotlinx.coroutines.delay(4800L)
-            onTimeoutReached()
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// 8) CUSTOM BUTTON API MATCHING YOUR PATTERN
-// -----------------------------------------------------------------------------
-
-@Immutable
-data class SplashScreenButtonStyle(
-    val visible: Boolean = true,
-    val enabled: Boolean = true,
-    val textRes: Int = 0,
-)
-
-@Composable
-fun SplashScreenButton(
-    style: SplashScreenButtonStyle,
-    onClick: () -> Unit
-) {
-    if (!style.visible) return
-
-    // Replace this with your exact custom button component implementation.
-    // This is intentionally shaped like your existing API:
-    //   ContactCentralButton(style = ..., onClick = ...)
-    androidx.compose.material3.Button(
-        onClick = onClick,
-        enabled = style.enabled
-    ) {
-        androidx.compose.material3.Text(text = "Button")
-    }
-}
-
-// -----------------------------------------------------------------------------
-// 9) MINIMAL SESSION USE CASE CONTRACT
-// -----------------------------------------------------------------------------
-
-interface SessionUseCase {
-    fun getServiceWasActive(): Boolean
-}
 ```
-
----
-
-## What changed in this refinement
-
-### 1) Real shared VM adapter
-I replaced the placeholder shared VM with:
-
-- `SplashScreenSharedVmContract`
-- `SplashScreenMainActivityViewModel`
-
-This lets you plug in your real `MainActivityViewModel` or a thin adapter around it.
-
-### 2) Safe Args navigation
-Instead of `navigate(R.id...)`, the screen now accepts and uses:
-
-- `NavDirections`
-- `navController.navigate(directions)`
-
-### 3) Custom button API shape
-I matched the style of your `ContactCentralButton(style = ..., onClick = ...)` pattern with:
-
-- `SplashScreenButtonStyle`
-- `SplashScreenButton(style = ..., onClick = ...)`
-
-If you already have a custom button component, you can swap that in directly.
-
----
-
-## Important integration note
-
-To make this compile in your project with zero friction, the only thing you should likely do is:
-
-- replace the stub `SplashScreenMainActivityViewModel` body with delegation to your real `MainActivityViewModel`
-- replace `SplashScreenButton(...)` with your actual custom button component if you already have one
-- pass the real `NavDirections` from your generated Safe Args class, for example:
-  - `SplashScreenFragmentDirections.actionSplashScreenFragmentToWelcomeFragment()`
-  - `SplashScreenFragmentDirections.actionSplashScreenFragmentToLegalTextFragment()`
-
----
-
-If you want, I can do one final pass and turn this into a **drop-in file that directly references your real `MainActivityViewModel` methods and your generated `SplashScreenFragmentDirections` class names** once you paste those exact signatures.

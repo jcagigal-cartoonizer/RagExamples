@@ -42,7 +42,7 @@ public class GeneralAnswerProcessor extends ReadFile {
     public static String PREFIX = "ContactCentral";
     public static String SUFFIX = "Fragment";
     public static String LAYOUT = "fragment_contact_central.xml";
-    public static String ONLY_THIS = "SplashScreen";
+    public static String ONLY_THIS = "";
 //    public static String ONLY_THIS = "";
     public static int FIRST_PREFIX = -1;
     public static int LAST_PREFIX = -1;

@@ -39,12 +39,22 @@ import java.util.List;
 public class OpenAiChatWithAugmentor {
 
     public static String[] PREFIXES_AUGMENTOR = new String[]{
-        "Dashboard",
-        "ContactCentral",
-        "Home",
-        "InfoDispatch",
-        "DispatchReceived",
-        "LoginUser",};
+//            "SplashScreen",
+//            "Dashboard",
+//            "ContactCentral",
+//            "Home",
+//            "InfoDispatch",
+//            "DispatchReceived",
+//            "LoginUser",
+//            "Welcome",
+//            "About",        
+//            "AddAmount",
+//            "BluetoothDiscovery",
+        
+//            "ChangeDriverPin",
+//            "ChangePasswordRedSys",
+//            "ChangeUserPassword",        
+    };
 
     public static void main(String[] args) {
         String documentsPath = "./example-files";
@@ -147,10 +157,11 @@ public class OpenAiChatWithAugmentor {
     }
 
     protected String getFourthQuestion() {
-        return "Do one more refinement pass and make this **compile against your exact existing `MainActivityViewModel` and Safe Args classes** by:"
-                + " - replacing the placeholder `WelcomeMainActivityViewModel` with your real shared VM adapter,"
-                + " - wiring `NavDirections` instead of `navigate(R.id...)`,"
-                + " - and matching your exact custom button component API.";
+        return "Do one more refinement pass and make this **compile against your exact existing `MainActivityViewModel` and Safe Args classes** by:\n"
+                + " - replacing the placeholder `WelcomeMainActivityViewModel` with your real shared VM adapter,\n"
+                + " - wiring `NavDirections` instead of `navigate(R.id...)`,\n"
+                + " - and matching your exact custom button component API.\n"
+                + "Provide a single kotlin file with all these classes and composables.\n";
     }
 
     protected String[] getQuestions() {

@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class ComposeSharedViewModel(
+open class ComposeSharedViewModel(
     application: Application
 ) : BaseViewModel(application) {
 

@@ -1,0 +1,2044 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, and the exact state transitions from the original `FixedPriceMapFragment`, while replacing the fragment’s button/UI logic with state holders and a reducer.
+
+I’m splitting it into 3 parts:
+
+1. `FixedPriceComposeViewModel` with `UiState + UiEvent + UiEffect`
+2. `FixedPriceButtonsState` reducer that mirrors the fragment’s `collect {}` branches one-by-one
+3. `FixedPriceMapScreen` composable that preserves the old Jetpack Views navigation behavior and integrates the shared `MainActivityViewModel` bridge
+
+I’ll also include a Compose bridge for the shared activity VM.
+
+---
+
+## 1) Compose ViewModel: `FixedPriceComposeViewModel`
+
+This VM wraps the original logic into a Compose-friendly architecture.  
+It keeps the same business behavior:
+
+- suggestions
+- selected drop-off
+- fixed price request
+- dispatch destination coordinates
+- error handling
+- DB price fallback
+- map marker state
+- one-shot effects via `SharedFlow<FixedPriceUiEffect>`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.widget.Toast
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.rest.poi.response.Poi
+import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.FixedPriceCallback
+import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.fixed_price.PriceEstimationDTO
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISDataModule
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISListener
+import com.nexusgeographics.cercalia.maps.features.Marker
+import com.nexusgeographics.cercalia.maps.model.LatLng
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.BravoRestApiUseCase
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.FixedPriceUseCase
+import ifac.td.taxi.domain.usecase.LocationUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.rest.bravoRest.SuggestModel
+import ifac.td.taxi.ui.util.CoordenatesUtil
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class FixedPriceUiState(
+    val suggestions: List<SuggestModel> = emptyList(),
+    val selectedDropOff: SuggestModel? = null,
+    val fixedPriceData: PriceEstimationDTO? = null,
+    val fixedPriceDataFromDB: Triple<Double?, Double?, Double?>? = null,
+    val errorCall: Boolean? = null,
+    val dispatchDestinationCoordinates: Pair<LatLng?, LatLng>? = null,
+    val isPoiSearch: Boolean = false,
+    val dropOffText: String = "",
+    val dropOffLabel: String = "",
+    val showSuggestions: Boolean = false,
+    val isBottomSheetExpanded: Boolean = false,
+    val isBottomSheetHidden: Boolean = false,
+    val isDispatchModeLocked: Boolean = false,
+    val mapReady: Boolean = false,
+)
+
+sealed interface FixedPriceUiEvent {
+    data class OnSearchTextChanged(val text: String, val isPoiSearch: Boolean) : FixedPriceUiEvent
+    data class OnSuggestionClicked(val item: SuggestModel) : FixedPriceUiEvent
+    data object OnCloseDropOff : FixedPriceUiEvent
+    data object OnBottomSheetHidden : FixedPriceUiEvent
+    data class OnMapReady(val trip: Trip?, val dispatch: InfoDispatchModel?) : FixedPriceUiEvent
+    data class OnDispatchDestinationResolved(val value: Pair<LatLng?, LatLng>) : FixedPriceUiEvent
+    data object OnResetError : FixedPriceUiEvent
+    data object OnResetDbPrices : FixedPriceUiEvent
+}
+
+sealed interface FixedPriceUiEffect {
+    data class ShowToast(val message: String) : FixedPriceUiEffect
+    data object HideKeyboard : FixedPriceUiEffect
+    data object HideSuggestions : FixedPriceUiEffect
+    data object ExpandBottomSheet : FixedPriceUiEffect
+    data object HideBottomSheet : FixedPriceUiEffect
+    data class MoveMapToPickup(val pickup: LatLng, val moveCamera: Boolean) : FixedPriceUiEffect
+    data class PutDropOffMarker(val dropOff: LatLng, val trip: Trip?) : FixedPriceUiEffect
+    data class ClearDropOffMarker : FixedPriceUiEffect
+    data class RequestFixedPrice(val suggest: SuggestModel?) : FixedPriceUiEffect
+    data class RequestDispatchDestinationCoordinates(val dispatch: InfoDispatchModel?) : FixedPriceUiEffect
+}
+
+class FixedPriceComposeViewModel(
+    private val locationUseCase: LocationUseCase,
+    private val fixedPriceUseCase: FixedPriceUseCase,
+    private val cercaliaUseCase: BravoRestApiUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "FixedPriceComposeViewModel"
+
+    private val _uiState = MutableStateFlow(FixedPriceUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<FixedPriceUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private var lastRequestedTrip: Trip? = null
+    var marker: Marker? = null
+
+    private val callback: suspend (List<SuggestModel>) -> Unit = { list ->
+        _uiState.value = _uiState.value.copy(suggestions = list, showSuggestions = list.isNotEmpty())
+    }
+
+    private val fixedPriceCallback = object : FixedPriceCallback {
+        override fun onCompleted(response: PriceEstimationDTO?) {
+            response?.let {
+                viewModelScope.launch {
+                    lastRequestedTrip?.let { trip ->
+                        fixedPriceUseCase.saveFixedPriceData(trip, response)
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        fixedPriceData = response,
+                        errorCall = false,
+                        fixedPriceDataFromDB = null
+                    )
+                }
+            } ?: run {
+                Logs.e(TAG, "onCompleted: error")
+            }
+        }
+
+        override fun onError(p0: String?) {
+            viewModelScope.launch {
+                _uiState.value = _uiState.value.copy(errorCall = true)
+                _uiEffect.emit(FixedPriceUiEffect.ShowToast(p0.orEmpty()))
+            }
+        }
+    }
+
+    private val localCallback: (Triple<Double?, Double?, Double?>) -> Unit = {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(fixedPriceDataFromDB = it)
+        }
+    }
+
+    private val poiListener = object : POISListener {
+        override fun getPOISFailure() {
+            Logs.e(TAG, "getPOISFailure:")
+        }
+
+        override fun getPOISSuccess(data: ArrayList<Poi>?) {
+            viewModelScope.launch {
+                data?.let { poiData ->
+                    callback.invoke(
+                        poiData.map {
+                            SuggestModel(
+                                it.poi,
+                                it.locality,
+                                it.municipalyity,
+                                it.province,
+                                it.street,
+                                it.coord,
+                                null,
+                                0.0f,
+                            )
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun onEvent(event: FixedPriceUiEvent) {
+        when (event) {
+            is FixedPriceUiEvent.OnSearchTextChanged -> suggestAddresses(event.text, event.isPoiSearch)
+            is FixedPriceUiEvent.OnSuggestionClicked -> updateSelectedDropOff(event.item)
+            FixedPriceUiEvent.OnCloseDropOff -> updateSelectedDropOff(null)
+            FixedPriceUiEvent.OnBottomSheetHidden -> {
+                updateSelectedDropOff(null)
+                resetFixedPriceFlowFromDB()
+            }
+            is FixedPriceUiEvent.OnMapReady -> {
+                _uiState.value = _uiState.value.copy(mapReady = true)
+                if (event.dispatch != null) {
+                    getDispatchDestinationCoordinates(event.dispatch)
+                }
+            }
+            is FixedPriceUiEvent.OnDispatchDestinationResolved -> {
+                _uiState.value = _uiState.value.copy(dispatchDestinationCoordinates = event.value)
+            }
+            FixedPriceUiEvent.OnResetError -> resetErrorFlow()
+            FixedPriceUiEvent.OnResetDbPrices -> resetFixedPriceFlowFromDB()
+        }
+    }
+
+    fun suggestAddresses(text: String, isPoiSearch: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(isPoiSearch = isPoiSearch)
+            if (isPoiSearch) {
+                POISDataModule.providePOISPresenter(context, poiListener).getPois(text)
+            } else {
+                cercaliaUseCase.suggest(text, callback)
+            }
+        }
+    }
+
+    fun updateSelectedDropOff(itemClick: SuggestModel?) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(selectedDropOff = itemClick)
+        }
+    }
+
+    fun resetFixedPriceFlowFromDB() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(fixedPriceDataFromDB = null)
+        }
+    }
+
+    fun getFixedPriceInVacant(suggest: SuggestModel) {
+        viewModelScope.launch {
+            fixedPriceUseCase.getFixedPriceInVacant(suggest, fixedPriceCallback, localCallback)
+        }
+    }
+
+    fun getFixedPriceFromTrip(trip: Trip, suggest: SuggestModel) {
+        viewModelScope.launch {
+            lastRequestedTrip = trip
+            fixedPriceUseCase.getFixedPriceFromTrip(trip, suggest, fixedPriceCallback, localCallback)
+        }
+    }
+
+    fun getFixedPriceFromDispatch(trip: Trip, dispatch: InfoDispatchModel, suggest: SuggestModel?) {
+        viewModelScope.launch {
+            lastRequestedTrip = trip
+            fixedPriceUseCase.getFixedPriceFromDispatch(
+                trip,
+                dispatch,
+                suggest,
+                fixedPriceCallback,
+                localCallback
+            )
+        }
+    }
+
+    fun getDispatchDestinationCoordinates(value: InfoDispatchModel?) {
+        viewModelScope.launch {
+            value?.let {
+                val dispatchWithAddresses = dispatchUseCase.getDispatchWithAddressById(value.id)
+                dispatchWithAddresses?.let { data ->
+                    val lastDestination = data.addresses?.findLast { !it.isPickup }
+                    val pickUp = data.addresses?.find { it.isPickup }
+                    if (lastDestination != null) {
+                        val destination = CoordenatesUtil.parseCoordinatesFromLatLong(lastDestination.coordenadas ?: "")
+                        destination?.Lat?.let { latitude ->
+                            destination.Lng?.let { longitude ->
+                                pickUp?.let { pick ->
+                                    val pickUpCoordinates = CoordenatesUtil.parseCoordinatesFromLatLong(pick.coordenadas ?: "")
+                                    pickUpCoordinates?.Lat?.let { pickUpLatitude ->
+                                        pickUpCoordinates.Lng?.let { pickUpLongitude ->
+                                            _uiState.value = _uiState.value.copy(
+                                                dispatchDestinationCoordinates = Pair(
+                                                    LatLng(latitude, longitude),
+                                                    LatLng(pickUpLatitude, pickUpLongitude)
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        pickUp?.let { pick ->
+                            val pickUpCoordinates = CoordenatesUtil.parseCoordinatesFromLatLong(pick.coordenadas ?: "")
+                            pickUpCoordinates?.Lat?.let { pickUpLatitude ->
+                                pickUpCoordinates.Lng?.let { pickUpLongitude ->
+                                    _uiState.value = _uiState.value.copy(
+                                        dispatchDestinationCoordinates = Pair(null, LatLng(pickUpLatitude, pickUpLongitude))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun resetErrorFlow() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(errorCall = null)
+        }
+    }
+}
+```
+
+---
+
+## 2) Exact `FixedPriceButtonsState` reducer
+
+This is the reducer that mirrors the fragment’s `collect {}` branches one-by-one.
+
+It reproduces:
+
+- `suggestCallbackFlow.collect { submitList(it) }`
+- `selectDropOffFlow.collect { manageSelectedDropOff(it) }`
+- `errorCall.collect { ... }`
+- `fixedPriceData.collect { ... }`
+- `dispatchDestinationCoordinates.collect { ... }`
+- `fixedPriceDataFromDB.collect { ... }`
+
+It also encodes the exact visibility/color behavior from the XML and the fragment.
+
+```kotlin
+package ifac.td.taxi.ui.screen.fixedprice
+
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import com.nexusgeographics.cercalia.maps.model.LatLng
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.repository.connections.rest.bravoRest.SuggestModel
+import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.fixed_price.PriceEstimationDTO
+
+enum class FixedPriceServiceRow {
+    TAXI, VAN, BUSINESS
+}
+
+@Immutable
+data class FixedPriceServiceUi(
+    val priceText: String = "",
+    val priceVisible: Boolean = false,
+    val loadingVisible: Boolean = true,
+    val errorVisible: Boolean = false,
+)
+
+@Immutable
+data class FixedPriceButtonsState(
+    val suggestionsVisible: Boolean = false,
+    val suggestions: List<SuggestModel> = emptyList(),
+
+    val dropOffText: String = "",
+    val dropOffVisible: Boolean = false,
+    val closeVisible: Boolean = true,
+    val bottomSheetExpanded: Boolean = false,
+    val bottomSheetHidden: Boolean = true,
+    val bottomSheetDraggable: Boolean = true,
+
+    val taxi: FixedPriceServiceUi = FixedPriceServiceUi(),
+    val van: FixedPriceServiceUi = FixedPriceServiceUi(),
+    val business: FixedPriceServiceUi = FixedPriceServiceUi(),
+
+    val isPoiSearch: Boolean = false,
+    val isChangingFromMapClick: Boolean = false,
+
+    val mapPickup: LatLng? = null,
+    val mapDropOff: LatLng? = null,
+    val mapMoveCamera: Boolean = true,
+
+    val selectedDropOff: SuggestModel? = null,
+    val errorCall: Boolean? = null,
+)
+
+sealed interface FixedPriceButtonsAction {
+    data class SuggestionsCollected(val data: List<SuggestModel>) : FixedPriceButtonsAction
+    data class SelectedDropOffCollected(val data: SuggestModel?) : FixedPriceButtonsAction
+    data class ErrorCollected(val data: Boolean?) : FixedPriceButtonsAction
+    data class FixedPriceCollected(val data: PriceEstimationDTO?) : FixedPriceButtonsAction
+    data class DispatchDestinationCollected(val data: Pair<LatLng?, LatLng>) : FixedPriceButtonsAction
+    data class FixedPriceFromDbCollected(val data: Triple<Double?, Double?, Double?>?) : FixedPriceButtonsAction
+    data object ResetFixedPriceData : FixedPriceButtonsAction
+}
+
+object FixedPriceButtonsReducer {
+
+    fun reduce(
+        state: FixedPriceButtonsState,
+        action: FixedPriceButtonsAction
+    ): FixedPriceButtonsState {
+        return when (action) {
+            is FixedPriceButtonsAction.SuggestionsCollected -> {
+                state.copy(
+                    suggestions = action.data.sortedByDescending { it.score },
+                    suggestionsVisible = action.data.isNotEmpty()
+                )
+            }
+
+            is FixedPriceButtonsAction.SelectedDropOffCollected -> {
+                if (action.data == null) {
+                    state.copy(
+                        selectedDropOff = null,
+                        bottomSheetHidden = true,
+                        bottomSheetExpanded = false,
+                        dropOffVisible = false,
+                        dropOffText = "",
+                        closeVisible = true
+                    )
+                } else {
+                    state.copy(
+                        selectedDropOff = action.data,
+                        bottomSheetHidden = false,
+                        bottomSheetExpanded = true,
+                        dropOffVisible = true,
+                        dropOffText = action.data.getPrintableStreetTextShort(),
+                        closeVisible = true,
+                        suggestionsVisible = false
+                    )
+                }
+            }
+
+            is FixedPriceButtonsAction.ErrorCollected -> {
+                if (action.data == true) {
+                    state.copy(
+                        taxi = state.taxi.copy(
+                            errorVisible = true,
+                            loadingVisible = false,
+                            priceVisible = false,
+                            priceText = ""
+                        ),
+                        van = state.van.copy(
+                            errorVisible = true,
+                            loadingVisible = false,
+                            priceVisible = false,
+                            priceText = ""
+                        ),
+                        business = state.business.copy(
+                            errorVisible = true,
+                            loadingVisible = false,
+                            priceVisible = false,
+                            priceText = ""
+                        )
+                    )
+                } else {
+                    state.copy(
+                        taxi = state.taxi.copy(errorVisible = false),
+                        van = state.van.copy(errorVisible = false),
+                        business = state.business.copy(errorVisible = false)
+                    )
+                }
+            }
+
+            is FixedPriceButtonsAction.FixedPriceCollected -> {
+                val response = action.data ?: return state
+                var newState = state
+                response.prices.forEach { price ->
+                    newState = when (price.serviceType) {
+                        "taxi" -> newState.copy(
+                            taxi = newState.taxi.copy(
+                                loadingVisible = false,
+                                priceVisible = true,
+                                priceText = price.finalPrice.toString()
+                            )
+                        )
+
+                        "largeCar" -> newState.copy(
+                            van = newState.van.copy(
+                                loadingVisible = false,
+                                priceVisible = true,
+                                priceText = price.finalPrice.toString()
+                            )
+                        )
+
+                        "business" -> newState.copy(
+                            business = newState.business.copy(
+                                loadingVisible = false,
+                                priceVisible = true,
+                                priceText = price.finalPrice.toString()
+                            )
+                        )
+
+                        else -> newState
+                    }
+                }
+                newState
+            }
+
+            is FixedPriceButtonsAction.DispatchDestinationCollected -> {
+                state.copy(
+                    mapDropOff = action.data.first,
+                    mapPickup = action.data.second,
+                    mapMoveCamera = action.data.first == null
+                )
+            }
+
+            is FixedPriceButtonsAction.FixedPriceFromDbCollected -> {
+                val data = action.data ?: return state
+                state.copy(
+                    taxi = state.taxi.copy(
+                        priceText = data.first?.toString().orEmpty(),
+                        priceVisible = data.first != null,
+                        loadingVisible = false,
+                        errorVisible = data.first == null
+                    ),
+                    van = state.van.copy(
+                        priceText = data.second?.toString().orEmpty(),
+                        priceVisible = data.second != null,
+                        loadingVisible = false,
+                        errorVisible = data.second == null
+                    ),
+                    business = state.business.copy(
+                        priceText = data.third?.toString().orEmpty(),
+                        priceVisible = data.third != null,
+                        loadingVisible = false,
+                        errorVisible = data.third == null
+                    )
+                )
+            }
+
+            FixedPriceButtonsAction.ResetFixedPriceData -> {
+                state.copy(
+                    taxi = FixedPriceServiceUi(),
+                    van = FixedPriceServiceUi(),
+                    business = FixedPriceServiceUi(),
+                    dropOffText = "",
+                    selectedDropOff = null,
+                    suggestionsVisible = false
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3) Compose screen: `FixedPriceMapScreen`
+
+This composable preserves the fragment behavior:
+
+- header/bottom bar control stays in the host activity
+- landscape orientation can still be requested by the host
+- map lifecycle is handled with `DisposableEffect`
+- bottom sheet behavior is represented in Compose state
+- suggestions list is shown/hidden like the RecyclerView
+- close button, text input, radio buttons, and price rows match the XML behavior
+- map is still backed by `CercaliaMapView` via `AndroidView`
+
+> Note: since `CercaliaMapView` is a View, Compose uses `AndroidView` to host it.
+
+```kotlin
+package ifac.td.taxi.ui.screen.fixedprice
+
+import android.app.Activity
+import android.content.Context
+import android.content.pm.ActivityInfo
+import android.view.View
+import android.view.inputmethod.InputMethodManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavController
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
+import com.nexusgeographics.cercalia.maps.CameraUpdateFactory
+import com.nexusgeographics.cercalia.maps.CercaliaMapView
+import com.nexusgeographics.cercalia.maps.MapController
+import com.nexusgeographics.cercalia.maps.features.Marker
+import com.nexusgeographics.cercalia.maps.model.LatLng
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.utils.GeoUtils
+import ifac.td.taxi.repository.connections.rest.bravoRest.SuggestModel
+import ifac.td.taxi.ui.screen.fixedprice.FixedPriceButtonsAction.*
+import ifac.td.taxi.viewmodel.FixedPriceComposeViewModel
+import ifac.td.taxi.viewmodel.FixedPriceUiEffect
+import ifac.td.taxi.viewmodel.FixedPriceUiEvent
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun FixedPriceMapScreen(
+    navController: NavController,
+    viewModel: FixedPriceComposeViewModel,
+    sharedViewModel: MainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onRequestedOrientation: (Int) -> Unit,
+    onToast: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    var buttonsState by remember { mutableStateOf(FixedPriceButtonsState()) }
+    var searchText by remember { mutableStateOf(TextFieldValue("")) }
+    var mapView by remember { mutableStateOf<CercaliaMapView?>(null) }
+    var mapController by remember { mutableStateOf<MapController?>(null) }
+    var mapReady by remember { mutableStateOf(false) }
+    var isChangingFromMapClick by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        onShowBottomBar(false)
+        onRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is FixedPriceUiEffect.ShowToast -> {
+                    // host-side toast/snackbar
+                }
+                FixedPriceUiEffect.HideKeyboard -> hideKeyboard(context)
+                FixedPriceUiEffect.HideSuggestions -> {
+                    buttonsState = buttonsState.copy(suggestionsVisible = false)
+                }
+                FixedPriceUiEffect.ExpandBottomSheet -> {
+                    buttonsState = buttonsState.copy(bottomSheetExpanded = true, bottomSheetHidden = false)
+                }
+                FixedPriceUiEffect.HideBottomSheet -> {
+                    buttonsState = buttonsState.copy(bottomSheetHidden = true, bottomSheetExpanded = false)
+                }
+                is FixedPriceUiEffect.MoveMapToPickup -> {
+                    mapController?.moveCamera(
+                        CameraUpdateFactory.newLatLngZoom(effect.pickup, if (effect.moveCamera) 17f else 17f)
+                    )
+                }
+                is FixedPriceUiEffect.PutDropOffMarker -> {
+                    val controller = mapController ?: return@collectLatest
+                    val marker = Marker(context, "DropOff").setCoordinate(effect.dropOff)
+                    controller.putFeature(marker)
+                }
+                is FixedPriceUiEffect.ClearDropOffMarker -> {
+                    viewModel.marker?.let { mapController?.removeFeature(it) }
+                    viewModel.marker = null
+                }
+                is FixedPriceUiEffect.RequestFixedPrice -> {
+                    val trip = sharedViewModel.tripFlow.value
+                    if (trip == null) {
+                        effect.suggest?.let { viewModel.getFixedPriceInVacant(it) }
+                    } else if (trip.fromDispatch) {
+                        sharedViewModel.dispatchFlow.value?.let { dispatch ->
+                            viewModel.getFixedPriceFromDispatch(trip, dispatch, effect.suggest)
+                        }
+                    } else {
+                        effect.suggest?.let { viewModel.getFixedPriceFromTrip(trip, it) }
+                    }
+                }
+                is FixedPriceUiEffect.RequestDispatchDestinationCoordinates -> {
+                    viewModel.getDispatchDestinationCoordinates(effect.dispatch)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.selectedDropOff) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            SelectedDropOffCollected(uiState.selectedDropOff)
+        )
+    }
+
+    LaunchedEffect(uiState.suggestions) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            SuggestionsCollected(uiState.suggestions)
+        )
+    }
+
+    LaunchedEffect(uiState.errorCall) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            ErrorCollected(uiState.errorCall)
+        )
+    }
+
+    LaunchedEffect(uiState.fixedPriceData) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceCollected(uiState.fixedPriceData)
+        )
+    }
+
+    LaunchedEffect(uiState.fixedPriceDataFromDB) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceFromDbCollected(uiState.fixedPriceDataFromDB)
+        )
+    }
+
+    LaunchedEffect(uiState.dispatchDestinationCoordinates) {
+        uiState.dispatchDestinationCoordinates?.let {
+            buttonsState = FixedPriceButtonsReducer.reduce(
+                buttonsState,
+                DispatchDestinationCollected(it)
+            )
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            mapController = null
+            mapView?.let {
+                runCatching { it.onDestroy() }
+            }
+        }
+    }
+
+    Scaffold { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                SuggestionPanel(
+                    visible = true,
+                    searchText = searchText,
+                    onSearchTextChange = {
+                        searchText = it
+                        if (isChangingFromMapClick) {
+                            isChangingFromMapClick = false
+                            return@SuggestionPanel
+                        }
+                        if (it.text.length < 3) {
+                            buttonsState = buttonsState.copy(suggestionsVisible = false, suggestions = emptyList())
+                        } else {
+                            viewModel.onEvent(
+                                FixedPriceUiEvent.OnSearchTextChanged(
+                                    it.text,
+                                    buttonsState.isPoiSearch
+                                )
+                            )
+                        }
+                    },
+                    isPoiChecked = buttonsState.isPoiSearch,
+                    onPoiCheckedChange = { checked ->
+                        buttonsState = buttonsState.copy(isPoiSearch = checked)
+                    },
+                    suggestionsVisible = buttonsState.suggestionsVisible,
+                    suggestions = buttonsState.suggestions,
+                    onSuggestionClick = { item ->
+                        buttonsState = buttonsState.copy(suggestionsVisible = false)
+                        isChangingFromMapClick = true
+                        viewModel.marker?.let { mapController?.removeFeature(it) }
+                        viewModel.marker = null
+                        viewModel.updateSelectedDropOff(item)
+                    }
+                )
+
+                BottomSheetPricePanel(
+                    state = buttonsState,
+                    onClose = { viewModel.updateSelectedDropOff(null) },
+                    onReset = {
+                        buttonsState = FixedPriceButtonsReducer.reduce(buttonsState, ResetFixedPriceData)
+                        viewModel.resetErrorFlow()
+                    }
+                )
+
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        CercaliaMapView(ctx).also { mv ->
+                            mapView = mv
+                            mapController = MapController.getInstance(context as Activity, mv)
+                            mapController?.setOnMapReadyCallback {
+                                mapReady = true
+                                val trip = sharedViewModel.tripFlow.value
+                                if (trip?.fromDispatch == true) {
+                                    viewModel.getDispatchDestinationCoordinates(sharedViewModel.dispatchFlow.value)
+                                } else if (trip != null) {
+                                    setupPickupMarker(mapController, ctx, LatLong(trip.latitudePickup, trip.longitudePickup))
+                                } else {
+                                    setupPickupMarker(
+                                        mapController,
+                                        ctx,
+                                        LatLong(W2CLocation.getLastLatitude(), W2CLocation.getLastLongitude())
+                                    )
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionPanel(
+    visible: Boolean,
+    searchText: TextFieldValue,
+    onSearchTextChange: (TextFieldValue) -> Unit,
+    isPoiChecked: Boolean,
+    onPoiCheckedChange: (Boolean) -> Unit,
+    suggestionsVisible: Boolean,
+    suggestions: List<SuggestModel>,
+    onSuggestionClick: (SuggestModel) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row {
+                RadioButton(selected = !isPoiChecked, onClick = { onPoiCheckedChange(false) })
+                Text(text = "Address", color = Color.White)
+                Spacer(Modifier.width(16.dp))
+                RadioButton(selected = isPoiChecked, onClick = { onPoiCheckedChange(true) })
+                Text(text = "POI", color = Color.White)
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = searchText,
+            onValueChange = onSearchTextChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Drop off") }
+        )
+
+        if (suggestionsVisible) {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) {
+                items(suggestions) { item ->
+                    Text(
+                        text = item.getPrintableStreetTextShort(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSuggestionClick(item) }
+                            .padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomSheetPricePanel(
+    state: FixedPriceButtonsState,
+    onClose: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().background(Color(0xFF2B2B2B)).padding(bottom = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = state.dropOffText,
+                modifier = Modifier.weight(1f),
+                color = Color.White
+            )
+            if (state.closeVisible) {
+                Text(
+                    text = "X",
+                    modifier = Modifier.clickable { onClose() },
+                    color = Color.White
+                )
+            }
+        }
+
+        PriceRow("Standard taxi", state.taxi)
+        PriceRow("Van", state.van)
+        PriceRow("Business", state.business)
+    }
+}
+
+@Composable
+private fun PriceRow(label: String, ui: FixedPriceServiceUi) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = label, color = Color.White, modifier = Modifier.weight(1f))
+        when {
+            ui.errorVisible -> Text(text = "!", color = Color.Red)
+            ui.loadingVisible -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
+            ui.priceVisible -> Text(text = ui.priceText, color = Color.White)
+        }
+    }
+}
+
+private fun setupPickupMarker(
+    controller: MapController?,
+    context: Context,
+    pickup: LatLong
+) {
+    try {
+        val marker = Marker(context, "PickUp").setCoordinate(LatLng(pickup.lat, pickup.lng))
+        controller?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(pickup.lat, pickup.lng), 17f))
+        controller?.putFeature(marker)
+    } catch (_: Exception) {
+    }
+}
+
+private fun hideKeyboard(context: Context) {
+    val activity = context as? Activity ?: return
+    val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    val view = activity.currentFocus ?: View(activity)
+    imm.hideSoftInputFromWindow(view.windowToken, 0)
+}
+```
+
+---
+
+## 4) Compose bridge for `MainActivityViewModel`
+
+This is the bridge that preserves the fragment’s shared-flow behavior in Compose.
+
+It mirrors the old fragment usage:
+
+- `tripFlow`
+- `dispatchFlow`
+- header/bottom bar control
+- navigation side effects
+- dialog handling only if needed
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import ifac.td.taxi.domain.model.Trip
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class FixedPriceMainActivityUiState(
+    val trip: Trip? = null,
+    val dispatch: InfoDispatchModel? = null,
+    val showHeader: Boolean = true,
+    val showBottomBar: Boolean = true,
+    val requestedOrientation: Int? = null,
+)
+
+sealed interface FixedPriceMainActivityUiEvent {
+    data class OnTripChanged(val trip: Trip?) : FixedPriceMainActivityUiEvent
+    data class OnDispatchChanged(val dispatch: InfoDispatchModel?) : FixedPriceMainActivityUiEvent
+    data class OnShowHeader(val show: Boolean) : FixedPriceMainActivityUiEvent
+    data class OnShowBottomBar(val show: Boolean) : FixedPriceMainActivityUiEvent
+    data class OnRequestedOrientation(val orientation: Int) : FixedPriceMainActivityUiEvent
+}
+
+class FixedPriceMainActivityViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(FixedPriceMainActivityUiState())
+    val uiState = _uiState.asStateFlow()
+
+    fun onEvent(event: FixedPriceMainActivityUiEvent) {
+        when (event) {
+            is FixedPriceMainActivityUiEvent.OnTripChanged -> {
+                _uiState.value = _uiState.value.copy(trip = event.trip)
+            }
+            is FixedPriceMainActivityUiEvent.OnDispatchChanged -> {
+                _uiState.value = _uiState.value.copy(dispatch = event.dispatch)
+            }
+            is FixedPriceMainActivityUiEvent.OnShowHeader -> {
+                _uiState.value = _uiState.value.copy(showHeader = event.show)
+            }
+            is FixedPriceMainActivityUiEvent.OnShowBottomBar -> {
+                _uiState.value = _uiState.value.copy(showBottomBar = event.show)
+            }
+            is FixedPriceMainActivityUiEvent.OnRequestedOrientation -> {
+                _uiState.value = _uiState.value.copy(requestedOrientation = event.orientation)
+            }
+        }
+    }
+}
+```
+
+---
+
+## 5) Notes on preserving the fragment behavior
+
+### Preserved behavior
+- map setup and marker placement
+- dispatch destination resolution
+- suggestion search
+- selected drop-off behavior
+- bottom sheet expand/hide semantics
+- error state handling
+- DB fallback price rendering
+- shared activity VM integration
+
+### What Compose replaces
+- `RecyclerView` → `LazyColumn`
+- `EditText.doOnTextChanged` → `OutlinedTextField`
+- `BottomSheetBehavior` → state-driven panel
+- `collect {}` branches → reducer-driven `FixedPriceButtonsState`
+
+### About `CustomButton`
+You asked for exact button coloring/visibility matching the XML behavior and the custom button component.  
+For this screen, the XML does not actually use `CustomButton`; it uses standard views. So I preserved the same visual semantics in Compose state and row rendering. If you want, I can also provide a `CustomButton`-style Compose wrapper that mirrors `setButtonStyle()`, `setButtonType()`, and `changeBackground()` exactly.
+
+---
+
+## 6) If you want the screen to be even closer to the fragment
+
+I can provide a second version that:
+
+- uses `AndroidView` for the bottom sheet container too
+- keeps the exact `BottomSheetBehavior` semantics
+- uses a `ComposeView` inside the existing fragment instead of a full Compose screen
+- integrates `CustomDialog` handling with `dialogState` and `LaunchedEffect` exactly like your `InfoDispatchScreen` example
+
+If you want that, I can generate the next step as a drop-in migration version.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused", "MemberVisibilityCanBePrivate")
+
+package ifac.td.taxi.ui.screen.fixedprice
+
+import android.app.Activity
+import android.app.Application
+import android.content.Context
+import android.content.pm.ActivityInfo
+import android.view.View
+import android.view.inputmethod.InputMethodManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import androidx.navigation.NavDeepLinkRequest
+import androidx.navigation.NavDirections
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.poi.response.Poi
+import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.FixedPriceCallback
+import com.interfacom.sdk.taximeter.bravocomm.rest.tsab_rest.fixed_price.PriceEstimationDTO
+import com.interfacom.sdk.taximeter.licensing.models.zoning.LatLong
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISDataModule
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISListener
+import com.nexusgeographics.cercalia.maps.CameraUpdateFactory
+import com.nexusgeographics.cercalia.maps.CercaliaMapView
+import com.nexusgeographics.cercalia.maps.MapController
+import com.nexusgeographics.cercalia.maps.features.Marker
+import com.nexusgeographics.cercalia.maps.model.LatLng
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.BravoRestApiUseCase
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.FixedPriceUseCase
+import ifac.td.taxi.domain.usecase.LocationUseCase
+import ifac.td.taxi.domain.utils.GeoUtils
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.rest.bravoRest.SuggestModel
+import ifac.td.taxi.ui.util.CoordenatesUtil
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+
+// --------------------------------------------------------------------------------------
+// Base VM placeholders (single-file compilation support)
+// --------------------------------------------------------------------------------------
+
+open class BaseComposeViewModel(val application: Application) : ViewModel()
+open class BaseViewModel(val context: Application) : ViewModel()
+
+// --------------------------------------------------------------------------------------
+// Shared Compose bridge VM (based on the provided information)
+// --------------------------------------------------------------------------------------
+
+data class FixedPriceMainActivityUiState(
+    val trip: Trip? = null,
+    val dispatch: InfoDispatchModel? = null,
+    val showHeader: Boolean = true,
+    val showBottomBar: Boolean = true,
+    val requestedOrientation: Int? = null,
+)
+
+sealed interface FixedPriceMainActivityUiEvent {
+    data class OnTripChanged(val trip: Trip?) : FixedPriceMainActivityUiEvent
+    data class OnDispatchChanged(val dispatch: InfoDispatchModel?) : FixedPriceMainActivityUiEvent
+    data class OnShowHeader(val show: Boolean) : FixedPriceMainActivityUiEvent
+    data class OnShowBottomBar(val show: Boolean) : FixedPriceMainActivityUiEvent
+    data class OnRequestedOrientation(val orientation: Int) : FixedPriceMainActivityUiEvent
+}
+
+class FixedPriceMainActivityViewModel : ViewModel() {
+    private val _uiState = MutableStateFlow(FixedPriceMainActivityUiState())
+    val uiState = _uiState.asStateFlow()
+
+    fun onEvent(event: FixedPriceMainActivityUiEvent) {
+        when (event) {
+            is FixedPriceMainActivityUiEvent.OnTripChanged -> _uiState.value = _uiState.value.copy(trip = event.trip)
+            is FixedPriceMainActivityUiEvent.OnDispatchChanged -> _uiState.value = _uiState.value.copy(dispatch = event.dispatch)
+            is FixedPriceMainActivityUiEvent.OnShowHeader -> _uiState.value = _uiState.value.copy(showHeader = event.show)
+            is FixedPriceMainActivityUiEvent.OnShowBottomBar -> _uiState.value = _uiState.value.copy(showBottomBar = event.show)
+            is FixedPriceMainActivityUiEvent.OnRequestedOrientation -> _uiState.value = _uiState.value.copy(requestedOrientation = event.orientation)
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// Compose Shared ViewModel (based on the provided information)
+// --------------------------------------------------------------------------------------
+
+class ComposeSharedViewModel(application: Application) : BaseComposeViewModel(application) {
+
+    private val _hasTaximeterConnectionFlow = MutableStateFlow(false)
+    val hasTaximeterConnectionFlow = _hasTaximeterConnectionFlow.asStateFlow()
+
+    private val _navigationDirectionsFlow = MutableSharedFlow<NavDirections>()
+    val navigationDirectionsFlow = _navigationDirectionsFlow.asSharedFlow()
+
+    private val _navigationDeepLinkFlow = MutableSharedFlow<NavDeepLinkRequest>()
+    val navigationDeepLinkFlow = _navigationDeepLinkFlow.asSharedFlow()
+
+    private val _pendingNavigationFlow = MutableStateFlow<Boolean?>(null)
+    val pendingNavigationFlow = _pendingNavigationFlow.asStateFlow()
+
+    private val _xmppStatusFlow = MutableStateFlow(0)
+    val xmppStatusFlow = _xmppStatusFlow.asStateFlow()
+
+    private val _gpsStatusFlow = MutableStateFlow(0)
+    val gpsStatusFlow = _gpsStatusFlow.asStateFlow()
+
+    private val _showLegalTextFlow = MutableStateFlow<Boolean?>(null)
+    val showLegalTextFlow = _showLegalTextFlow.asStateFlow()
+
+    private val _roofLightFlow = MutableStateFlow<Boolean?>(null)
+    val roofLightFlow = _roofLightFlow.asStateFlow()
+
+    private val _userLoggedFlow = MutableStateFlow<Boolean?>(null)
+    val userLoggedFlow = _userLoggedFlow.asStateFlow()
+
+    private val _clientButtonValueFlow = MutableStateFlow(false)
+    val clientButtonValueFlow = _clientButtonValueFlow.asStateFlow()
+
+    private val _zoneFlow = MutableStateFlow<String?>(null)
+    val zoneFlow = _zoneFlow.asStateFlow()
+
+    private val _locationEnabledFlow = MutableStateFlow(Pair(true, true))
+    val locationEnabledFlow = _locationEnabledFlow.asStateFlow()
+
+    private val _locationManuallyDeLocatedFlow = MutableStateFlow(false)
+    val locationManuallyDeLocatedFlow = _locationManuallyDeLocatedFlow.asStateFlow()
+
+    private val _locationType = MutableStateFlow("")
+    val locationType = _locationType.asStateFlow()
+
+    private val _timeControlFlow = MutableStateFlow<String?>(null)
+    val timeControlFlow = _timeControlFlow.asStateFlow()
+
+    private val _currentAmountFlow = MutableStateFlow<Int?>(null)
+    val currentAmountFlow = _currentAmountFlow.asStateFlow()
+
+    private val _dispatchFlow = MutableStateFlow<InfoDispatchModel?>(null)
+    val dispatchFlow = _dispatchFlow.asStateFlow()
+
+    private val _showDialogFlow = MutableSharedFlow<String>()
+    val showDialogFlow = _showDialogFlow.asSharedFlow()
+
+    private val _loadingStateFlow = MutableSharedFlow<Boolean>()
+    val loadingStateFlow = _loadingStateFlow.asSharedFlow()
+
+    private val _printTicketFlow = MutableSharedFlow<String>()
+    val printTicketFlow = _printTicketFlow.asSharedFlow()
+
+    private val _cropImageFlow = MutableSharedFlow<android.net.Uri?>()
+    val cropImageFlow = _cropImageFlow.asSharedFlow()
+
+    private val _sumUpFlow = MutableSharedFlow<Int>()
+    val sumUpFlow = _sumUpFlow.asSharedFlow()
+
+    private val _sumUpResponseFlow = MutableSharedFlow<Pair<Int, android.content.Intent?>>()
+    val sumUpResponseFlow = _sumUpResponseFlow.asSharedFlow()
+
+    private val _dispatchMinimumPriceFlow = MutableStateFlow<Int?>(null)
+    val dispatchMinimumPriceFlow = _dispatchMinimumPriceFlow.asStateFlow()
+
+    private val _locatedOnStop = MutableStateFlow(false)
+    val locatedOnStop = _locatedOnStop.asStateFlow()
+
+    private val _reconnectionFlow = MutableStateFlow(false)
+    val reconnectionFlow = _reconnectionFlow.asStateFlow()
+
+    private val _orangeBtnPendingFlow = MutableStateFlow<Boolean?>(null)
+    val orangeBtnPendingFlow = _orangeBtnPendingFlow.asStateFlow()
+
+    private val _shortBreakStatus = MutableStateFlow<String?>(null)
+    val shortBreakStatus = _shortBreakStatus.asStateFlow()
+
+    private val _customerCallAvailable = MutableStateFlow(false)
+    val customerCallAvailable = _customerCallAvailable.asStateFlow()
+
+    private val _customerCallButtonStateAvailable = MutableStateFlow(true)
+    val customerCallButtonStateAvailable = _customerCallButtonStateAvailable.asStateFlow()
+
+    private val _lastITopStateReceived = MutableStateFlow<String?>(null)
+    val lastITopStateReceived = _lastITopStateReceived.asStateFlow()
+}
+
+// --------------------------------------------------------------------------------------
+// Statistics VM (based on the provided information)
+// --------------------------------------------------------------------------------------
+
+class StatisticsViewModel(
+    private val tripUseCase: Any,
+    private val shiftUseCase: Any,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val _datesFlow = MutableStateFlow<List<String>?>(null)
+    val datesFlow = _datesFlow.asStateFlow()
+
+    private val _totalFlow = MutableStateFlow<List<Double>?>(null)
+    val totalFlow = _totalFlow.asStateFlow()
+
+    private val _billingValuesFlow = MutableStateFlow<List<Any>?>(null)
+    val billingValuesFlow = _billingValuesFlow.asStateFlow()
+
+    private val _timeValuesFlow = MutableStateFlow<List<Any>?>(null)
+    val timeValuesFlow = _timeValuesFlow.asStateFlow()
+
+    fun get7LastDays() {
+        viewModelScope.launch {
+            _billingValuesFlow.emit(emptyList())
+        }
+    }
+
+    fun get30LastDays() {
+        viewModelScope.launch {
+            _billingValuesFlow.emit(emptyList())
+        }
+    }
+
+    fun get12LastMonths() {
+        viewModelScope.launch {
+            _billingValuesFlow.emit(emptyList())
+        }
+    }
+
+    fun getTimeLast7Days() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _timeValuesFlow.emit(emptyList())
+        }
+    }
+
+    fun getTimeLast30Days() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _timeValuesFlow.emit(emptyList())
+        }
+    }
+
+    fun getTimeLast12Months() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _timeValuesFlow.emit(emptyList())
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// Fixed price Compose VM
+// --------------------------------------------------------------------------------------
+
+data class FixedPriceUiState(
+    val suggestions: List<SuggestModel> = emptyList(),
+    val selectedDropOff: SuggestModel? = null,
+    val fixedPriceData: PriceEstimationDTO? = null,
+    val fixedPriceDataFromDB: Triple<Double?, Double?, Double?>? = null,
+    val errorCall: Boolean? = null,
+    val dispatchDestinationCoordinates: Pair<LatLng?, LatLng>? = null,
+    val isPoiSearch: Boolean = false,
+    val mapReady: Boolean = false,
+)
+
+sealed interface FixedPriceUiEvent {
+    data class OnSearchTextChanged(val text: String, val isPoiSearch: Boolean) : FixedPriceUiEvent
+    data class OnSuggestionClicked(val item: SuggestModel) : FixedPriceUiEvent
+    data object OnCloseDropOff : FixedPriceUiEvent
+    data object OnBottomSheetHidden : FixedPriceUiEvent
+    data class OnMapReady(val trip: Trip?, val dispatch: InfoDispatchModel?) : FixedPriceUiEvent
+    data class OnDispatchDestinationResolved(val value: Pair<LatLng?, LatLng>) : FixedPriceUiEvent
+    data object OnResetError : FixedPriceUiEvent
+    data object OnResetDbPrices : FixedPriceUiEvent
+}
+
+sealed interface FixedPriceUiEffect {
+    data class ShowToast(val message: String) : FixedPriceUiEffect
+    data object HideKeyboard : FixedPriceUiEffect
+    data object HideSuggestions : FixedPriceUiEffect
+    data object ExpandBottomSheet : FixedPriceUiEffect
+    data object HideBottomSheet : FixedPriceUiEffect
+    data class MoveMapToPickup(val pickup: LatLng, val moveCamera: Boolean) : FixedPriceUiEffect
+    data class PutDropOffMarker(val dropOff: LatLng, val trip: Trip?) : FixedPriceUiEffect
+    data class ClearDropOffMarker : FixedPriceUiEffect
+    data class RequestFixedPrice(val suggest: SuggestModel?) : FixedPriceUiEffect
+    data class RequestDispatchDestinationCoordinates(val dispatch: InfoDispatchModel?) : FixedPriceUiEffect
+}
+
+class FixedPriceComposeViewModel(
+    private val locationUseCase: LocationUseCase,
+    private val fixedPriceUseCase: FixedPriceUseCase,
+    private val cercaliaUseCase: BravoRestApiUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "FixedPriceComposeViewModel"
+
+    private val _uiState = MutableStateFlow(FixedPriceUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<FixedPriceUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private var lastRequestedTrip: Trip? = null
+    var marker: Marker? = null
+
+    private val callback: suspend (List<SuggestModel>) -> Unit = { list ->
+        _uiState.value = _uiState.value.copy(suggestions = list)
+    }
+
+    private val fixedPriceCallback = object : FixedPriceCallback {
+        override fun onCompleted(response: PriceEstimationDTO?) {
+            response?.let {
+                viewModelScope.launch {
+                    lastRequestedTrip?.let { trip ->
+                        fixedPriceUseCase.saveFixedPriceData(trip, response)
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        fixedPriceData = response,
+                        errorCall = false,
+                        fixedPriceDataFromDB = null
+                    )
+                }
+            } ?: run {
+                Logs.e(TAG, "onCompleted: error")
+            }
+        }
+
+        override fun onError(p0: String?) {
+            viewModelScope.launch {
+                _uiState.value = _uiState.value.copy(errorCall = true)
+                _uiEffect.emit(FixedPriceUiEffect.ShowToast(p0.orEmpty()))
+            }
+        }
+    }
+
+    private val localCallback: (Triple<Double?, Double?, Double?>) -> Unit = {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(fixedPriceDataFromDB = it)
+        }
+    }
+
+    private val poiListener = object : POISListener {
+        override fun getPOISFailure() {
+            Logs.e(TAG, "getPOISFailure:")
+        }
+
+        override fun getPOISSuccess(data: ArrayList<Poi>?) {
+            viewModelScope.launch {
+                data?.let { poiData ->
+                    callback.invoke(
+                        poiData.map {
+                            SuggestModel(
+                                it.poi,
+                                it.locality,
+                                it.municipalyity,
+                                it.province,
+                                it.street,
+                                it.coord,
+                                null,
+                                0.0f,
+                            )
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun onEvent(event: FixedPriceUiEvent) {
+        when (event) {
+            is FixedPriceUiEvent.OnSearchTextChanged -> suggestAddresses(event.text, event.isPoiSearch)
+            is FixedPriceUiEvent.OnSuggestionClicked -> updateSelectedDropOff(event.item)
+            FixedPriceUiEvent.OnCloseDropOff -> updateSelectedDropOff(null)
+            FixedPriceUiEvent.OnBottomSheetHidden -> {
+                updateSelectedDropOff(null)
+                resetFixedPriceFlowFromDB()
+            }
+            is FixedPriceUiEvent.OnMapReady -> {
+                _uiState.value = _uiState.value.copy(mapReady = true)
+                if (event.dispatch != null) getDispatchDestinationCoordinates(event.dispatch)
+            }
+            is FixedPriceUiEvent.OnDispatchDestinationResolved -> {
+                _uiState.value = _uiState.value.copy(dispatchDestinationCoordinates = event.value)
+            }
+            FixedPriceUiEvent.OnResetError -> resetErrorFlow()
+            FixedPriceUiEvent.OnResetDbPrices -> resetFixedPriceFlowFromDB()
+        }
+    }
+
+    fun suggestAddresses(text: String, isPoiSearch: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(isPoiSearch = isPoiSearch)
+            if (isPoiSearch) {
+                POISDataModule.providePOISPresenter(context, poiListener).getPois(text)
+            } else {
+                cercaliaUseCase.suggest(text, callback)
+            }
+        }
+    }
+
+    fun updateSelectedDropOff(itemClick: SuggestModel?) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(selectedDropOff = itemClick)
+        }
+    }
+
+    fun resetFixedPriceFlowFromDB() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(fixedPriceDataFromDB = null)
+        }
+    }
+
+    fun getFixedPriceInVacant(suggest: SuggestModel) {
+        viewModelScope.launch {
+            fixedPriceUseCase.getFixedPriceInVacant(suggest, fixedPriceCallback, localCallback)
+        }
+    }
+
+    fun getFixedPriceFromTrip(trip: Trip, suggest: SuggestModel) {
+        viewModelScope.launch {
+            lastRequestedTrip = trip
+            fixedPriceUseCase.getFixedPriceFromTrip(trip, suggest, fixedPriceCallback, localCallback)
+        }
+    }
+
+    fun getFixedPriceFromDispatch(trip: Trip, dispatch: InfoDispatchModel, suggest: SuggestModel?) {
+        viewModelScope.launch {
+            lastRequestedTrip = trip
+            fixedPriceUseCase.getFixedPriceFromDispatch(
+                trip,
+                dispatch,
+                suggest,
+                fixedPriceCallback,
+                localCallback
+            )
+        }
+    }
+
+    fun getDispatchDestinationCoordinates(value: InfoDispatchModel?) {
+        viewModelScope.launch {
+            value?.let {
+                val dispatchWithAddresses = dispatchUseCase.getDispatchWithAddressById(value.id)
+                dispatchWithAddresses?.let { data ->
+                    val lastDestination = data.addresses?.findLast { !it.isPickup }
+                    val pickUp = data.addresses?.find { it.isPickup }
+                    if (lastDestination != null) {
+                        val destination = CoordenatesUtil.parseCoordinatesFromLatLong(lastDestination.coordenadas ?: "")
+                        destination?.Lat?.let { latitude ->
+                            destination.Lng?.let { longitude ->
+                                pickUp?.let { pick ->
+                                    val pickUpCoordinates = CoordenatesUtil.parseCoordinatesFromLatLong(pick.coordenadas ?: "")
+                                    pickUpCoordinates?.Lat?.let { pickUpLatitude ->
+                                        pickUpCoordinates.Lng?.let { pickUpLongitude ->
+                                            _uiState.value = _uiState.value.copy(
+                                                dispatchDestinationCoordinates = Pair(
+                                                    LatLng(latitude, longitude),
+                                                    LatLng(pickUpLatitude, pickUpLongitude)
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        pickUp?.let { pick ->
+                            val pickUpCoordinates = CoordenatesUtil.parseCoordinatesFromLatLong(pick.coordenadas ?: "")
+                            pickUpCoordinates?.Lat?.let { pickUpLatitude ->
+                                pickUpCoordinates.Lng?.let { pickUpLongitude ->
+                                    _uiState.value = _uiState.value.copy(
+                                        dispatchDestinationCoordinates = Pair(null, LatLng(pickUpLatitude, pickUpLongitude))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun resetErrorFlow() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(errorCall = null)
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// Exact reducer/state holder for button logic
+// --------------------------------------------------------------------------------------
+
+data class FixedPriceServiceUi(
+    val priceText: String = "",
+    val priceVisible: Boolean = false,
+    val loadingVisible: Boolean = true,
+    val errorVisible: Boolean = false,
+)
+
+data class FixedPriceButtonsState(
+    val suggestionsVisible: Boolean = false,
+    val suggestions: List<SuggestModel> = emptyList(),
+
+    val dropOffText: String = "",
+    val dropOffVisible: Boolean = false,
+    val closeVisible: Boolean = true,
+    val bottomSheetExpanded: Boolean = false,
+    val bottomSheetHidden: Boolean = true,
+    val bottomSheetDraggable: Boolean = true,
+
+    val taxi: FixedPriceServiceUi = FixedPriceServiceUi(),
+    val van: FixedPriceServiceUi = FixedPriceServiceUi(),
+    val business: FixedPriceServiceUi = FixedPriceServiceUi(),
+
+    val isPoiSearch: Boolean = false,
+    val isChangingFromMapClick: Boolean = false,
+
+    val mapPickup: LatLng? = null,
+    val mapDropOff: LatLng? = null,
+    val mapMoveCamera: Boolean = true,
+
+    val selectedDropOff: SuggestModel? = null,
+    val errorCall: Boolean? = null,
+)
+
+sealed interface FixedPriceButtonsAction {
+    data class SuggestionsCollected(val data: List<SuggestModel>) : FixedPriceButtonsAction
+    data class SelectedDropOffCollected(val data: SuggestModel?) : FixedPriceButtonsAction
+    data class ErrorCollected(val data: Boolean?) : FixedPriceButtonsAction
+    data class FixedPriceCollected(val data: PriceEstimationDTO?) : FixedPriceButtonsAction
+    data class DispatchDestinationCollected(val data: Pair<LatLng?, LatLng>) : FixedPriceButtonsAction
+    data class FixedPriceFromDbCollected(val data: Triple<Double?, Double?, Double?>?) : FixedPriceButtonsAction
+    data object ResetFixedPriceData : FixedPriceButtonsAction
+}
+
+object FixedPriceButtonsReducer {
+    fun reduce(state: FixedPriceButtonsState, action: FixedPriceButtonsAction): FixedPriceButtonsState {
+        return when (action) {
+            is FixedPriceButtonsAction.SuggestionsCollected -> {
+                state.copy(
+                    suggestions = action.data.sortedByDescending { it.score },
+                    suggestionsVisible = action.data.isNotEmpty()
+                )
+            }
+
+            is FixedPriceButtonsAction.SelectedDropOffCollected -> {
+                if (action.data == null) {
+                    state.copy(
+                        selectedDropOff = null,
+                        bottomSheetHidden = true,
+                        bottomSheetExpanded = false,
+                        dropOffVisible = false,
+                        dropOffText = "",
+                        closeVisible = true
+                    )
+                } else {
+                    state.copy(
+                        selectedDropOff = action.data,
+                        bottomSheetHidden = false,
+                        bottomSheetExpanded = true,
+                        dropOffVisible = true,
+                        dropOffText = action.data.getPrintableStreetTextShort(),
+                        closeVisible = true,
+                        suggestionsVisible = false
+                    )
+                }
+            }
+
+            is FixedPriceButtonsAction.ErrorCollected -> {
+                if (action.data == true) {
+                    state.copy(
+                        taxi = state.taxi.copy(errorVisible = true, loadingVisible = false, priceVisible = false, priceText = ""),
+                        van = state.van.copy(errorVisible = true, loadingVisible = false, priceVisible = false, priceText = ""),
+                        business = state.business.copy(errorVisible = true, loadingVisible = false, priceVisible = false, priceText = "")
+                    )
+                } else {
+                    state.copy(
+                        taxi = state.taxi.copy(errorVisible = false),
+                        van = state.van.copy(errorVisible = false),
+                        business = state.business.copy(errorVisible = false)
+                    )
+                }
+            }
+
+            is FixedPriceButtonsAction.FixedPriceCollected -> {
+                val response = action.data ?: return state
+                var newState = state
+                response.prices.forEach { price ->
+                    newState = when (price.serviceType) {
+                        "taxi" -> newState.copy(
+                            taxi = newState.taxi.copy(
+                                loadingVisible = false,
+                                priceVisible = true,
+                                priceText = price.finalPrice.toString()
+                            )
+                        )
+                        "largeCar" -> newState.copy(
+                            van = newState.van.copy(
+                                loadingVisible = false,
+                                priceVisible = true,
+                                priceText = price.finalPrice.toString()
+                            )
+                        )
+                        "business" -> newState.copy(
+                            business = newState.business.copy(
+                                loadingVisible = false,
+                                priceVisible = true,
+                                priceText = price.finalPrice.toString()
+                            )
+                        )
+                        else -> newState
+                    }
+                }
+                newState
+            }
+
+            is FixedPriceButtonsAction.DispatchDestinationCollected -> {
+                state.copy(
+                    mapDropOff = action.data.first,
+                    mapPickup = action.data.second,
+                    mapMoveCamera = action.data.first == null
+                )
+            }
+
+            is FixedPriceButtonsAction.FixedPriceFromDbCollected -> {
+                val data = action.data ?: return state
+                state.copy(
+                    taxi = state.taxi.copy(
+                        priceText = data.first?.toString().orEmpty(),
+                        priceVisible = data.first != null,
+                        loadingVisible = false,
+                        errorVisible = data.first == null
+                    ),
+                    van = state.van.copy(
+                        priceText = data.second?.toString().orEmpty(),
+                        priceVisible = data.second != null,
+                        loadingVisible = false,
+                        errorVisible = data.second == null
+                    ),
+                    business = state.business.copy(
+                        priceText = data.third?.toString().orEmpty(),
+                        priceVisible = data.third != null,
+                        loadingVisible = false,
+                        errorVisible = data.third == null
+                    )
+                )
+            }
+
+            FixedPriceButtonsAction.ResetFixedPriceData -> {
+                state.copy(
+                    taxi = FixedPriceServiceUi(),
+                    van = FixedPriceServiceUi(),
+                    business = FixedPriceServiceUi(),
+                    dropOffText = "",
+                    selectedDropOff = null,
+                    suggestionsVisible = false
+                )
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// Single-file Compose screen
+// --------------------------------------------------------------------------------------
+
+@Composable
+fun FixedPriceMapScreen(
+    navController: NavController,
+    viewModel: FixedPriceComposeViewModel,
+    sharedViewModel: FixedPriceMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onRequestedOrientation: (Int) -> Unit,
+    onToast: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val mainState by sharedViewModel.uiState.collectAsStateWithLifecycle()
+
+    var buttonsState by remember { mutableStateOf(FixedPriceButtonsState()) }
+    var searchText by remember { mutableStateOf(TextFieldValue("")) }
+    var mapView by remember { mutableStateOf<CercaliaMapView?>(null) }
+    var mapController by remember { mutableStateOf<MapController?>(null) }
+    var mapReady by remember { mutableStateOf(false) }
+    var isChangingFromMapClick by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        onShowBottomBar(false)
+        onRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+        sharedViewModel.onEvent(FixedPriceMainActivityUiEvent.OnShowHeader(true))
+        sharedViewModel.onEvent(FixedPriceMainActivityUiEvent.OnShowBottomBar(false))
+        sharedViewModel.onEvent(FixedPriceMainActivityUiEvent.OnRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE))
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is FixedPriceUiEffect.ShowToast -> {
+                    // host-side toast/snackbar
+                }
+                FixedPriceUiEffect.HideKeyboard -> hideKeyboard(context)
+                FixedPriceUiEffect.HideSuggestions -> buttonsState = buttonsState.copy(suggestionsVisible = false)
+                FixedPriceUiEffect.ExpandBottomSheet -> buttonsState = buttonsState.copy(bottomSheetExpanded = true, bottomSheetHidden = false)
+                FixedPriceUiEffect.HideBottomSheet -> buttonsState = buttonsState.copy(bottomSheetHidden = true, bottomSheetExpanded = false)
+                is FixedPriceUiEffect.MoveMapToPickup -> {
+                    mapController?.moveCamera(
+                        CameraUpdateFactory.newLatLngZoom(effect.pickup, if (effect.moveCamera) 17f else 17f)
+                    )
+                }
+                is FixedPriceUiEffect.PutDropOffMarker -> {
+                    val marker = Marker(context, "DropOff").setCoordinate(effect.dropOff)
+                    mapController?.putFeature(marker)
+                    viewModel.marker = marker
+                }
+                is FixedPriceUiEffect.ClearDropOffMarker -> {
+                    viewModel.marker?.let { mapController?.removeFeature(it) }
+                    viewModel.marker = null
+                }
+                is FixedPriceUiEffect.RequestFixedPrice -> {
+                    val trip = mainState.trip
+                    if (trip == null) {
+                        effect.suggest?.let { viewModel.getFixedPriceInVacant(it) }
+                    } else if (trip.fromDispatch) {
+                        mainState.dispatch?.let { dispatch ->
+                            viewModel.getFixedPriceFromDispatch(trip, dispatch, effect.suggest)
+                        }
+                    } else {
+                        effect.suggest?.let { viewModel.getFixedPriceFromTrip(trip, it) }
+                    }
+                }
+                is FixedPriceUiEffect.RequestDispatchDestinationCoordinates -> {
+                    viewModel.getDispatchDestinationCoordinates(effect.dispatch)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(uiState.suggestions) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceButtonsAction.SuggestionsCollected(uiState.suggestions)
+        )
+    }
+
+    LaunchedEffect(uiState.selectedDropOff) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceButtonsAction.SelectedDropOffCollected(uiState.selectedDropOff)
+        )
+    }
+
+    LaunchedEffect(uiState.errorCall) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceButtonsAction.ErrorCollected(uiState.errorCall)
+        )
+    }
+
+    LaunchedEffect(uiState.fixedPriceData) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceButtonsAction.FixedPriceCollected(uiState.fixedPriceData)
+        )
+    }
+
+    LaunchedEffect(uiState.fixedPriceDataFromDB) {
+        buttonsState = FixedPriceButtonsReducer.reduce(
+            buttonsState,
+            FixedPriceButtonsAction.FixedPriceFromDbCollected(uiState.fixedPriceDataFromDB)
+        )
+    }
+
+    LaunchedEffect(uiState.dispatchDestinationCoordinates) {
+        uiState.dispatchDestinationCoordinates?.let {
+            buttonsState = FixedPriceButtonsReducer.reduce(
+                buttonsState,
+                FixedPriceButtonsAction.DispatchDestinationCollected(it)
+            )
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            mapController = null
+            mapView?.let { runCatching { it.onDestroy() } }
+        }
+    }
+
+    Scaffold { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                SuggestionPanel(
+                    searchText = searchText,
+                    onSearchTextChange = {
+                        searchText = it
+                        if (isChangingFromMapClick) {
+                            isChangingFromMapClick = false
+                            return@SuggestionPanel
+                        }
+                        if (it.text.length < 3) {
+                            buttonsState = buttonsState.copy(suggestionsVisible = false, suggestions = emptyList())
+                        } else {
+                            viewModel.onEvent(
+                                FixedPriceUiEvent.OnSearchTextChanged(
+                                    it.text,
+                                    buttonsState.isPoiSearch
+                                )
+                            )
+                        }
+                    },
+                    isPoiChecked = buttonsState.isPoiSearch,
+                    onPoiCheckedChange = { checked ->
+                        buttonsState = buttonsState.copy(isPoiSearch = checked)
+                    },
+                    suggestionsVisible = buttonsState.suggestionsVisible,
+                    suggestions = buttonsState.suggestions,
+                    onSuggestionClick = { item ->
+                        buttonsState = buttonsState.copy(suggestionsVisible = false)
+                        isChangingFromMapClick = true
+                        viewModel.marker?.let { mapController?.removeFeature(it) }
+                        viewModel.marker = null
+                        viewModel.updateSelectedDropOff(item)
+                    }
+                )
+
+                BottomSheetPricePanel(
+                    state = buttonsState,
+                    onClose = { viewModel.updateSelectedDropOff(null) },
+                    onReset = {
+                        buttonsState = FixedPriceButtonsReducer.reduce(buttonsState, FixedPriceButtonsAction.ResetFixedPriceData)
+                        viewModel.resetErrorFlow()
+                    }
+                )
+
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        CercaliaMapView(ctx).also { mv ->
+                            mapView = mv
+                            mapController = MapController.getInstance(context as Activity, mv)
+                            mapController?.setOnMapReadyCallback {
+                                mapReady = true
+                                val trip = mainState.trip
+                                if (trip?.fromDispatch == true) {
+                                    viewModel.getDispatchDestinationCoordinates(mainState.dispatch)
+                                } else if (trip != null) {
+                                    setupPickupMarker(mapController, ctx, LatLong(trip.latitudePickup, trip.longitudePickup))
+                                } else {
+                                    setupPickupMarker(
+                                        mapController,
+                                        ctx,
+                                        LatLong(W2CLocation.getLastLatitude(), W2CLocation.getLastLongitude())
+                                    )
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionPanel(
+    searchText: TextFieldValue,
+    onSearchTextChange: (TextFieldValue) -> Unit,
+    isPoiChecked: Boolean,
+    onPoiCheckedChange: (Boolean) -> Unit,
+    suggestionsVisible: Boolean,
+    suggestions: List<SuggestModel>,
+    onSuggestionClick: (SuggestModel) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = !isPoiChecked, onClick = { onPoiCheckedChange(false) })
+            Text(text = "Address", color = Color.White)
+            Spacer(Modifier.width(16.dp))
+            RadioButton(selected = isPoiChecked, onClick = { onPoiCheckedChange(true) })
+            Text(text = "POI", color = Color.White)
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = searchText,
+            onValueChange = onSearchTextChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Drop off") }
+        )
+
+        if (suggestionsVisible) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp)
+            ) {
+                items(suggestions) { item ->
+                    Text(
+                        text = item.getPrintableStreetTextShort(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSuggestionClick(item) }
+                            .padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomSheetPricePanel(
+    state: FixedPriceButtonsState,
+    onClose: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF2B2B2B))
+            .padding(bottom = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = state.dropOffText,
+                modifier = Modifier.weight(1f),
+                color = Color.White
+            )
+            if (state.closeVisible) {
+                Text(
+                    text = "X",
+                    modifier = Modifier.clickable { onClose() },
+                    color = Color.White
+                )
+            }
+        }
+
+        PriceRow("Standard taxi", state.taxi)
+        PriceRow("Van", state.van)
+        PriceRow("Business", state.business)
+    }
+}
+
+@Composable
+private fun PriceRow(label: String, ui: FixedPriceServiceUi) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = label, color = Color.White, modifier = Modifier.weight(1f))
+        when {
+            ui.errorVisible -> Text(text = "!", color = Color.Red)
+            ui.loadingVisible -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
+            ui.priceVisible -> Text(text = ui.priceText, color = Color.White)
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------------------
+
+private fun setupPickupMarker(
+    controller: MapController?,
+    context: Context,
+    pickup: LatLong
+) {
+    try {
+        val marker = Marker(context, "PickUp").setCoordinate(LatLng(pickup.lat, pickup.lng))
+        controller?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(pickup.lat, pickup.lng), 17f))
+        controller?.putFeature(marker)
+    } catch (_: Exception) {
+    }
+}
+
+private fun hideKeyboard(context: Context) {
+    val activity = context as? Activity ?: return
+    val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    val view = activity.currentFocus ?: View(activity)
+    imm.hideSoftInputFromWindow(view.windowToken, 0)
+}
+```
+
+If you want, I can do one more pass and make this **actually production-compilable against your real project types** by removing the placeholder base classes and replacing the generic `Any`/stubbed parts with your exact existing imports and Koin setup.
+// THIRD ANSWER
+
+// FOURTH ANSWER

@@ -1,0 +1,1092 @@
+
+// FIRST ANSWER
+Below is a Compose-first replacement that keeps the same behavior as your fragment, but moves the screen to a `UiState + UiEffect` architecture and preserves the existing navigation behavior.
+
+I’m giving you:
+
+1. A Compose screen for `LoginUserRedSysFragment`
+2. A Compose-friendly `LoginUserRedSysViewModel`
+3. An exact `LoginUserRedSysButtonsState` reducer that mirrors the fragment branches one-by-one
+4. A `LoginUserRedSysMainActivityViewModel` Compose bridge for navigation/toast/header integration
+5. Lifecycle collection patterns for state/effects
+6. No dialog handling, because the original fragment/viewmodel does not use a `CustomDialog`
+
+---
+
+## 1) Compose UI state, events, effects, and button reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Immutable
+data class LoginUserRedSysUiState(
+    val user: String = "",
+    val password: String = "",
+    val userError: String? = null,
+    val isAcceptLoading: Boolean = false,
+    val buttons: LoginUserRedSysButtonsState = LoginUserRedSysButtonsState()
+)
+
+sealed interface LoginUserRedSysUiEvent {
+    data class UserChanged(val value: String) : LoginUserRedSysUiEvent
+    data class PasswordChanged(val value: String) : LoginUserRedSysUiEvent
+    data object CancelClicked : LoginUserRedSysUiEvent
+    data object AcceptClicked : LoginUserRedSysUiEvent
+    data object ScreenStarted : LoginUserRedSysUiEvent
+}
+
+sealed interface LoginUserRedSysUiEffect {
+    data object NavigateBack : LoginUserRedSysUiEffect
+    data object LoginSuccess : LoginUserRedSysUiEffect
+    data object LoginFailed : LoginUserRedSysUiEffect
+    data object NavigateToChangePassword : LoginUserRedSysUiEffect
+}
+
+@Immutable
+data class LoginUserRedSysButtonsState(
+    val cancelStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val cancelBackground: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.RED,
+    val acceptStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val acceptBackground: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.GREEN,
+    val acceptVisible: Boolean = true,
+    val cancelVisible: Boolean = true
+) {
+    companion object {
+        /**
+         * Exact reducer mirroring the fragment branches one-by-one.
+         *
+         * Fragment branches:
+         * - btnCancel.setAction { navigateBack() }
+         * - btnAccept.setAction { clickOnAccept() }
+         * - on loginRedSysFlow true -> toast + navigateBack()
+         * - on loginRedSysFlow false -> edUser.error + requestFocus + btnAccept ENABLE + GREEN
+         * - on userRedSysFlow -> set user/password text
+         */
+        fun reduce(
+            state: LoginUserRedSysUiState,
+            effect: LoginUserRedSysUiEffect?
+        ): LoginUserRedSysButtonsState {
+            return when (effect) {
+                LoginUserRedSysUiEffect.LoginSuccess -> state.buttons.copy(
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                LoginUserRedSysUiEffect.LoginFailed -> state.buttons.copy(
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                LoginUserRedSysUiEffect.NavigateBack -> state.buttons.copy(
+                    cancelStyle = CustomButton.StyleButton.ENABLE,
+                    cancelBackground = CustomButton.BackgroundButtonColor.RED,
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                LoginUserRedSysUiEffect.NavigateToChangePassword -> state.buttons.copy(
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                null -> state.buttons
+            }
+        }
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+This replaces the fragment’s `SharedFlow<Boolean>` and `SharedFlow<String?>` with a single state stream plus one effect stream.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import es.redsys.paysys.Utils.RedCLSErrorCodes
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.RedSysLoginResponse
+import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysButtonsState
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiEffect
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiEvent
+import ifac.td.taxi.ui.screen.redsys.LoginUserRedSysUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class LoginUserRedSysViewModel(
+    private val redSysUseCase: RedSysUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "LoginUserRedSysViewModel"
+
+    private val _uiState = MutableStateFlow(LoginUserRedSysUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LoginUserRedSysUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: LoginUserRedSysUiEvent) {
+        when (event) {
+            is LoginUserRedSysUiEvent.UserChanged -> {
+                _uiState.update { it.copy(user = event.value, userError = null) }
+            }
+
+            is LoginUserRedSysUiEvent.PasswordChanged -> {
+                _uiState.update { it.copy(password = event.value) }
+            }
+
+            LoginUserRedSysUiEvent.CancelClicked -> {
+                viewModelScope.launch {
+                    _uiEffect.emit(LoginUserRedSysUiEffect.NavigateBack)
+                }
+            }
+
+            LoginUserRedSysUiEvent.AcceptClicked -> {
+                clickOnAccept()
+            }
+
+            LoginUserRedSysUiEvent.ScreenStarted -> {
+                getUserRedSys()
+            }
+        }
+    }
+
+    private fun clickOnAccept() {
+        val current = _uiState.value
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isAcceptLoading = true,
+                    buttons = it.buttons.copy(
+                        acceptStyle = CustomButton.StyleButton.LOADING
+                    )
+                )
+            }
+
+            loginRedSys(
+                user = current.user,
+                password = current.password
+            )
+        }
+    }
+
+    private fun loginRedSys(user: String, password: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            redSysUseCase.configureRedSys()
+
+            val loginRedSys = redSysUseCase.loginRedSys(
+                username = user,
+                password = password
+            )
+
+            when (loginRedSys) {
+                is RedSysLoginResponse.Success -> {
+                    if (loginRedSys.merchantList.isNotEmpty()) {
+                        redSysUseCase.saveUsernameRedSys(user)
+                        if (password.isNotEmpty()) {
+                            TemporalData.passwordRedSys = password
+                        }
+
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.LoginSuccess)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                userError = context.getString(R.string.incorrect_login),
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.LoginFailed)
+                    }
+                }
+
+                is RedSysLoginResponse.Error -> {
+                    Logs.d(TAG, "Login RedSys failed or returned empty array: ${loginRedSys.errorMessage}")
+
+                    if (loginRedSys.errorCode == RedCLSErrorCodes.STATUS_KO_FORMATO_RESP_LOGIN_PWD_CAD) {
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.NavigateToChangePassword)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                userError = context.getString(R.string.incorrect_login),
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.LoginFailed)
+                    }
+                }
+            }
+        }
+    }
+
+    fun getUserRedSys() {
+        viewModelScope.launch {
+            val user = redSysUseCase.getUsernameRedSys()
+            _uiState.update {
+                it.copy(
+                    user = user.orEmpty(),
+                    password = TemporalData.passwordRedSys
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3) Compose screen that mirrors the fragment UI and behavior
+
+This uses the same layout semantics:
+- header hidden
+- user/password fields
+- cancel and accept buttons
+- accept loading state
+- error on user field
+- navigation back on success/cancel
+- navigate to change password on specific error code
+
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.LoginUserRedSysViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun LoginUserRedSysScreen(
+    viewModel: LoginUserRedSysViewModel,
+    mainActivityBridge: LoginUserRedSysMainActivityViewModel
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        mainActivityBridge.showHeader(false)
+        viewModel.onEvent(LoginUserRedSysUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                LoginUserRedSysUiEffect.NavigateBack -> {
+                    mainActivityBridge.navigateBack()
+                }
+
+                LoginUserRedSysUiEffect.LoginSuccess -> {
+                    mainActivityBridge.showToast(R.string.toast_red_sys_login_ok)
+                    mainActivityBridge.navigateBack()
+                }
+
+                LoginUserRedSysUiEffect.LoginFailed -> {
+                    focusRequester.requestFocus()
+                }
+
+                LoginUserRedSysUiEffect.NavigateToChangePassword -> {
+                    mainActivityBridge.navigateToChangePasswordRedSys()
+                }
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            Text(text = context.getString(R.string.red_sys_user))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Replace with your CustomEditText Compose wrapper if you have one.
+            // Here is a plain Compose equivalent.
+            androidx.compose.material3.OutlinedTextField(
+                value = uiState.user,
+                onValueChange = { viewModel.onEvent(LoginUserRedSysUiEvent.UserChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                isError = uiState.userError != null,
+                label = { Text(text = context.getString(R.string.red_sys_user)) },
+                singleLine = true
+            )
+
+            if (uiState.userError != null) {
+                Text(
+                    text = uiState.userError.orEmpty(),
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(text = context.getString(R.string.red_sys_password))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            androidx.compose.material3.OutlinedTextField(
+                value = uiState.password,
+                onValueChange = { viewModel.onEvent(LoginUserRedSysUiEvent.PasswordChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(text = context.getString(R.string.red_sys_password)) },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.weight(1f))
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .background(androidx.compose.ui.graphics.Color.Black)
+                .padding(1.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            CustomButtonComposable(
+                modifier = Modifier.weight(1f),
+                text = context.getString(R.string.btn_cancel),
+                style = uiState.buttons.cancelStyle,
+                background = uiState.buttons.cancelBackground,
+                onClick = { viewModel.onEvent(LoginUserRedSysUiEvent.CancelClicked) }
+            )
+
+            CustomButtonComposable(
+                modifier = Modifier.weight(1f),
+                text = context.getString(R.string.btn_accept),
+                style = uiState.buttons.acceptStyle,
+                background = uiState.buttons.acceptBackground,
+                onClick = { viewModel.onEvent(LoginUserRedSysUiEvent.AcceptClicked) }
+            )
+        }
+    }
+}
+```
+
+---
+
+## 4) Compose wrapper for `CustomButton` behavior
+
+If you already have a Compose version of `CustomButton`, use it. If not, this is a minimal bridge that mirrors the fragment behavior:
+- `ENABLE` = clickable
+- `LOADING` = show loading text
+- background colors match the XML/custom view defaults
+
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Composable
+fun CustomButtonComposable(
+    modifier: Modifier = Modifier,
+    text: String,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit
+) {
+    val bgColor = when (background) {
+        CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+        CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+        CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+        CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+        CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .height(56.dp)
+            .background(bgColor)
+            .then(
+                if (style == CustomButton.StyleButton.ENABLE) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        when (style) {
+            CustomButton.StyleButton.LOADING -> CircularProgressIndicator()
+            else -> Text(text = text, color = Color.White)
+        }
+    }
+}
+```
+
+---
+
+## 5) MainActivity Compose bridge
+
+This is the Compose-friendly bridge that preserves the fragment’s navigation behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.redsys
+
+import androidx.annotation.StringRes
+import androidx.lifecycle.ViewModel
+import ifac.td.taxi.R
+
+class LoginUserRedSysMainActivityViewModel(
+    private val navigator: LoginUserRedSysNavigator
+) : ViewModel() {
+
+    fun showHeader(show: Boolean) {
+        navigator.showHeader(show)
+    }
+
+    fun navigateBack() {
+        navigator.navigateBack()
+    }
+
+    fun showToast(@StringRes resId: Int) {
+        navigator.showToast(resId)
+    }
+
+    fun navigateToChangePasswordRedSys() {
+        navigator.navigateToChangePasswordRedSys()
+    }
+}
+
+interface LoginUserRedSysNavigator {
+    fun showHeader(show: Boolean)
+    fun navigateBack()
+    fun showToast(@StringRes resId: Int)
+    fun navigateToChangePasswordRedSys()
+}
+```
+
+---
+
+## 6) How this maps exactly to the fragment
+
+### Fragment branch mapping
+- `setupComponents()`
+  - `showHeader(false)` → `LaunchedEffect(Unit) { mainActivityBridge.showHeader(false) }`
+  - `vModel.getUserRedSys()` → `viewModel.onEvent(ScreenStarted)`
+
+- `btnCancel.setAction { navigateBack() }`
+  - `CancelClicked` effect → `mainActivityBridge.navigateBack()`
+
+- `btnAccept.setAction { clickOnAccept() }`
+  - `AcceptClicked` event → validates and starts loading + login
+
+- `loginRedSysFlow.collect { ... }`
+  - `true` → toast + navigate back
+  - `false` → user error + focus + accept button enabled/green
+
+- `userRedSysFlow.collect { ... }`
+  - user/password prefill → now done in `uiState`
+
+### Button state reducer
+The exact reducer is:
+
+- success/failure both restore:
+  - `acceptStyle = ENABLE`
+  - `acceptBackground = GREEN`
+- cancel remains:
+  - `cancelStyle = ENABLE`
+  - `cancelBackground = RED`
+
+That mirrors the fragment’s actual behavior and the XML/custom button defaults.
+
+---
+
+## 7) Notes
+
+- I did **not** add dialog state because your original fragment/viewmodel does not use a `CustomDialog`.
+- I preserved navigation behavior through a bridge so you can keep your existing `navigateBack()`, `showToast()`, and `showHeader(false)` semantics.
+- If you want, I can also provide:
+  1. a `NavHost` integration example,
+  2. a Koin `viewModel` wiring example for Compose,
+  3. or a version that uses your existing `CustomEditText`/`CustomButton` as Android Views inside Compose via `AndroidView`.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen.redsys
+
+import android.app.Application
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import es.redsys.paysys.Utils.RedCLSErrorCodes
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.RedSysLoginResponse
+import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.CustomButton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// ------------------------------------------------------------
+// UI STATE / EVENTS / EFFECTS
+// ------------------------------------------------------------
+
+@Immutable
+data class LoginUserRedSysUiState(
+    val user: String = "",
+    val password: String = "",
+    val userError: String? = null,
+    val isAcceptLoading: Boolean = false,
+    val buttons: LoginUserRedSysButtonsState = LoginUserRedSysButtonsState()
+)
+
+sealed interface LoginUserRedSysUiEvent {
+    data object ScreenStarted : LoginUserRedSysUiEvent
+    data class UserChanged(val value: String) : LoginUserRedSysUiEvent
+    data class PasswordChanged(val value: String) : LoginUserRedSysUiEvent
+    data object CancelClicked : LoginUserRedSysUiEvent
+    data object AcceptClicked : LoginUserRedSysUiEvent
+}
+
+sealed interface LoginUserRedSysUiEffect {
+    data object NavigateBack : LoginUserRedSysUiEffect
+    data object LoginSuccess : LoginUserRedSysUiEffect
+    data object LoginFailed : LoginUserRedSysUiEffect
+    data object NavigateToChangePassword : LoginUserRedSysUiEffect
+}
+
+@Immutable
+data class LoginUserRedSysButtonsState(
+    val cancelStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val cancelBackground: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.RED,
+    val acceptStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val acceptBackground: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.GREEN,
+    val cancelVisible: Boolean = true,
+    val acceptVisible: Boolean = true
+) {
+    companion object {
+        /**
+         * Exact reducer mirroring the fragment collect branches one-by-one.
+         *
+         * Fragment branches:
+         * 1) loginRedSysFlow.collect { if (true) { toast + navigateBack() } else { error + focus + accept ENABLE + GREEN } }
+         * 2) userRedSysFlow.collect { setText(user); setText(password) }
+         *
+         * This reducer only models the button state changes that were explicitly done in the fragment.
+         */
+        fun reduce(
+            current: LoginUserRedSysUiState,
+            effect: LoginUserRedSysUiEffect?
+        ): LoginUserRedSysButtonsState {
+            return when (effect) {
+                LoginUserRedSysUiEffect.LoginSuccess -> current.buttons.copy(
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                LoginUserRedSysUiEffect.LoginFailed -> current.buttons.copy(
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                LoginUserRedSysUiEffect.NavigateBack -> current.buttons.copy(
+                    cancelStyle = CustomButton.StyleButton.ENABLE,
+                    cancelBackground = CustomButton.BackgroundButtonColor.RED,
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                LoginUserRedSysUiEffect.NavigateToChangePassword -> current.buttons.copy(
+                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                )
+
+                null -> current.buttons
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// VIEWMODEL
+// ------------------------------------------------------------
+
+class LoginUserRedSysViewModel(
+    private val redSysUseCase: RedSysUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "LoginUserRedSysViewModel"
+
+    private val _uiState = MutableStateFlow(LoginUserRedSysUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LoginUserRedSysUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    // Kept for compatibility with the previous step / requested architecture
+    private val _loginRedSysFlow = MutableSharedFlow<Boolean>()
+    val loginRedSysFlow = _loginRedSysFlow.asSharedFlow()
+
+    private val _userRedSysFlow = MutableSharedFlow<String?>()
+    val userRedSysFlow = _userRedSysFlow.asSharedFlow()
+
+    private val _okStatusFlow = MutableSharedFlow<CustomButton.StyleButton>()
+    val okStatusFlow = _okStatusFlow.asSharedFlow()
+
+    private var userRedSys: String = ""
+    private var passwordRedSys: String = ""
+
+    fun onEvent(event: LoginUserRedSysUiEvent) {
+        when (event) {
+            LoginUserRedSysUiEvent.ScreenStarted -> getUserRedSys()
+
+            is LoginUserRedSysUiEvent.UserChanged -> {
+                _uiState.update { it.copy(user = event.value, userError = null) }
+            }
+
+            is LoginUserRedSysUiEvent.PasswordChanged -> {
+                _uiState.update { it.copy(password = event.value) }
+            }
+
+            LoginUserRedSysUiEvent.CancelClicked -> {
+                viewModelScope.launch {
+                    _uiEffect.emit(LoginUserRedSysUiEffect.NavigateBack)
+                }
+            }
+
+            LoginUserRedSysUiEvent.AcceptClicked -> {
+                clickOnAccept()
+            }
+        }
+    }
+
+    fun loginRedSys(user: String, password: String) {
+        userRedSys = user
+        passwordRedSys = password
+
+        viewModelScope.launch(Dispatchers.IO) {
+            redSysUseCase.configureRedSys()
+
+            val loginRedSys = redSysUseCase.loginRedSys(
+                username = userRedSys,
+                password = passwordRedSys
+            )
+
+            when (loginRedSys) {
+                is RedSysLoginResponse.Success -> {
+                    if (loginRedSys.merchantList.size > 0) {
+                        redSysUseCase.saveUsernameRedSys(userRedSys)
+                        if (passwordRedSys.isNotEmpty()) {
+                            TemporalData.passwordRedSys = passwordRedSys
+                        }
+                        _loginRedSysFlow.emit(true)
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.LoginSuccess)
+                    } else {
+                        _loginRedSysFlow.emit(false)
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                userError = context.getString(R.string.incorrect_login),
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.LoginFailed)
+                    }
+                }
+
+                is RedSysLoginResponse.Error -> {
+                    Logs.d(TAG, "Login RedSys failed or returned empty array: ${loginRedSys.errorMessage}")
+                    if (loginRedSys.errorCode == RedCLSErrorCodes.STATUS_KO_FORMATO_RESP_LOGIN_PWD_CAD) {
+                        _okStatusFlow.emit(CustomButton.StyleButton.ENABLE)
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.NavigateToChangePassword)
+                    } else {
+                        _loginRedSysFlow.emit(false)
+                        _uiState.update {
+                            it.copy(
+                                isAcceptLoading = false,
+                                userError = context.getString(R.string.incorrect_login),
+                                buttons = it.buttons.copy(
+                                    acceptStyle = CustomButton.StyleButton.ENABLE,
+                                    acceptBackground = CustomButton.BackgroundButtonColor.GREEN
+                                )
+                            )
+                        }
+                        _uiEffect.emit(LoginUserRedSysUiEffect.LoginFailed)
+                    }
+                }
+            }
+        }
+    }
+
+    fun getUserRedSys() {
+        viewModelScope.launch {
+            val user = redSysUseCase.getUsernameRedSys()
+            _userRedSysFlow.emit(user)
+            _uiState.update {
+                it.copy(
+                    user = user.orEmpty(),
+                    password = TemporalData.passwordRedSys
+                )
+            }
+        }
+    }
+
+    private fun clickOnAccept() {
+        val current = _uiState.value
+        if (current.user.isNotBlank() && current.password.isNotBlank()) {
+            _uiState.update {
+                it.copy(
+                    isAcceptLoading = true,
+                    userError = null,
+                    buttons = it.buttons.copy(
+                        acceptStyle = CustomButton.StyleButton.LOADING
+                    )
+                )
+            }
+            loginRedSys(
+                user = current.user,
+                password = current.password
+            )
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// MAIN ACTIVITY BRIDGE
+// ------------------------------------------------------------
+
+interface LoginUserRedSysNavigator {
+    fun showHeader(show: Boolean)
+    fun navigateBack()
+    fun showToast(@StringRes resId: Int)
+    fun navigateToChangePasswordRedSys()
+}
+
+class LoginUserRedSysMainActivityViewModel(
+    private val navigator: LoginUserRedSysNavigator
+) : ViewModel() {
+
+    fun showHeader(show: Boolean) = navigator.showHeader(show)
+    fun navigateBack() = navigator.navigateBack()
+    fun showToast(@StringRes resId: Int) = navigator.showToast(resId)
+    fun navigateToChangePasswordRedSys() = navigator.navigateToChangePasswordRedSys()
+}
+
+// ------------------------------------------------------------
+// COMPOSABLE SCREEN
+// ------------------------------------------------------------
+
+@Composable
+fun LoginUserRedSysScreen(
+    viewModel: LoginUserRedSysViewModel,
+    mainActivityBridge: LoginUserRedSysMainActivityViewModel
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        mainActivityBridge.showHeader(false)
+        viewModel.onEvent(LoginUserRedSysUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                LoginUserRedSysUiEffect.NavigateBack -> {
+                    mainActivityBridge.navigateBack()
+                }
+
+                LoginUserRedSysUiEffect.LoginSuccess -> {
+                    mainActivityBridge.showToast(R.string.toast_red_sys_login_ok)
+                    mainActivityBridge.navigateBack()
+                }
+
+                LoginUserRedSysUiEffect.LoginFailed -> {
+                    // Fragment behavior: set error + requestFocus + restore accept button.
+                    // In Compose we keep the error in state and let the UI render it.
+                }
+
+                LoginUserRedSysUiEffect.NavigateToChangePassword -> {
+                    mainActivityBridge.navigateToChangePasswordRedSys()
+                }
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            Text(text = context.getString(R.string.red_sys_user))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = uiState.user,
+                onValueChange = { viewModel.onEvent(LoginUserRedSysUiEvent.UserChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                isError = uiState.userError != null,
+                label = { Text(text = context.getString(R.string.red_sys_user)) },
+                singleLine = true
+            )
+
+            if (uiState.userError != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = uiState.userError.orEmpty(),
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(text = context.getString(R.string.red_sys_password))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = uiState.password,
+                onValueChange = { viewModel.onEvent(LoginUserRedSysUiEvent.PasswordChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(text = context.getString(R.string.red_sys_password)) },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color.Black)
+                .padding(1.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (uiState.buttons.cancelVisible) {
+                ComposeCustomButton(
+                    modifier = Modifier.weight(1f),
+                    text = context.getString(R.string.btn_cancel),
+                    style = uiState.buttons.cancelStyle,
+                    background = uiState.buttons.cancelBackground,
+                    onClick = { viewModel.onEvent(LoginUserRedSysUiEvent.CancelClicked) }
+                )
+            }
+
+            if (uiState.buttons.acceptVisible) {
+                ComposeCustomButton(
+                    modifier = Modifier.weight(1f),
+                    text = context.getString(R.string.btn_accept),
+                    style = uiState.buttons.acceptStyle,
+                    background = uiState.buttons.acceptBackground,
+                    onClick = { viewModel.onEvent(LoginUserRedSysUiEvent.AcceptClicked) }
+                )
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// COMPOSE BUTTON BRIDGE
+// ------------------------------------------------------------
+
+@Composable
+fun ComposeCustomButton(
+    modifier: Modifier = Modifier,
+    text: String,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit
+) {
+    val bgColor = when (background) {
+        CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+        CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+        CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+        CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+        CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .height(56.dp)
+            .background(bgColor)
+            .then(
+                if (style == CustomButton.StyleButton.ENABLE) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        when (style) {
+            CustomButton.StyleButton.LOADING -> CircularProgressIndicator(color = Color.White)
+            else -> Text(text = text, color = Color.White)
+        }
+    }
+}
+```
+
+If you want, I can do a second pass and make this **strictly compile against your existing project types** by adapting the imports and replacing the plain `OutlinedTextField` with your `CustomEditText` Compose equivalent or `AndroidView` wrapper.
+// THIRD ANSWER
+
+// FOURTH ANSWER

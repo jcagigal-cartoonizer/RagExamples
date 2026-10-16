@@ -1,0 +1,1265 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the original fragment behavior, including:
+
+- navigation/back behavior
+- dialog confirmation flow
+- exact “accept only” action handling
+- main-activity bridge calls
+- state-driven button visibility/coloring
+- a `SharedFlow<ChooseOptionUiEffect>`-based effect model
+- a reducer that mirrors the fragment’s `when` branches one-by-one
+
+I’ll provide:
+
+1. `ChooseOptionUiState`, `ChooseOptionButtonsState`, `ChooseOptionUiEffect`
+2. `ChooseOptionViewModel` rewritten for Compose
+3. `ChooseOptionMainActivityViewModel` bridge
+4. `ChooseOptionScreen` composable
+5. a small `ChooseOptionRoute` that wires lifecycle collection and navigation
+6. notes on preserving the old Jetpack Views navigation/dialog behavior
+
+---
+
+## 1) UI state, button state, and effects
+
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+@Immutable
+data class ChooseOptionUiState(
+    val title: String = "",
+    val description: String = "",
+    val buttonsState: ChooseOptionButtonsState = ChooseOptionButtonsState(),
+    val dialogState: ChooseOptionDialogState? = null,
+    val isLoading: Boolean = false,
+)
+
+@Immutable
+data class ChooseOptionButtonsState(
+    val cancelVisible: Boolean = true,
+    val acceptVisible: Boolean = true,
+    val cancelType: ButtonType = ButtonType.CANCEL,
+    val acceptType: ButtonType = ButtonType.ACCEPT,
+    val cancelEnabled: Boolean = true,
+    val acceptEnabled: Boolean = true,
+    val cancelText: String = "",
+    val acceptText: String = "",
+)
+
+@Immutable
+data class ChooseOptionDialogState(
+    val title: String,
+    val description: String,
+    val buttons: List<ButtonType>,
+    val selectedId: String,
+    val selectedString: String,
+)
+
+sealed interface ChooseOptionUiEffect {
+    data object NavigateBack : ChooseOptionUiEffect
+    data object CancelShiftSelection : ChooseOptionUiEffect
+    data class OpenConfirmDialog(
+        val selectedId: String,
+        val selectedString: String,
+    ) : ChooseOptionUiEffect
+
+    data class SendSelectedAnswer(val selectedId: String) : ChooseOptionUiEffect
+    data object LoginDriver : ChooseOptionUiEffect
+}
+```
+
+---
+
+## 2) Exact reducer for button state
+
+This reducer mirrors the fragment’s button logic one-by-one.  
+For `ChooseOptionFragment`, the XML/fragment behavior is simple: the list is shown, and the only “buttons” are the dialog buttons (`CANCEL`, `ACCEPT`). So the reducer below is intentionally exact to that behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+object ChooseOptionButtonsReducer {
+
+    /**
+     * Exact reducer mirroring the fragment behavior:
+     * - the screen itself does not conditionally hide/show action buttons
+     * - the confirmation dialog always uses CANCEL + ACCEPT
+     * - ACCEPT is the only branch that performs the action
+     * - any other button branch is ignored
+     */
+    fun reduce(
+        current: ChooseOptionButtonsState,
+        selectedString: String? = null,
+    ): ChooseOptionButtonsState {
+        return current.copy(
+            cancelVisible = true,
+            acceptVisible = true,
+            cancelType = ButtonType.CANCEL,
+            acceptType = ButtonType.ACCEPT,
+            cancelEnabled = true,
+            acceptEnabled = true,
+            cancelText = "",
+            acceptText = "",
+        )
+    }
+}
+```
+
+If you want the reducer to also model the dialog button set explicitly, this is the exact dialog configuration used by the fragment:
+
+```kotlin
+fun dialogButtons(): List<ButtonType> = arrayListOf(ButtonType.CANCEL, ButtonType.ACCEPT)
+```
+
+---
+
+## 3) Compose-friendly ViewModel
+
+This version exposes `UiState + UiEffect` and keeps the same business logic as the fragment’s original `ChooseOptionViewModel`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.domain.usecase.EndShiftUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.screen.chooseoption.ChooseOptionButtonsReducer
+import ifac.td.taxi.ui.screen.chooseoption.ChooseOptionDialogState
+import ifac.td.taxi.ui.screen.chooseoption.ChooseOptionUiEffect
+import ifac.td.taxi.ui.screen.chooseoption.ChooseOptionUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class ChooseOptionViewModel(
+    context: Application,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val loginDriverUseCase: LoginDriverUseCase,
+    private val sessionUseCase: SessionUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val endShiftUseCase: EndShiftUseCase,
+) : AndroidViewModel(context) {
+
+    private val TAG = "ChooseOptionViewModel"
+
+    private val _uiState = MutableStateFlow(ChooseOptionUiState())
+    val uiState: StateFlow<ChooseOptionUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ChooseOptionUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<ChooseOptionUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onScreenShown() {
+        _uiState.value = _uiState.value.copy(
+            buttonsState = ChooseOptionButtonsReducer.reduce(_uiState.value.buttonsState)
+        )
+    }
+
+    fun onOptionClicked(selectedId: String, selectedString: String) {
+        _uiEffect.tryEmit(
+            ChooseOptionUiEffect.OpenConfirmDialog(
+                selectedId = selectedId,
+                selectedString = selectedString
+            )
+        )
+    }
+
+    fun onDialogResultAccept(selectedId: String) {
+        viewModelScope.launch {
+            _uiEffect.emit(ChooseOptionUiEffect.SendSelectedAnswer(selectedId))
+            sendShiftSelectedAnswer(selectedId)
+            _uiEffect.emit(ChooseOptionUiEffect.CancelShiftSelection)
+            loginDriver()
+            _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
+        }
+    }
+
+    fun onDialogResultCancel() {
+        // Exact fragment behavior: else -> {}
+    }
+
+    fun onBackPressed() {
+        viewModelScope.launch {
+            _uiEffect.emit(ChooseOptionUiEffect.CancelShiftSelection)
+            logoffDriver()
+            _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
+        }
+    }
+
+    fun sendShiftSelectedAnswer(selectedId: String) {
+        viewModelScope.launch {
+            Logs.d(TAG, "sendShiftSelectedAnswer: selectedId = $selectedId")
+            shiftStatusUseCase.sendShiftSelectedAnswer(
+                selectedId,
+                W2CLocation.getZoning()?.version ?: "00"
+            )
+        }
+    }
+
+    fun loginDriver() {
+        viewModelScope.launch {
+            sessionUseCase.getSession()?.let {
+                it.numDriver?.let { numDriver ->
+                    loginDriverUseCase.loginDriver(
+                        numDriver,
+                        it.pwdDriver ?: "",
+                        it.reinforcement
+                    )
+                }
+            }
+        }
+    }
+
+    fun logoffDriver() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "logoffDriver: cancelling shift selection")
+            endShiftUseCase.endShift()
+            bravoCentralUseCase.logoff()
+            shiftStatusUseCase.setStatus(ifConstants.STATE_DISCONNECTED, false)
+        }
+    }
+}
+```
+
+---
+
+## 4) MainActivity Compose bridge ViewModel
+
+This is the bridge that replaces the fragment’s direct `iMainActivity` calls.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+sealed interface ChooseOptionMainActivityEffect {
+    data class ShowBottomBar(val show: Boolean) : ChooseOptionMainActivityEffect
+    data class ShowHeader(val show: Boolean) : ChooseOptionMainActivityEffect
+    data class SetChooseOptionFragmentActive(val active: Boolean) : ChooseOptionMainActivityEffect
+    data class ConfigureTopBarBack(val show: Boolean) : ChooseOptionMainActivityEffect
+    data object NavigateBack : ChooseOptionMainActivityEffect
+}
+
+class ChooseOptionMainActivityViewModel : ViewModel() {
+
+    private val _effects = MutableSharedFlow<ChooseOptionMainActivityEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<ChooseOptionMainActivityEffect> = _effects.asSharedFlow()
+
+    fun onScreenStarted() {
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ShowBottomBar(true))
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ShowHeader(true))
+        _effects.tryEmit(ChooseOptionMainActivityEffect.SetChooseOptionFragmentActive(true))
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ConfigureTopBarBack(true))
+    }
+
+    fun onScreenDisposed() {
+        _effects.tryEmit(ChooseOptionMainActivityEffect.SetChooseOptionFragmentActive(false))
+    }
+
+    fun navigateBack() {
+        _effects.tryEmit(ChooseOptionMainActivityEffect.NavigateBack)
+    }
+
+    fun setChooseOptionFragmentActive(active: Boolean) {
+        _effects.tryEmit(ChooseOptionMainActivityEffect.SetChooseOptionFragmentActive(active))
+    }
+}
+```
+
+---
+
+## 5) Composable screen
+
+This uses a dialog state and lifecycle collection for effects.  
+It preserves the fragment’s behavior: clicking an item opens a confirmation dialog; ACCEPT triggers send answer + login + back; CANCEL does nothing.
+
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.viewmodel.ChooseOptionMainActivityEffect
+import ifac.td.taxi.viewmodel.ChooseOptionMainActivityViewModel
+import ifac.td.taxi.viewmodel.ChooseOptionViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun ChooseOptionScreen(
+    ids: List<String>,
+    strings: List<String>,
+    viewModel: ChooseOptionViewModel,
+    mainActivityViewModel: ChooseOptionMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    var dialogState by remember { mutableStateOf<ChooseOptionDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        mainActivityViewModel.onScreenStarted()
+        viewModel.onScreenShown()
+    }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ChooseOptionUiEffect.OpenConfirmDialog -> {
+                    dialogState = ChooseOptionDialogState(
+                        title = context.getString(R.string.warning),
+                        description = context.getString(
+                            R.string.dialog_send_option_confirm,
+                            effect.selectedString
+                        ),
+                        buttons = arrayListOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                        selectedId = effect.selectedId,
+                        selectedString = effect.selectedString
+                    )
+                }
+
+                is ChooseOptionUiEffect.CancelShiftSelection -> {
+                    mainActivityViewModel.setChooseOptionFragmentActive(false)
+                }
+
+                is ChooseOptionUiEffect.NavigateBack -> {
+                    onNavigateBack()
+                }
+
+                is ChooseOptionUiEffect.SendSelectedAnswer -> Unit
+                is ChooseOptionUiEffect.LoginDriver -> Unit
+            }
+        }
+    }
+
+    ChooseOptionContent(
+        ids = ids,
+        strings = strings,
+        onItemClick = { selectedId, selectedString ->
+            viewModel.onOptionClicked(selectedId, selectedString)
+        }
+    )
+
+    dialogState?.let { state ->
+        AlertDialog(
+            onDismissRequest = {
+                dialogState = null
+                viewModel.onDialogResultCancel()
+            },
+            title = { Text(state.title) },
+            text = { Text(state.description) },
+            confirmButton = {
+                Button(onClick = {
+                    val selectedId = state.selectedId
+                    dialogState = null
+                    viewModel.onDialogResultAccept(selectedId)
+                }) {
+                    Text(ButtonType.ACCEPT.name)
+                }
+            },
+            dismissButton = {
+                Button(onClick = {
+                    dialogState = null
+                    viewModel.onDialogResultCancel()
+                }) {
+                    Text(ButtonType.CANCEL.name)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ChooseOptionContent(
+    ids: List<String>,
+    strings: List<String>,
+    onItemClick: (String, String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        LazyColumn {
+            items(ids.indices.toList()) { index ->
+                val id = ids[index]
+                val text = strings.getOrNull(index).orEmpty()
+                Text(
+                    text = text,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable { onItemClick(id, text) }
+                        .padding(12.dp)
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) Route that preserves navigation and main-activity behavior
+
+This is the Compose equivalent of the fragment’s lifecycle wiring.
+
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import androidx.compose.runtime.Composable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.viewmodel.ChooseOptionMainActivityEffect
+import ifac.td.taxi.viewmodel.ChooseOptionMainActivityViewModel
+import ifac.td.taxi.viewmodel.ChooseOptionViewModel
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.LaunchedEffect
+
+@Composable
+fun ChooseOptionRoute(
+    ids: List<String>,
+    strings: List<String>,
+    viewModel: ChooseOptionViewModel,
+    mainActivityViewModel: ChooseOptionMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+    onSetChooseOptionFragmentActive: (Boolean) -> Unit,
+    onConfigureTopBarBack: (Boolean) -> Unit,
+) {
+    LaunchedEffect(Unit) {
+        mainActivityViewModel.onScreenStarted()
+    }
+
+    LaunchedEffect(mainActivityViewModel.effects) {
+        mainActivityViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                is ChooseOptionMainActivityEffect.ShowBottomBar -> onShowBottomBar(effect.show)
+                is ChooseOptionMainActivityEffect.ShowHeader -> onShowHeader(effect.show)
+                is ChooseOptionMainActivityEffect.SetChooseOptionFragmentActive -> onSetChooseOptionFragmentActive(effect.active)
+                is ChooseOptionMainActivityEffect.ConfigureTopBarBack -> onConfigureTopBarBack(effect.show)
+                is ChooseOptionMainActivityEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    ChooseOptionScreen(
+        ids = ids,
+        strings = strings,
+        viewModel = viewModel,
+        mainActivityViewModel = mainActivityViewModel,
+        onNavigateBack = onNavigateBack
+    )
+}
+```
+
+---
+
+## 7) How this maps to the original fragment
+
+### Original fragment behavior preserved
+- `showBottomBar(true)` → `ChooseOptionMainActivityViewModel.onScreenStarted()`
+- `showHeader(true)` → same
+- `setChooseOptionFragmentActive(true)` → same
+- back button / top bar back icon → `viewModel.onBackPressed()`
+- item click → opens confirmation dialog
+- dialog ACCEPT → send answer, deactivate fragment, login driver, navigate back
+- dialog CANCEL / dismiss → no-op
+- back press → logoff driver, deactivate fragment, navigate back
+
+### Dialog handling
+The fragment used `CustomDialog`.  
+In Compose, I used `AlertDialog` because the request said to use dialog state and lifecycle collection “only if the viewModel uses a CustomDialog.” Since the Compose ViewModel does not directly depend on `CustomDialog`, this is the cleanest Compose-native replacement.
+
+If you want, I can also provide a version that emits a `CustomDialog.CustomDialogModel`-compatible effect and a Compose wrapper around your existing custom dialog component.
+
+---
+
+## 8) If you want the exact XML-like button styling
+
+You mentioned “exact button coloring/visibility matching the XML behavior and the custom button component.”  
+I did not invent styling constants because they were not included in the prompt. If you share the `CustomButton` API and the XML attributes for `fragment_choose_option`, I can wire the composable to match them exactly.
+
+---
+
+## 9) Minimal usage example
+
+```kotlin
+@Composable
+fun ChooseOptionDestination(
+    ids: List<String>,
+    strings: List<String>,
+    chooseOptionViewModel: ChooseOptionViewModel,
+    mainActivityViewModel: ChooseOptionMainActivityViewModel,
+    navigateBack: () -> Unit,
+    showBottomBar: (Boolean) -> Unit,
+    showHeader: (Boolean) -> Unit,
+    setChooseOptionFragmentActive: (Boolean) -> Unit,
+    configureTopBarBack: (Boolean) -> Unit,
+) {
+    ChooseOptionRoute(
+        ids = ids,
+        strings = strings,
+        viewModel = chooseOptionViewModel,
+        mainActivityViewModel = mainActivityViewModel,
+        onNavigateBack = navigateBack,
+        onShowBottomBar = showBottomBar,
+        onShowHeader = showHeader,
+        onSetChooseOptionFragmentActive = setChooseOptionFragmentActive,
+        onConfigureTopBarBack = configureTopBarBack
+    )
+}
+```
+
+---
+
+If you want, I can do a second pass and provide:
+
+1. a version using your existing `CustomButton` composable/component,
+2. a version using your existing `CustomDialog`,
+3. a full Navigation-Compose destination with `navArgs` replacement,
+4. or a stricter one-to-one port that keeps the same `ClassicAdapter` list item layout behavior.
+// SECOND ANSWER
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import android.app.Application
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.EndShiftUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+@Immutable
+data class ChooseOptionUiState(
+    val items: List<ChooseOptionItem> = emptyList(),
+    val dialog: ChooseOptionDialogState? = null,
+)
+
+@Immutable
+data class ChooseOptionItem(
+    val id: String,
+    val label: String,
+)
+
+@Immutable
+data class ChooseOptionDialogState(
+    val title: String,
+    val description: String,
+    val selectedId: String,
+    val selectedString: String,
+    val buttons: List<ButtonType> = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+)
+
+sealed interface ChooseOptionUiEffect {
+    data class OpenDialog(val dialog: ChooseOptionDialogState) : ChooseOptionUiEffect
+    data object CloseDialog : ChooseOptionUiEffect
+    data object NavigateBack : ChooseOptionUiEffect
+    data object HideChooseOptionActive : ChooseOptionUiEffect
+}
+
+sealed interface ChooseOptionMainActivityEffect {
+    data object ShowBottomBar : ChooseOptionMainActivityEffect
+    data object ShowHeader : ChooseOptionMainActivityEffect
+    data object SetChooseOptionFragmentActiveTrue : ChooseOptionMainActivityEffect
+    data object SetChooseOptionFragmentActiveFalse : ChooseOptionMainActivityEffect
+    data object ConfigureBackTopBar : ChooseOptionMainActivityEffect
+    data object NavigateBack : ChooseOptionMainActivityEffect
+}
+
+class ChooseOptionMainActivityViewModel : ViewModel() {
+    private val _effects = MutableSharedFlow<ChooseOptionMainActivityEffect>(extraBufferCapacity = 16)
+    val effects: SharedFlow<ChooseOptionMainActivityEffect> = _effects.asSharedFlow()
+
+    fun onScreenStarted() {
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ShowBottomBar)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ShowHeader)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveTrue)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ConfigureBackTopBar)
+    }
+
+    fun setChooseOptionFragmentActive(active: Boolean) {
+        _effects.tryEmit(
+            if (active) {
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveTrue
+            } else {
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveFalse
+            }
+        )
+    }
+
+    fun navigateBack() {
+        _effects.tryEmit(ChooseOptionMainActivityEffect.NavigateBack)
+    }
+}
+
+class ChooseOptionViewModel(
+    application: Application,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val loginDriverUseCase: LoginDriverUseCase,
+    private val sessionUseCase: SessionUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val endShiftUseCase: EndShiftUseCase,
+) : AndroidViewModel(application) {
+
+    private val TAG = "ChooseOptionViewModel"
+
+    private val _uiState = MutableStateFlow(ChooseOptionUiState())
+    val uiState: StateFlow<ChooseOptionUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ChooseOptionUiEffect>(extraBufferCapacity = 16)
+    val uiEffect: SharedFlow<ChooseOptionUiEffect> = _uiEffect.asSharedFlow()
+
+    fun setItems(ids: List<String>, labels: List<String>) {
+        _uiState.value = _uiState.value.copy(
+            items = ids.mapIndexed { index, id ->
+                ChooseOptionItem(
+                    id = id,
+                    label = labels.getOrNull(index).orEmpty()
+                )
+            }
+        )
+    }
+
+    fun onOptionClicked(selectedId: String, selectedString: String) {
+        _uiEffect.tryEmit(
+            ChooseOptionUiEffect.OpenDialog(
+                ChooseOptionDialogState(
+                    title = getApplication<Application>().getString(R.string.warning),
+                    description = getApplication<Application>().getString(
+                        R.string.dialog_send_option_confirm,
+                        selectedString
+                    ),
+                    selectedId = selectedId,
+                    selectedString = selectedString,
+                    buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT)
+                )
+            )
+        )
+    }
+
+    fun onDialogButtonClicked(buttonType: ButtonType, selectedId: String) {
+        when (buttonType) {
+            ButtonType.ACCEPT -> {
+                viewModelScope.launch {
+                    sendShiftSelectedAnswer(selectedId)
+                    _uiEffect.emit(ChooseOptionUiEffect.HideChooseOptionActive)
+                    loginDriver()
+                    _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
+                }
+            }
+
+            else -> Unit
+        }
+    }
+
+    fun onBackPressed() {
+        viewModelScope.launch {
+            _uiEffect.emit(ChooseOptionUiEffect.HideChooseOptionActive)
+            logoffDriver()
+            _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
+        }
+    }
+
+    fun sendShiftSelectedAnswer(selectedId: String) {
+        viewModelScope.launch {
+            Logs.d(TAG, "sendShiftSelectedAnswer: selectedId = $selectedId")
+            shiftStatusUseCase.sendShiftSelectedAnswer(
+                selectedId,
+                W2CLocation.getZoning()?.version ?: "00"
+            )
+        }
+    }
+
+    fun loginDriver() {
+        viewModelScope.launch {
+            sessionUseCase.getSession()?.let { session ->
+                session.numDriver?.let { numDriver ->
+                    loginDriverUseCase.loginDriver(
+                        numDriver,
+                        session.pwdDriver ?: "",
+                        session.reinforcement
+                    )
+                }
+            }
+        }
+    }
+
+    fun logoffDriver() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "logoffDriver: cancelling shift selection")
+            endShiftUseCase.endShift()
+            bravoCentralUseCase.logoff()
+            shiftStatusUseCase.setStatus(ifConstants.STATE_DISCONNECTED, false)
+        }
+    }
+}
+
+@Composable
+fun ChooseOptionScreen(
+    ids: List<String>,
+    strings: List<String>,
+    viewModel: ChooseOptionViewModel,
+    mainActivityViewModel: ChooseOptionMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+    onSetChooseOptionFragmentActive: (Boolean) -> Unit,
+    onConfigureTopBarBack: (Boolean) -> Unit,
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var dialogState by remember { mutableStateOf<ChooseOptionDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.setItems(ids, strings)
+        mainActivityViewModel.onScreenStarted()
+    }
+
+    LaunchedEffect(mainActivityViewModel.effects) {
+        mainActivityViewModel.effects.collect { effect ->
+            when (effect) {
+                ChooseOptionMainActivityEffect.ShowBottomBar -> onShowBottomBar(true)
+                ChooseOptionMainActivityEffect.ShowHeader -> onShowHeader(true)
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveTrue -> onSetChooseOptionFragmentActive(true)
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveFalse -> onSetChooseOptionFragmentActive(false)
+                ChooseOptionMainActivityEffect.ConfigureBackTopBar -> onConfigureTopBarBack(true)
+                ChooseOptionMainActivityEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                is ChooseOptionUiEffect.OpenDialog -> dialogState = effect.dialog
+                ChooseOptionUiEffect.CloseDialog -> dialogState = null
+                ChooseOptionUiEffect.HideChooseOptionActive -> onSetChooseOptionFragmentActive(false)
+                ChooseOptionUiEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    Column(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+        LazyColumn(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+            itemsIndexed(state.items) { _, item ->
+                Text(
+                    text = item.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = androidx.compose.ui.Modifier
+                        .clickable { viewModel.onOptionClicked(item.id, item.label) }
+                        .padding(16.dp)
+                )
+            }
+        }
+    }
+
+    dialogState?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = {
+                dialogState = null
+                viewModel.onDialogButtonClicked(ButtonType.CANCEL, dialog.selectedId)
+            },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.description) },
+            confirmButton = {
+                Button(onClick = {
+                    dialogState = null
+                    viewModel.onDialogButtonClicked(ButtonType.ACCEPT, dialog.selectedId)
+                }) {
+                    Text(ButtonType.ACCEPT.name)
+                }
+            },
+            dismissButton = {
+                Button(onClick = {
+                    dialogState = null
+                    viewModel.onDialogButtonClicked(ButtonType.CANCEL, dialog.selectedId)
+                }) {
+                    Text(ButtonType.CANCEL.name)
+                }
+            }
+        )
+    }
+}
+```
+
+If you want, I can do a **fourth pass** and make this compile against your exact project structure by:
+- adding the Koin module definitions,
+- wiring `navArgs` replacement into Compose Navigation,
+- and replacing the `AlertDialog` with your `CustomDialog` API exactly.
+// THIRD ANSWER
+```kotlin
+package ifac.td.taxi.ui.screen.chooseoption
+
+import android.app.Application
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavDirections
+import androidx.navigation.fragment.NavHostFragment
+import androidx.navigation.fragment.findNavController
+import androidx.navigation.fragment.navArgs
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.EndShiftUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.BaseFragment
+import ifac.td.taxi.ui.adapter.ClassicAdapter
+import ifac.td.taxi.ui.custom.bar.CustomTopBar
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.viewmodel.ChooseOptionViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import org.koin.androidx.viewmodel.ext.android.activityViewModel
+import org.koin.androidx.viewmodel.ext.android.viewModel
+
+@Immutable
+data class ChooseOptionUiState(
+    val items: List<ChooseOptionItem> = emptyList(),
+)
+
+@Immutable
+data class ChooseOptionItem(
+    val id: String,
+    val label: String,
+)
+
+@Immutable
+data class ChooseOptionDialogState(
+    val title: String,
+    val description: String,
+    val selectedId: String,
+    val selectedString: String,
+    val buttons: List<ButtonType> = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+)
+
+sealed interface ChooseOptionUiEffect {
+    data class OpenDialog(val dialog: ChooseOptionDialogState) : ChooseOptionUiEffect
+    data object CloseDialog : ChooseOptionUiEffect
+    data object NavigateBack : ChooseOptionUiEffect
+    data object HideChooseOptionActive : ChooseOptionUiEffect
+}
+
+sealed interface ChooseOptionMainActivityEffect {
+    data object ShowBottomBar : ChooseOptionMainActivityEffect
+    data object ShowHeader : ChooseOptionMainActivityEffect
+    data object SetChooseOptionFragmentActiveTrue : ChooseOptionMainActivityEffect
+    data object SetChooseOptionFragmentActiveFalse : ChooseOptionMainActivityEffect
+    data object ConfigureBackTopBar : ChooseOptionMainActivityEffect
+    data object NavigateBack : ChooseOptionMainActivityEffect
+}
+
+/**
+ * Adapter over your real shared MainActivityViewModel.
+ * Replace the injected type below with your exact existing class if needed.
+ *
+ * This file assumes your project already has a shared VM with:
+ * - showBottomBar(Boolean)
+ * - showHeader(Boolean)
+ * - setChooseOptionFragmentActive(Boolean)
+ * - configureIconsTopBar(...)
+ * - navigateBack()
+ */
+class ChooseOptionMainActivityViewModelAdapter(
+    private val shared: ifac.td.taxi.viewmodel.MainActivityViewModel
+) : ViewModel() {
+
+    private val _effects = MutableSharedFlow<ChooseOptionMainActivityEffect>(extraBufferCapacity = 16)
+    val effects: SharedFlow<ChooseOptionMainActivityEffect> = _effects.asSharedFlow()
+
+    fun onScreenStarted() {
+        shared.showBottomBar(true)
+        shared.showHeader(true)
+        shared.setChooseOptionFragmentActive(true)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ShowBottomBar)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ShowHeader)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveTrue)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ConfigureBackTopBar)
+    }
+
+    fun setChooseOptionFragmentActive(active: Boolean) {
+        shared.setChooseOptionFragmentActive(active)
+        _effects.tryEmit(
+            if (active) {
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveTrue
+            } else {
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveFalse
+            }
+        )
+    }
+
+    fun navigateBack() {
+        shared.navigateBack()
+        _effects.tryEmit(ChooseOptionMainActivityEffect.NavigateBack)
+    }
+
+    fun configureBackTopBar(onBack: () -> Unit) {
+        shared.configureIconsTopBar(CustomTopBar.IconType.BACK, true, onBack)
+        _effects.tryEmit(ChooseOptionMainActivityEffect.ConfigureBackTopBar)
+    }
+}
+
+class ChooseOptionViewModel(
+    application: Application,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val loginDriverUseCase: LoginDriverUseCase,
+    private val sessionUseCase: SessionUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val endShiftUseCase: EndShiftUseCase,
+) : AndroidViewModel(application) {
+
+    private val TAG = "ChooseOptionViewModel"
+
+    private val _uiState = MutableStateFlow(ChooseOptionUiState())
+    val uiState: StateFlow<ChooseOptionUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ChooseOptionUiEffect>(extraBufferCapacity = 16)
+    val uiEffect: SharedFlow<ChooseOptionUiEffect> = _uiEffect.asSharedFlow()
+
+    fun setItems(ids: List<String>, labels: List<String>) {
+        _uiState.value = _uiState.value.copy(
+            items = ids.mapIndexed { index, id ->
+                ChooseOptionItem(
+                    id = id,
+                    label = labels.getOrNull(index).orEmpty()
+                )
+            }
+        )
+    }
+
+    fun onOptionClicked(selectedId: String, selectedString: String) {
+        _uiEffect.tryEmit(
+            ChooseOptionUiEffect.OpenDialog(
+                ChooseOptionDialogState(
+                    title = getApplication<Application>().getString(R.string.warning),
+                    description = getApplication<Application>().getString(
+                        R.string.dialog_send_option_confirm,
+                        selectedString
+                    ),
+                    selectedId = selectedId,
+                    selectedString = selectedString,
+                    buttons = arrayListOf(ButtonType.CANCEL, ButtonType.ACCEPT)
+                )
+            )
+        )
+    }
+
+    fun onDialogButtonClicked(buttonType: ButtonType, selectedId: String) {
+        when (buttonType) {
+            ButtonType.ACCEPT -> {
+                viewModelScope.launch {
+                    sendShiftSelectedAnswer(selectedId)
+                    _uiEffect.emit(ChooseOptionUiEffect.HideChooseOptionActive)
+                    loginDriver()
+                    _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
+                }
+            }
+
+            else -> Unit
+        }
+    }
+
+    fun onBackPressed() {
+        viewModelScope.launch {
+            _uiEffect.emit(ChooseOptionUiEffect.HideChooseOptionActive)
+            logoffDriver()
+            _uiEffect.emit(ChooseOptionUiEffect.NavigateBack)
+        }
+    }
+
+    fun sendShiftSelectedAnswer(selectedId: String) {
+        viewModelScope.launch {
+            Logs.d(TAG, "sendShiftSelectedAnswer: selectedId = $selectedId")
+            shiftStatusUseCase.sendShiftSelectedAnswer(
+                selectedId,
+                W2CLocation.getZoning()?.version ?: "00"
+            )
+        }
+    }
+
+    fun loginDriver() {
+        viewModelScope.launch {
+            sessionUseCase.getSession()?.let { session ->
+                session.numDriver?.let { numDriver ->
+                    loginDriverUseCase.loginDriver(
+                        numDriver,
+                        session.pwdDriver ?: "",
+                        session.reinforcement
+                    )
+                }
+            }
+        }
+    }
+
+    fun logoffDriver() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "logoffDriver: cancelling shift selection")
+            endShiftUseCase.endShift()
+            bravoCentralUseCase.logoff()
+            shiftStatusUseCase.setStatus(ifConstants.STATE_DISCONNECTED, false)
+        }
+    }
+}
+
+/**
+ * Compose screen that mirrors the fragment behavior.
+ * Uses your custom button API via CustomButton.
+ */
+@Composable
+fun ChooseOptionScreen(
+    ids: List<String>,
+    strings: List<String>,
+    viewModel: ChooseOptionViewModel,
+    mainActivityViewModel: ChooseOptionMainActivityViewModelAdapter,
+    onNavigateBack: () -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+    onSetChooseOptionFragmentActive: (Boolean) -> Unit,
+    onConfigureTopBarBack: (Boolean) -> Unit,
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var dialogState by remember { mutableStateOf<ChooseOptionDialogState?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.setItems(ids, strings)
+        mainActivityViewModel.onScreenStarted()
+        mainActivityViewModel.configureBackTopBar {
+            viewModel.onBackPressed()
+        }
+    }
+
+    LaunchedEffect(mainActivityViewModel.effects) {
+        mainActivityViewModel.effects.collect { effect ->
+            when (effect) {
+                ChooseOptionMainActivityEffect.ShowBottomBar -> onShowBottomBar(true)
+                ChooseOptionMainActivityEffect.ShowHeader -> onShowHeader(true)
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveTrue -> onSetChooseOptionFragmentActive(true)
+                ChooseOptionMainActivityEffect.SetChooseOptionFragmentActiveFalse -> onSetChooseOptionFragmentActive(false)
+                ChooseOptionMainActivityEffect.ConfigureBackTopBar -> onConfigureTopBarBack(true)
+                ChooseOptionMainActivityEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                is ChooseOptionUiEffect.OpenDialog -> dialogState = effect.dialog
+                ChooseOptionUiEffect.CloseDialog -> dialogState = null
+                ChooseOptionUiEffect.HideChooseOptionActive -> onSetChooseOptionFragmentActive(false)
+                ChooseOptionUiEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    Column(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+        LazyColumn(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+            itemsIndexed(state.items) { _, item ->
+                Text(
+                    text = item.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = androidx.compose.ui.Modifier
+                        .clickable { viewModel.onOptionClicked(item.id, item.label) }
+                        .padding(16.dp)
+                )
+            }
+        }
+    }
+
+    dialogState?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = {
+                dialogState = null
+                viewModel.onDialogButtonClicked(ButtonType.CANCEL, dialog.selectedId)
+            },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.description) },
+            confirmButton = {
+                CustomButton(
+                    text = ButtonType.ACCEPT.name,
+                    buttonType = ButtonType.ACCEPT,
+                    onClick = {
+                        dialogState = null
+                        viewModel.onDialogButtonClicked(ButtonType.ACCEPT, dialog.selectedId)
+                    }
+                )
+            },
+            dismissButton = {
+                CustomButton(
+                    text = ButtonType.CANCEL.name,
+                    buttonType = ButtonType.CANCEL,
+                    onClick = {
+                        dialogState = null
+                        viewModel.onDialogButtonClicked(ButtonType.CANCEL, dialog.selectedId)
+                    }
+                )
+            }
+        )
+    }
+}
+
+/**
+ * Fragment wrapper that preserves Safe Args and NavDirections behavior.
+ * This is the bridge to your existing fragment navigation setup.
+ */
+class ChooseOptionFragment :
+    BaseFragmentChooseOptionViewModel<androidx.viewbinding.ViewBinding, ChooseOptionViewModel>(R.layout.fragment_choose_option) {
+
+    private val TAG = "ChooseOptionFragment"
+
+    private val vModel: ChooseOptionViewModel by viewModel()
+    private val sharedMainVm: ifac.td.taxi.viewmodel.MainActivityViewModel by activityViewModel()
+    private val args: ChooseOptionFragmentArgs by navArgs()
+
+    override fun getViewModel() = vModel
+
+    override fun getViewBinding() = object : androidx.viewbinding.ViewBinding {
+        override val root = requireView()
+    }
+
+    override fun setupComponents() {
+        iMainActivity.showBottomBar(true)
+        iMainActivity.showHeader(true)
+        iMainActivity.setChooseOptionFragmentActive(true)
+        setUpAdapter()
+    }
+
+    override fun updateBackButton() {
+        iMainActivity.customBackPressed {
+            goBackCancellingShift()
+        }
+    }
+
+    override fun updateTopBarIcon() {
+        iMainActivity.configureIconsTopBar(CustomTopBar.IconType.BACK, true) {
+            goBackCancellingShift()
+        }
+    }
+
+    private fun goBackCancellingShift() {
+        iMainActivity.setChooseOptionFragmentActive(false)
+        vModel.logoffDriver()
+        iMainActivity.navigateBack()
+    }
+
+    private fun setUpAdapter() {
+        Logs.d(TAG, "setUpAdapter: ${args.bravoListIDs.toList()} ${args.bravoListStrings.toList()}")
+
+        val llm = androidx.recyclerview.widget.LinearLayoutManager(context)
+        llm.orientation = androidx.recyclerview.widget.LinearLayoutManager.VERTICAL
+
+        // If you are migrating this screen to Compose, use ChooseOptionScreen instead.
+        // This fragment code remains here only to preserve your existing Safe Args entrypoint.
+    }
+}
+
+/**
+ * Optional helper if you want to navigate using NavDirections from Compose host code.
+ */
+fun chooseOptionDirections(
+    navController: androidx.navigation.NavController,
+    directions: NavDirections
+) {
+    navController.navigate(directions)
+}
+```
+// FOURTH ANSWER

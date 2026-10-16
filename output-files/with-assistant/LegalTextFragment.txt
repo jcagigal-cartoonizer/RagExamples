@@ -1,0 +1,938 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite of your `LegalTextFragment` and `LegalTextViewModel`, while preserving the original navigation behavior and matching the XML/button behavior as closely as possible.
+
+I’m giving you:
+
+1. A `LegalTextScreen` composable
+2. A Compose-friendly `LegalTextViewModel` using `UiState + UiEvent + SharedFlow<LegalTextUiEffect>`
+3. A `LegalTextButtonsState` reducer that mirrors the fragment’s button logic one-by-one
+4. A `LegalTextMainActivityViewModel` Compose bridge for navigation integration
+5. Optional dialog handling scaffolding only if you later add a custom dialog
+
+---
+
+## 1) Compose UI state / event / effect models
+
+```kotlin
+package ifac.td.taxi.ui.screen.legaltext
+
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import ifac.td.taxi.R
+
+data class LegalTextUiState(
+    val legalText: String = "",
+    val isLoading: Boolean = false,
+    val buttonsState: LegalTextButtonsState = LegalTextButtonsState()
+)
+
+sealed interface LegalTextUiEvent {
+    data object ScreenShown : LegalTextUiEvent
+    data object AcceptClicked : LegalTextUiEvent
+}
+
+sealed interface LegalTextUiEffect {
+    data object NavigateToWelcome : LegalTextUiEffect
+    data class ShowToast(@StringRes val messageRes: Int) : LegalTextUiEffect
+    data class ShowDialog(
+        val dialog: LegalTextDialogState
+    ) : LegalTextUiEffect
+}
+
+data class LegalTextDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String = "OK",
+    val dismissText: String? = null
+)
+```
+
+---
+
+## 2) Exact `LegalTextButtonsState` reducer
+
+This mirrors the fragment’s button behavior one-by-one, but for this screen there is only one button: `btnAccept`.
+
+It preserves:
+- visibility
+- enabled/disabled/loading style
+- background color
+- text/icon mapping
+- exact XML intent: accept button in the bottom grid, green style, visible, enabled
+
+```kotlin
+package ifac.td.taxi.ui.screen.legaltext
+
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Immutable
+data class LegalTextButtonsState(
+    val accept: ButtonUiModel = ButtonUiModel(
+        textRes = R.string.btn_accept,
+        iconRes = R.drawable.baseline_check_192,
+        background = CustomButton.BackgroundButtonColor.GREEN,
+        style = CustomButton.StyleButton.ENABLE,
+        visible = true,
+        enabled = true
+    )
+)
+
+@Immutable
+data class ButtonUiModel(
+    @StringRes val textRes: Int,
+    @DrawableRes val iconRes: Int,
+    val background: CustomButton.BackgroundButtonColor,
+    val style: CustomButton.StyleButton,
+    val visible: Boolean,
+    val enabled: Boolean
+)
+
+/**
+ * Exact reducer for this screen.
+ * Mirrors the fragment behavior:
+ * - btnAccept exists
+ * - btnAccept.setAction { clickOnAccept() }
+ * - button is green/enable/visible
+ */
+fun reduceLegalTextButtonsState(
+    isLoading: Boolean = false
+): LegalTextButtonsState {
+    return LegalTextButtonsState(
+        accept = ButtonUiModel(
+            textRes = R.string.btn_accept,
+            iconRes = R.drawable.baseline_check_192,
+            background = CustomButton.BackgroundButtonColor.GREEN,
+            style = if (isLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
+            visible = true,
+            enabled = !isLoading
+        )
+    )
+}
+```
+
+---
+
+## 3) Compose-friendly `LegalTextViewModel`
+
+This keeps the original behavior:
+- `setLegalText()` loads legal text
+- `clickOnAccept()` navigates to welcome
+- state is exposed via `StateFlow<LegalTextUiState>`
+- one-shot actions are exposed via `SharedFlow<LegalTextUiEffect>`
+
+```kotlin
+package ifac.td.taxi.ui.screen.legaltext
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.framework.sdk.usecase.ShowLegalTextUseCase
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class LegalTextComposeViewModel(
+    application: Application,
+    private val showLegalTextUseCase: ShowLegalTextUseCase
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(
+        LegalTextUiState(
+            legalText = "",
+            isLoading = false,
+            buttonsState = reduceLegalTextButtonsState(isLoading = false)
+        )
+    )
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LegalTextUiEffect>(extraBufferCapacity = 1)
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: LegalTextUiEvent) {
+        when (event) {
+            LegalTextUiEvent.ScreenShown -> loadLegalText()
+            LegalTextUiEvent.AcceptClicked -> clickOnAccept()
+        }
+    }
+
+    private fun clickOnAccept() {
+        viewModelScope.launch {
+            _uiEffect.emit(LegalTextUiEffect.NavigateToWelcome)
+        }
+    }
+
+    private fun loadLegalText() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    buttonsState = reduceLegalTextButtonsState(isLoading = true)
+                )
+            }
+
+            runCatching {
+                showLegalTextUseCase.getLegalText()
+            }.onSuccess { legalText ->
+                _uiState.update {
+                    it.copy(
+                        legalText = legalText.orEmpty(),
+                        isLoading = false,
+                        buttonsState = reduceLegalTextButtonsState(isLoading = false)
+                    )
+                }
+            }.onFailure {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        buttonsState = reduceLegalTextButtonsState(isLoading = false)
+                    )
+                }
+                _uiEffect.emit(
+                    LegalTextUiEffect.ShowToast(R.string.toast_action_cancelled)
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 4) Full `LegalTextMainActivityViewModel` Compose bridge
+
+This is the bridge that preserves the fragment-style navigation behavior.  
+If your app already has a `MainActivityViewModel` with navigation methods, this is the Compose equivalent for the legal text screen.
+
+```kotlin
+package ifac.td.taxi.ui.screen.legaltext
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+sealed interface LegalTextMainActivityEffect {
+    data object HideHeader : LegalTextMainActivityEffect
+    data object ShowHeader : LegalTextMainActivityEffect
+    data object NavigateToWelcome : LegalTextMainActivityEffect
+    data class ShowToast(val messageRes: Int) : LegalTextMainActivityEffect
+}
+
+class LegalTextMainActivityViewModel : ViewModel() {
+
+    private val _effects = MutableSharedFlow<LegalTextMainActivityEffect>(extraBufferCapacity = 1)
+    val effects = _effects.asSharedFlow()
+
+    fun hideHeader() {
+        _effects.tryEmit(LegalTextMainActivityEffect.HideHeader)
+    }
+
+    fun showHeader() {
+        _effects.tryEmit(LegalTextMainActivityEffect.ShowHeader)
+    }
+
+    fun navigateToWelcome() {
+        _effects.tryEmit(LegalTextMainActivityEffect.NavigateToWelcome)
+    }
+
+    fun showToast(messageRes: Int) {
+        _effects.tryEmit(LegalTextMainActivityEffect.ShowToast(messageRes))
+    }
+}
+```
+
+---
+
+## 5) Compose screen
+
+This composable:
+- hides the header like the fragment
+- loads legal text on first composition
+- collects state with lifecycle awareness
+- collects effects with lifecycle awareness
+- preserves navigation via the bridge
+- uses the custom button styling semantics
+
+```kotlin
+package ifac.td.taxi.ui.screen.legaltext
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.dimensionResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import kotlinx.coroutines.launch
+
+@Composable
+fun LegalTextScreen(
+    viewModel: LegalTextComposeViewModel,
+    mainActivityViewModel: LegalTextMainActivityViewModel,
+    onNavigateToWelcome: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onHideHeader: () -> Unit = {},
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        onHideHeader()
+        viewModel.onEvent(LegalTextUiEvent.ScreenShown)
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        LegalTextUiEffect.NavigateToWelcome -> {
+                            mainActivityViewModel.navigateToWelcome()
+                            onNavigateToWelcome()
+                        }
+
+                        is LegalTextUiEffect.ShowToast -> onShowToast(effect.messageRes)
+
+                        is LegalTextUiEffect.ShowDialog -> {
+                            // Only use if you later introduce a custom dialog
+                        }
+                    }
+                }
+            }
+
+            launch {
+                mainActivityViewModel.effects.collect { effect ->
+                    when (effect) {
+                        LegalTextMainActivityEffect.HideHeader -> onHideHeader()
+                        LegalTextMainActivityEffect.ShowHeader -> Unit
+                        LegalTextMainActivityEffect.NavigateToWelcome -> onNavigateToWelcome()
+                        is LegalTextMainActivityEffect.ShowToast -> onShowToast(effect.messageRes)
+                    }
+                }
+            }
+        }
+    }
+
+    LegalTextContent(
+        uiState = uiState,
+        onAcceptClick = { viewModel.onEvent(LegalTextUiEvent.AcceptClicked) }
+    )
+}
+
+@Composable
+private fun LegalTextContent(
+    uiState: LegalTextUiState,
+    onAcceptClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = stringResource(R.string/legal_advice),
+                modifier = Modifier.padding(10.dp),
+                textAlign = TextAlign.Center,
+                fontSize = androidx.compose.ui.unit.TextUnit.Unspecified
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = uiState.legalText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                textAlign = TextAlign.Center,
+                color = colorResource(id = android.R.color.holo_green_light)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(colorResource(id = R.color.black))
+                .heightIn(min = 120.dp)
+                .padding(1.dp)
+        ) {
+            if (uiState.buttonsState.accept.visible) {
+                ComposeCustomButton(
+                    text = stringResource(uiState.buttonsState.accept.textRes),
+                    iconRes = uiState.buttonsState.accept.iconRes,
+                    background = uiState.buttonsState.accept.background,
+                    style = uiState.buttonsState.accept.style,
+                    enabled = uiState.buttonsState.accept.enabled,
+                    onClick = onAcceptClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(96.dp)
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) Compose wrapper for the custom button API
+
+Since `CustomButton` is a View, the clean Compose equivalent is `AndroidView`.  
+This preserves the exact custom button behavior and styling.
+
+```kotlin
+package ifac.td.taxi.ui.screen.legaltext
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Composable
+fun ComposeCustomButton(
+    text: String,
+    iconRes: Int,
+    background: CustomButton.BackgroundButtonColor,
+    style: CustomButton.StyleButton,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            CustomButton(context).apply {
+                setButtonType(ifac.td.taxi.ui.custom.button.ButtonType.ACCEPT.value)
+                changeText(text)
+                changeButtonIcon(iconRes)
+                changeBackground(background)
+                setButtonStyle(style)
+                setAction(onClick)
+            }
+        },
+        update = { button ->
+            button.changeText(text)
+            button.changeButtonIcon(iconRes)
+            button.changeBackground(background)
+            button.setButtonStyle(style)
+            button.setAction(onClick)
+        }
+    )
+}
+```
+
+---
+
+## 7) If you want exact fragment navigation preservation
+
+Your original fragment did:
+
+```kotlin
+vModel.clickOnAccept() -> navigateTo(R.id.action_legalTextFragment_to_welcomeFragment)
+```
+
+In Compose, you should keep the same navigation graph action.  
+If you’re using `NavController`, the effect handler can do:
+
+```kotlin
+navController.navigate(R.id.action_legalTextFragment_to_welcomeFragment)
+```
+
+So your screen host can wire it like this:
+
+```kotlin
+@Composable
+fun LegalTextRoute(
+    navController: androidx.navigation.NavController,
+    viewModel: LegalTextComposeViewModel,
+    mainActivityViewModel: LegalTextMainActivityViewModel,
+    onHideHeader: () -> Unit
+) {
+    LegalTextScreen(
+        viewModel = viewModel,
+        mainActivityViewModel = mainActivityViewModel,
+        onNavigateToWelcome = {
+            navController.navigate(R.id.action_legalTextFragment_to_welcomeFragment)
+        },
+        onShowToast = { /* show toast in host */ },
+        onHideHeader = onHideHeader
+    )
+}
+```
+
+---
+
+## 8) Notes about dialog handling
+
+You asked for dialog state/lifecycle collection only if the ViewModel uses a `CustomDialog`.
+
+This screen does not use a dialog in the original fragment, so I did **not** add dialog UI behavior beyond the `ShowDialog` effect placeholder.  
+If later you add a custom dialog, the architecture is already ready for it via:
+
+```kotlin
+LegalTextUiEffect.ShowDialog(...)
+```
+
+---
+
+## 9) What this preserves from the fragment
+
+- `showHeader(false)` behavior
+- `setLegalText()` on screen start
+- button click triggers navigation to welcome
+- legal text is collected and displayed
+- custom button styling is preserved
+- navigation action ID is preserved
+
+---
+
+## 10) Minimal Koin wiring idea
+
+If you want Koin to provide the Compose VM:
+
+```kotlin
+val legalTextModule = module {
+    viewModel { LegalTextComposeViewModel(get(), get()) }
+    viewModel { LegalTextMainActivityViewModel() }
+}
+```
+
+---
+
+If you want, I can also provide:
+1. a **NavHost Compose route** for this screen,
+2. a **fully Koin-injected `@Composable` route**,
+3. or a **version that uses `Scaffold` + Material3** while keeping the same layout proportions.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen.legaltext
+
+import android.app.Application
+import android.widget.Toast
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.framework.sdk.usecase.ShowLegalTextUseCase
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.BaseViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// ------------------------------------------------------------
+// 1) UI STATE / EVENT / EFFECT
+// ------------------------------------------------------------
+
+data class LegalTextUiState(
+    val legalText: String = "",
+    val isLoading: Boolean = false,
+    val buttonsState: LegalTextButtonsState = reduceLegalTextButtonsState(false)
+)
+
+sealed interface LegalTextUiEvent {
+    data object ScreenShown : LegalTextUiEvent
+    data object AcceptClicked : LegalTextUiEvent
+}
+
+sealed interface LegalTextUiEffect {
+    data object NavigateToWelcome : LegalTextUiEffect
+    data class ShowToast(@StringRes val messageRes: Int) : LegalTextUiEffect
+    data class ShowDialog(val dialog: LegalTextDialogState) : LegalTextUiEffect
+}
+
+data class LegalTextDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String = "OK",
+    val dismissText: String? = null
+)
+
+// ------------------------------------------------------------
+// 2) EXACT BUTTON STATE / REDUCER
+// ------------------------------------------------------------
+
+data class LegalTextButtonsState(
+    val accept: ButtonUiModel = ButtonUiModel(
+        textRes = R.string.btn_accept,
+        iconRes = R.drawable.baseline_check_192,
+        background = CustomButton.BackgroundButtonColor.GREEN,
+        style = CustomButton.StyleButton.ENABLE,
+        visible = true,
+        enabled = true
+    )
+)
+
+data class ButtonUiModel(
+    @StringRes val textRes: Int,
+    @DrawableRes val iconRes: Int,
+    val background: CustomButton.BackgroundButtonColor,
+    val style: CustomButton.StyleButton,
+    val visible: Boolean,
+    val enabled: Boolean
+)
+
+/**
+ * Exact reducer for this screen.
+ * Mirrors the fragment behavior one-by-one:
+ * - btnAccept exists
+ * - btnAccept.setAction { clickOnAccept() }
+ * - button is visible, enabled, green
+ */
+fun reduceLegalTextButtonsState(
+    isLoading: Boolean = false
+): LegalTextButtonsState {
+    return LegalTextButtonsState(
+        accept = ButtonUiModel(
+            textRes = R.string.btn_accept,
+            iconRes = R.drawable.baseline_check_192,
+            background = CustomButton.BackgroundButtonColor.GREEN,
+            style = if (isLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
+            visible = true,
+            enabled = !isLoading
+        )
+    )
+}
+
+// ------------------------------------------------------------
+// 3) COMPOSE-FRIENDLY VIEWMODEL
+// ------------------------------------------------------------
+
+class LegalTextComposeViewModel(
+    application: Application,
+    private val showLegalTextUseCase: ShowLegalTextUseCase
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(
+        LegalTextUiState(
+            legalText = "",
+            isLoading = false,
+            buttonsState = reduceLegalTextButtonsState(false)
+        )
+    )
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LegalTextUiEffect>(extraBufferCapacity = 1)
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: LegalTextUiEvent) {
+        when (event) {
+            LegalTextUiEvent.ScreenShown -> setLegalText()
+            LegalTextUiEvent.AcceptClicked -> clickOnAccept()
+        }
+    }
+
+    private fun clickOnAccept() {
+        viewModelScope.launch {
+            _uiEffect.emit(LegalTextUiEffect.NavigateToWelcome)
+        }
+    }
+
+    private fun setLegalText() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    buttonsState = reduceLegalTextButtonsState(true)
+                )
+            }
+
+            runCatching {
+                showLegalTextUseCase.getLegalText()
+            }.onSuccess { legalText ->
+                _uiState.update {
+                    it.copy(
+                        legalText = legalText.orEmpty(),
+                        isLoading = false,
+                        buttonsState = reduceLegalTextButtonsState(false)
+                    )
+                }
+            }.onFailure {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        buttonsState = reduceLegalTextButtonsState(false)
+                    )
+                }
+                _uiEffect.emit(LegalTextUiEffect.ShowToast(R.string.toast_action_cancelled))
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// 4) MAIN ACTIVITY COMPOSE BRIDGE
+// ------------------------------------------------------------
+
+sealed interface LegalTextMainActivityEffect {
+    data object HideHeader : LegalTextMainActivityEffect
+    data object ShowHeader : LegalTextMainActivityEffect
+    data object NavigateToWelcome : LegalTextMainActivityEffect
+    data class ShowToast(val messageRes: Int) : LegalTextMainActivityEffect
+}
+
+class LegalTextMainActivityViewModel : ViewModel() {
+
+    private val _effects = MutableSharedFlow<LegalTextMainActivityEffect>(extraBufferCapacity = 1)
+    val effects = _effects.asSharedFlow()
+
+    fun hideHeader() {
+        _effects.tryEmit(LegalTextMainActivityEffect.HideHeader)
+    }
+
+    fun showHeader() {
+        _effects.tryEmit(LegalTextMainActivityEffect.ShowHeader)
+    }
+
+    fun navigateToWelcome() {
+        _effects.tryEmit(LegalTextMainActivityEffect.NavigateToWelcome)
+    }
+
+    fun showToast(messageRes: Int) {
+        _effects.tryEmit(LegalTextMainActivityEffect.ShowToast(messageRes))
+    }
+}
+
+// ------------------------------------------------------------
+// 5) COMPOSE UI
+// ------------------------------------------------------------
+
+@Composable
+fun LegalTextScreen(
+    viewModel: LegalTextComposeViewModel,
+    mainActivityViewModel: LegalTextMainActivityViewModel,
+    onNavigateToWelcome: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onHideHeader: () -> Unit = {}
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        onHideHeader()
+        viewModel.onEvent(LegalTextUiEvent.ScreenShown)
+    }
+
+    LaunchedEffect(viewModel, mainActivityViewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        LegalTextUiEffect.NavigateToWelcome -> {
+                            mainActivityViewModel.navigateToWelcome()
+                            onNavigateToWelcome()
+                        }
+
+                        is LegalTextUiEffect.ShowToast -> onShowToast(effect.messageRes)
+
+                        is LegalTextUiEffect.ShowDialog -> {
+                            // Only if you later add a custom dialog
+                        }
+                    }
+                }
+            }
+
+            launch {
+                mainActivityViewModel.effects.collect { effect ->
+                    when (effect) {
+                        LegalTextMainActivityEffect.HideHeader -> onHideHeader()
+                        LegalTextMainActivityEffect.ShowHeader -> Unit
+                        LegalTextMainActivityEffect.NavigateToWelcome -> onNavigateToWelcome()
+                        is LegalTextMainActivityEffect.ShowToast -> onShowToast(effect.messageRes)
+                    }
+                }
+            }
+        }
+    }
+
+    LegalTextContent(
+        uiState = uiState,
+        onAcceptClick = { viewModel.onEvent(LegalTextUiEvent.AcceptClicked) }
+    )
+}
+
+@Composable
+private fun LegalTextContent(
+    uiState: LegalTextUiState,
+    onAcceptClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White)
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = stringResource(R.string.legal_advice),
+                modifier = Modifier.padding(10.dp),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = uiState.legalText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                textAlign = TextAlign.Center,
+                color = colorResource(id = android.R.color.holo_green_light)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(colorResource(id = R.color.black))
+                .heightIn(min = 120.dp)
+                .padding(1.dp)
+        ) {
+            if (uiState.buttonsState.accept.visible) {
+                ComposeCustomButton(
+                    text = stringResource(uiState.buttonsState.accept.textRes),
+                    iconRes = uiState.buttonsState.accept.iconRes,
+                    background = uiState.buttonsState.accept.background,
+                    style = uiState.buttonsState.accept.style,
+                    enabled = uiState.buttonsState.accept.enabled,
+                    onClick = onAcceptClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(96.dp)
+                )
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// 6) COMPOSE WRAPPER FOR CUSTOMBUTTON VIEW
+// ------------------------------------------------------------
+
+@Composable
+fun ComposeCustomButton(
+    text: String,
+    iconRes: Int,
+    background: CustomButton.BackgroundButtonColor,
+    style: CustomButton.StyleButton,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            CustomButton(context).apply {
+                setButtonType(ifac.td.taxi.ui.custom.button.ButtonType.ACCEPT.value)
+                changeText(text)
+                changeButtonIcon(iconRes)
+                changeBackground(background)
+                setButtonStyle(style)
+                setAction(onClick)
+            }
+        },
+        update = { button ->
+            button.changeText(text)
+            button.changeButtonIcon(iconRes)
+            button.changeBackground(background)
+            button.setButtonStyle(style)
+            button.setAction(onClick)
+        }
+    )
+}
+
+// ------------------------------------------------------------
+// 7) OPTIONAL ROUTE HELPER
+// ------------------------------------------------------------
+
+@Composable
+fun LegalTextRoute(
+    navToWelcome: () -> Unit,
+    onHideHeader: () -> Unit,
+    viewModel: LegalTextComposeViewModel,
+    mainActivityViewModel: LegalTextMainActivityViewModel
+) {
+    val context = LocalContext.current
+
+    LegalTextScreen(
+        viewModel = viewModel,
+        mainActivityViewModel = mainActivityViewModel,
+        onNavigateToWelcome = navToWelcome,
+        onShowToast = { resId ->
+            Toast.makeText(context, context.getString(resId), Toast.LENGTH_SHORT).show()
+        },
+        onHideHeader = onHideHeader
+    )
+}
+```
+
+### Notes
+- This is a **single Kotlin file** containing all composables/classes from the previous step.
+- It preserves the original fragment behavior:
+  - hide header
+  - load legal text
+  - accept button navigates to welcome
+- It uses `SharedFlow<LegalTextUiEffect>` for one-shot actions.
+- Dialog support is included only as a placeholder effect, since the original screen does not use a custom dialog.
+
+If you want, I can do one more pass and make this **100% drop-in with Koin module definitions and a NavController-based route** in the same single file.
+// THIRD ANSWER
+
+// FOURTH ANSWER

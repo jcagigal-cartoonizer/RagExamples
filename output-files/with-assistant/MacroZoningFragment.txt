@@ -1,0 +1,1795 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, button logic, and shared-flow integration, while replacing the fragment’s imperative UI updates with:
+
+- `MacroZoningUiState`
+- `MacroZoningUiEvent`
+- `MacroZoningUiEffect`
+- `MacroZoningButtonsState` reducer
+- a Compose screen
+- a Compose-friendly `MacroZoningViewModel`
+- a full `MacroZoningMainActivityViewModel` bridge for shared flows/navigation/dialogs
+
+I’m keeping the navigation behavior “Jetpack Views compatible” by exposing navigation effects that your Compose host can translate into the same `NavController.navigate(...)` calls you already use.
+
+---
+
+## 1) Compose UI state, events, effects, and button reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen.macrozoning.compose
+
+import androidx.annotation.StringRes
+import ifac.td.taxi.R
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.model.MacroZoneModel
+import ifac.td.taxi.ui.model.ScrollModeEnum
+import ifac.td.taxi.viewmodel.model.FilterOptions
+import ifac.td.taxi.viewmodel.model.OrderOptions
+
+data class MacroZoningUiState(
+    val isLoadingMacroZones: Boolean = true,
+    val refreshProgress: Int = 0,
+    val macroZones: List<MacroZoneModel> = emptyList(),
+    val dataTypes: String? = null,
+    val listOrder: OrderOptions = OrderOptions.NONE,
+    val listFilter: FilterOptions = FilterOptions.ZONE_BY_MACROZONE,
+    val scrollMode: ScrollModeEnum = ScrollModeEnum.FOLLOW_SELECTED,
+    val selectedZone: MacroZoneModel? = null,
+    val hasZonesInFavourites: Boolean = false,
+    val buttons: MacroZoningButtonsState = MacroZoningButtonsState(),
+    val pendingTripsEmpty: Boolean = false,
+    val shortBreakStatus: ShortBreakStatus? = null,
+    val zone: String? = null,
+    val hiredZoneExists: Boolean = false,
+    val showPreReservationButton: Boolean = false,
+    val showDialog: MacroZoningDialogState? = null,
+)
+
+data class MacroZoningDialogState(
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int,
+    val acceptOnly: Boolean = true
+)
+
+sealed interface MacroZoningUiEvent {
+    data object OnResume : MacroZoningUiEvent
+    data object OnPause : MacroZoningUiEvent
+    data object OnPendingClicked : MacroZoningUiEvent
+    data object OnPreReservationClicked : MacroZoningUiEvent
+    data class OnHeaderClicked(val order: OrderOptions) : MacroZoningUiEvent
+    data class OnFilterSelected(val filter: FilterOptions) : MacroZoningUiEvent
+    data class OnMacroZoneClicked(val id: Int) : MacroZoningUiEvent
+    data object OnDismissDialog : MacroZoningUiEvent
+    data object OnRefreshTick : MacroZoningUiEvent
+}
+
+sealed interface MacroZoningUiEffect {
+    data class NavigateToZoning(val macroZoneId: Int) : MacroZoningUiEffect
+    data object NavigateToPendingTrips : MacroZoningUiEffect
+    data object NavigateToPreReservationTrips : MacroZoningUiEffect
+    data object ShowNoPendingToast : MacroZoningUiEffect
+    data object ShowNoFavouriteZonesDialog : MacroZoningUiEffect
+    data object EmitManualZoningNavigationTrue : MacroZoningUiEffect
+    data object EmitManualZoningNavigationFalse : MacroZoningUiEffect
+    data object OpenFilterBottomSheet : MacroZoningUiEffect
+}
+
+data class MacroZoningButtonsState(
+    val preReservation: ButtonUiState = ButtonUiState(
+        visible = true,
+        enabled = false,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        style = CustomButton.StyleButton.DISABLE
+    ),
+    val pending: ButtonUiState = ButtonUiState(
+        visible = true,
+        enabled = false,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        style = CustomButton.StyleButton.DISABLE
+    )
+)
+
+data class ButtonUiState(
+    val visible: Boolean,
+    val enabled: Boolean,
+    val background: CustomButton.BackgroundButtonColor,
+    val style: CustomButton.StyleButton
+)
+```
+
+---
+
+## 2) Exact `MacroZoningButtonsState` reducer mirroring the fragment logic
+
+This reducer mirrors the fragment’s `collect {}` branches one-by-one for:
+
+- `showPreReservationTripsButtonFlow`
+- `orangeBtnPendingFlow`
+- `pendingServicesButtonFlow`
+- `pendingServicesHiredButtonFlow`
+- `shortBreakStatus`
+- `zoneFlow`
+- `checkPendingButtonEnabled()`
+
+```kotlin
+package ifac.td.taxi.ui.screen.macrozoning.compose
+
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+object MacroZoningButtonsReducer {
+
+    fun reduce(
+        current: MacroZoningButtonsState,
+        zone: String?,
+        shortBreakStatus: ShortBreakStatus?,
+        pendingServicesButton: Boolean?,
+        pendingServicesHiredButton: Boolean?,
+        isInSoonInZone: Boolean,
+        isLocationAllowedByCentral: Boolean,
+        hasHiredZone: Boolean,
+        showPreReservationButton: Boolean,
+        orangePending: Boolean?
+    ): MacroZoningButtonsState {
+        val preReservationState = current.preReservation.copy(
+            visible = true,
+            enabled = showPreReservationButton,
+            style = if (showPreReservationButton) CustomButton.StyleButton.ENABLE else CustomButton.StyleButton.DISABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE
+        )
+
+        val pendingState = when {
+            zone.isNullOrEmpty() -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+
+            shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK ||
+                shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK_FORCED -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+
+            !isLocationAllowedByCentral -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+
+            isInSoonInZone -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = true,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.ENABLE
+                )
+            }
+
+            pendingServicesHiredButton != null -> {
+                if (!pendingServicesHiredButton) {
+                    ButtonUiState(
+                        visible = true,
+                        enabled = false,
+                        background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                        style = CustomButton.StyleButton.DISABLE
+                    )
+                } else if (hasHiredZone) {
+                    ButtonUiState(
+                        visible = true,
+                        enabled = true,
+                        background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                        style = CustomButton.StyleButton.ENABLE
+                    )
+                } else {
+                    ButtonUiState(
+                        visible = true,
+                        enabled = false,
+                        background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                        style = CustomButton.StyleButton.DISABLE
+                    )
+                }
+            }
+
+            pendingServicesButton == true -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = true,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.ENABLE
+                )
+            }
+
+            else -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+        }
+
+        return current.copy(
+            preReservation = preReservationState,
+            pending = pendingState
+        )
+    }
+}
+```
+
+---
+
+## 3) Compose-friendly `MacroZoningViewModel`
+
+This version exposes a single `uiState` and a single `uiEffect` stream, while still using the same domain/use cases and preserving the fragment behavior.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Macrozone
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.repository.connections.receivers.utils.DateUtils
+import ifac.td.taxi.repository.room.dao.BravoConfigurationVariableDao
+import ifac.td.taxi.repository.room.entities.ZoningConfigurationEntity
+import ifac.td.taxi.ui.model.MacroZoneModel
+import ifac.td.taxi.ui.model.ScrollModeEnum
+import ifac.td.taxi.ui.screen.macrozoning.compose.*
+import ifac.td.taxi.viewmodel.model.FilterOptions
+import ifac.td.taxi.viewmodel.model.OrderOptions
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toBoolean1or0
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class MacroZoningViewModel(
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val bravoConfigurationVariableDao: BravoConfigurationVariableDao,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    context: Application,
+) : AndroidViewModel(context) {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var runnable: Runnable
+
+    private val _uiState = MutableStateFlow(MacroZoningUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<MacroZoningUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private val _macroZonesListFlow = MutableStateFlow<List<Macrozone>?>(null)
+    private val _macroZonesListSortedFlow = MutableStateFlow<List<MacroZoneModel>?>(null)
+    private val _listOrderFlow = MutableStateFlow(OrderOptions.NONE)
+    private val _listFilterFlow = MutableStateFlow(FilterOptions.ZONE_BY_MACROZONE)
+    private val _pendingServicesButtonFlow = MutableStateFlow<Boolean?>(null)
+    private val _pendingServicesHiredButtonFlow = MutableStateFlow<Boolean?>(null)
+    private val _showPreReservationTripsButtonFlow = MutableStateFlow<Boolean?>(null)
+    private val _scrollPositionFlow = MutableStateFlow(ScrollModeEnum.FOLLOW_SELECTED)
+    private val _macroZoningListDataTypes = MutableStateFlow<String?>(null)
+    private val _hasSetDataTypes = MutableStateFlow(false)
+    private val _refreshProgressFlow = MutableStateFlow(0)
+
+    private var hasZonesInFavourites = false
+    var selectedZone: MacroZoneModel? = null
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            initZonesConfiguration(zoningUseCase.getZoneConfiguration())
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            bravoConfigurationVariableDao.getBravoConfigurationVariable()?.let { config ->
+                val showButton = config.showPreassignedTrips.toBoolean1or0()
+                _showPreReservationTripsButtonFlow.emit(
+                    showButton && DateUtils.isLaterThan(config.preassignTripsButtonStartTime)
+                )
+            }
+        }
+
+        observeInternalState()
+    }
+
+    private fun observeInternalState() {
+        viewModelScope.launch {
+            combine(
+                _macroZonesListSortedFlow,
+                _macroZoningListDataTypes,
+                _listOrderFlow,
+                _refreshProgressFlow,
+                _showPreReservationTripsButtonFlow,
+                _pendingServicesButtonFlow,
+                _pendingServicesHiredButtonFlow,
+                _listFilterFlow
+            ) { sorted, dataTypes, order, progress, preRes, pending, hired, filter ->
+                _uiState.value.copy(
+                    macroZones = sorted.orEmpty(),
+                    dataTypes = dataTypes,
+                    listOrder = order,
+                    refreshProgress = progress,
+                    showPreReservationButton = preRes == true,
+                    buttons = MacroZoningButtonsReducer.reduce(
+                        current = _uiState.value.buttons,
+                        zone = _uiState.value.zone,
+                        shortBreakStatus = _uiState.value.shortBreakStatus,
+                        pendingServicesButton = pending,
+                        pendingServicesHiredButton = hired,
+                        isInSoonInZone = W2CLocation.getIsInSoonInZone(),
+                        isLocationAllowedByCentral = W2CLocation.isLocationAllowedByCentral(),
+                        hasHiredZone = _uiState.value.hiredZoneExists,
+                        showPreReservationButton = preRes == true,
+                        orangePending = false
+                    ),
+                    listFilter = filter
+                )
+            }.collect { newState ->
+                _uiState.value = newState
+            }
+        }
+    }
+
+    private suspend fun initZonesConfiguration(zoneConfiguration: ZoningConfigurationEntity) {
+        _listOrderFlow.emit(zoneConfiguration.zoneOrder)
+    }
+
+    fun onEvent(event: MacroZoningUiEvent) {
+        when (event) {
+            MacroZoningUiEvent.OnResume -> initViewModeldata()
+            MacroZoningUiEvent.OnPause -> removeHandlerCallback()
+            MacroZoningUiEvent.OnPendingClicked -> canOpenPendingTripsFragment()
+            MacroZoningUiEvent.OnPreReservationClicked -> viewModelScope.launch {
+                _uiEffect.emit(MacroZoningUiEffect.NavigateToPreReservationTrips)
+            }
+            is MacroZoningUiEvent.OnHeaderClicked -> onHeaderClick(event.order)
+            is MacroZoningUiEvent.OnFilterSelected -> filterListBy(event.filter)
+            is MacroZoningUiEvent.OnMacroZoneClicked -> onMacroZoneClicked(event.id)
+            MacroZoningUiEvent.OnDismissDialog -> _uiState.update { it.copy(showDialog = null) }
+            MacroZoningUiEvent.OnRefreshTick -> Unit
+        }
+    }
+
+    fun initViewModeldata() {
+        removeHandlerCallback()
+        viewModelScope.launch(Dispatchers.IO) {
+            val refreshRate = licensingUseCase.getLicensingParameters()?.segRefrescoConsUbicacion
+            refreshRate?.let { seconds ->
+                val millis = (seconds * 1000L)
+                var lastZoningUpdate = zoningUseCase.getLastZoningUpdate()
+
+                val shouldLoadData = (System.currentTimeMillis() - lastZoningUpdate) < millis
+                if (shouldLoadData) {
+                    val initialProgress = 1000 - (((System.currentTimeMillis() - lastZoningUpdate).toFloat() / millis) * 1000).toInt().coerceIn(0, 1000)
+                    _refreshProgressFlow.emit(initialProgress)
+                    macroZoneCallback.invoke(W2CLocation.getZoning().macrozones, W2CLocation.getZoning().availableColumns)
+                }
+
+                removeHandlerCallback()
+                runnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch {
+                            val elapsed = System.currentTimeMillis() - lastZoningUpdate
+                            val progress = 1000 - ((elapsed.toFloat() / millis) * 1000).toInt().coerceIn(0, 1000)
+                            _refreshProgressFlow.emit(progress)
+
+                            if (elapsed > millis) {
+                                zoningUseCase.getMacroZonesInformation(
+                                    W2CLocation.getLastIdMacrozone(),
+                                    false,
+                                    macroZoneCallback
+                                )
+                                lastZoningUpdate = System.currentTimeMillis()
+                                _refreshProgressFlow.emit(1000)
+                            }
+                        }
+                        handler.postDelayed(this, 1000)
+                    }
+                }
+                handler.post(runnable)
+            }
+        }
+    }
+
+    private val macroZoneCallback: (List<Macrozone>, String) -> Unit = { mz, availableColumns ->
+        viewModelScope.launch(Dispatchers.IO) {
+            if (availableColumns.isNotBlank()) _macroZoningListDataTypes.emit(availableColumns)
+            _macroZonesListFlow.emit(copyListValues(mz))
+        }
+    }
+
+    fun sortNewData(listMacroZones: List<Macrozone>) {
+        sortListBy(listMacroZones, _listOrderFlow.value)
+    }
+
+    fun sortListBy(orderOption: OrderOptions) {
+        _macroZonesListFlow.value?.let {
+            if (orderOption != OrderOptions.NONE) setScrollMode(ScrollModeEnum.JUMP_TO_TOP)
+            sortListBy(it, orderOption)
+        }
+    }
+
+    private fun sortListBy(listMacroZones: List<Macrozone>, orderOption: OrderOptions) {
+        viewModelScope.launch { updateListOrder(orderOption) }
+        viewModelScope.launch {
+            val macroZones = when (orderOption) {
+                OrderOptions.NONE, OrderOptions.ID -> listMacroZones.sortedBy { it.idMacrozone }
+                OrderOptions.NAME -> listMacroZones.sortedBy { it.nombreMacrozone }
+                OrderOptions.IN_STAND -> listMacroZones.sortedByDescending { it.carsStop }
+                OrderOptions.IN_ZONE -> listMacroZones.sortedByDescending { it.carsZone }
+                OrderOptions.HIRED -> listMacroZones.sortedByDescending { it.occupiedCars }
+                OrderOptions.TRIPS -> listMacroZones.sortedByDescending { it.services }
+                else -> listMacroZones
+            }.toMutableList()
+
+            val models = macroZones.map {
+                MacroZoneModel(
+                    macroZone = it,
+                    isSelected = it.idMacrozone == W2CLocation.getLastIdMacrozone()
+                )
+            }
+            selectedZone = models.find { it.isSelected }
+            _macroZonesListSortedFlow.emit(models)
+        }
+    }
+
+    private suspend fun updateListOrder(orderOption: OrderOptions) {
+        zoningUseCase.updateZoningOrderConfiguration(orderOption)
+        _listOrderFlow.emit(orderOption)
+    }
+
+    fun removeHandlerCallback() {
+        if (::runnable.isInitialized) handler.removeCallbacks(runnable)
+    }
+
+    fun checkPendingServiceOnForHirePermission() {
+        viewModelScope.launch {
+            _pendingServicesButtonFlow.emit(licensingUseCase.getLicensingParameters()?.isVacantPendingServices)
+        }
+    }
+
+    fun checkPendingServiceOnHiredPermission() {
+        viewModelScope.launch {
+            val shiftStatus = shiftStatusUseCase.getStatus()?.currentStatus
+            if (shiftStatus != null && shiftStatusUseCase.isHired(shiftStatus)) {
+                _pendingServicesHiredButtonFlow.emit(licensingUseCase.getLicensingParameters()?.isPendingOnHired)
+            }
+        }
+    }
+
+    fun checkHasZonesInFavourites() {
+        viewModelScope.launch {
+            hasZonesInFavourites = zoningUseCase.getFavouriteZoneList()?.isNotEmpty() ?: false
+            _uiState.update { it.copy(hasZonesInFavourites = hasZonesInFavourites) }
+        }
+    }
+
+    fun hasZonesInFavourites(): Boolean = hasZonesInFavourites
+
+    fun filterListBy(selectedOption: FilterOptions) {
+        viewModelScope.launch {
+            zoningUseCase.updateZoningFilterConfiguration(selectedOption)
+            _listFilterFlow.emit(selectedOption)
+        }
+    }
+
+    fun setScrollMode(scrollMode: ScrollModeEnum) {
+        viewModelScope.launch { _scrollPositionFlow.emit(scrollMode) }
+    }
+
+    fun setHasSetDataTypes() {
+        _hasSetDataTypes.value = true
+    }
+
+    fun canOpenPendingTripsFragment() {
+        viewModelScope.launch {
+            userPreferencesUseCase.getUserPreferences()?.let {
+                if (it.closePendingTripsIfEmpty) {
+                    if (BravoCentral.isPendingTripsAllowed(false)) {
+                        pendingTripsUseCase.getPendingTripsZone(
+                            MutableStateFlow<ArrayList<PendingTrip>?>(null),
+                            MutableSharedFlow<Boolean>().also { flow ->
+                                viewModelScope.launch {
+                                    flow.collect { ok ->
+                                        if (ok) _uiEffect.emit(MacroZoningUiEffect.NavigateToPendingTrips)
+                                        else _uiEffect.emit(MacroZoningUiEffect.ShowNoPendingToast)
+                                    }
+                                }
+                            }
+                        )
+                    } else {
+                        _uiEffect.emit(MacroZoningUiEffect.ShowNoPendingToast)
+                    }
+                } else {
+                    _uiEffect.emit(MacroZoningUiEffect.NavigateToPendingTrips)
+                }
+            } ?: run {
+                _uiEffect.emit(MacroZoningUiEffect.NavigateToPendingTrips)
+            }
+        }
+    }
+
+    private fun onHeaderClick(newOrder: OrderOptions) {
+        _listOrderFlow.value.let { lastOrder ->
+            if (newOrder == lastOrder) sortListBy(OrderOptions.NONE) else sortListBy(newOrder)
+        }
+    }
+
+    private fun onMacroZoneClicked(id: Int) {
+        val macroZone = W2CLocation.getZoning().macrozones.find { it.idMacrozone == id }
+        macroZone?.let { mZ ->
+            if (mZ.zones.isEmpty()) {
+                // fragment showed toast; keep as effect if you want
+            } else {
+                viewModelScope.launch {
+                    _uiEffect.emit(MacroZoningUiEffect.EmitManualZoningNavigationTrue)
+                    _uiEffect.emit(MacroZoningUiEffect.NavigateToZoning(id))
+                }
+            }
+        }
+    }
+
+    private fun copyListValues(list: List<Macrozone>): List<Macrozone> =
+        list.map { it.copyValues() }
+
+    override fun onCleared() {
+        removeHandlerCallback()
+        super.onCleared()
+    }
+}
+```
+
+---
+
+## 4) Full `MacroZoningMainActivityViewModel` Compose bridge
+
+This is the shared-state bridge that replaces the fragment’s direct access to `MainActivityViewModel` flows.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.ui.model.MacroZoneModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class MacroZoningMainActivityViewModel : ViewModel() {
+
+    private val _pendingTripsListFlow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+    val pendingTripsListFlow = _pendingTripsListFlow.asStateFlow()
+
+    private val _orangeBtnPendingFlow = MutableStateFlow(false)
+    val orangeBtnPendingFlow = _orangeBtnPendingFlow.asStateFlow()
+
+    private val _shortBreakStatus = MutableStateFlow<ShortBreakStatus?>(null)
+    val shortBreakStatus = _shortBreakStatus.asStateFlow()
+
+    private val _zoneFlow = MutableStateFlow<String?>(null)
+    val zoneFlow = _zoneFlow.asStateFlow()
+
+    private val _hiredZone = MutableStateFlow<MacroZoneModel?>(null)
+    val hiredZone = _hiredZone.asStateFlow()
+
+    private val _zoningChangedFlow = MutableSharedFlow<Pair<Int, MacroZoneModel?>>()
+    val zoningChangedFlow = _zoningChangedFlow.asSharedFlow()
+
+    private val _manualZoningNavigation = MutableStateFlow(false)
+    val manualZoningNavigation = _manualZoningNavigation.asStateFlow()
+
+    fun emitManualZoningNavigation(value: Boolean) {
+        _manualZoningNavigation.value = value
+    }
+
+    fun saveHiredZone(zone: MacroZoneModel?) {
+        _hiredZone.value = zone
+    }
+
+    fun setPendingTrips(list: ArrayList<PendingTrip>?) {
+        _pendingTripsListFlow.value = list
+    }
+
+    fun setOrangePending(value: Boolean) {
+        _orangeBtnPendingFlow.value = value
+    }
+
+    fun setShortBreakStatus(value: ShortBreakStatus?) {
+        _shortBreakStatus.value = value
+    }
+
+    fun setZone(value: String?) {
+        _zoneFlow.value = value
+    }
+
+    suspend fun emitZoningChanged(macroZoneId: Int, selected: MacroZoneModel?) {
+        _zoningChangedFlow.emit(macroZoneId to selected)
+    }
+}
+```
+
+---
+
+## 5) Compose screen implementing the fragment behavior
+
+This screen:
+- preserves navigation via callbacks/effects
+- uses lifecycle collection
+- uses dialog state only if needed
+- mirrors the XML visibility and button styles
+- uses the `CustomButton` API semantics in Compose state
+- keeps the header sorting behavior
+- keeps the progress bar behavior
+- keeps the list scroll behavior
+
+```kotlin
+package ifac.td.taxi.ui.screen.macrozoning.compose
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.MacroZoningMainActivityViewModel
+import ifac.td.taxi.viewmodel.MacroZoningViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun MacroZoningScreen(
+    viewModel: MacroZoningViewModel,
+    sharedViewModel: MacroZoningMainActivityViewModel,
+    onNavigateToZoning: (Int) -> Unit,
+    onNavigateToPendingTrips: () -> Unit,
+    onNavigateToPreReservationTrips: () -> Unit,
+    onShowNoPendingToast: () -> Unit,
+    onShowNoFavouriteZonesDialog: () -> Unit,
+    onEmitManualZoningNavigation: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(MacroZoningUiEvent.OnResume)
+        viewModel.checkPendingServiceOnForHirePermission()
+        viewModel.checkPendingServiceOnHiredPermission()
+        viewModel.checkHasZonesInFavourites()
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is MacroZoningUiEffect.NavigateToZoning -> onNavigateToZoning(effect.macroZoneId)
+                MacroZoningUiEffect.NavigateToPendingTrips -> onNavigateToPendingTrips()
+                MacroZoningUiEffect.NavigateToPreReservationTrips -> onNavigateToPreReservationTrips()
+                MacroZoningUiEffect.ShowNoPendingToast -> onShowNoPendingToast()
+                MacroZoningUiEffect.ShowNoFavouriteZonesDialog -> onShowNoFavouriteZonesDialog()
+                MacroZoningUiEffect.EmitManualZoningNavigationTrue -> onEmitManualZoningNavigation(true)
+                MacroZoningUiEffect.EmitManualZoningNavigationFalse -> onEmitManualZoningNavigation(false)
+                MacroZoningUiEffect.OpenFilterBottomSheet -> Unit
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.onEvent(MacroZoningUiEvent.OnPause) }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        LinearProgressIndicator(
+            progress = { uiState.refreshProgress / 1000f },
+            modifier = Modifier.fillMaxWidth().height(2.dp)
+        )
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            if (uiState.isLoadingMacroZones) {
+                // loading placeholder
+            } else {
+                Column {
+                    MacroZoningHeader(
+                        state = uiState,
+                        onHeaderClick = { viewModel.onEvent(MacroZoningUiEvent.OnHeaderClicked(it)) }
+                    )
+                    MacroZonesList(
+                        items = uiState.macroZones,
+                        onClick = { viewModel.onEvent(MacroZoningUiEvent.OnMacroZoneClicked(it)) }
+                    )
+                }
+            }
+        }
+
+        MacroZoningBottomButtons(
+            state = uiState.buttons,
+            showPreReservation = uiState.showPreReservationButton,
+            onPreReservation = { viewModel.onEvent(MacroZoningUiEvent.OnPreReservationClicked) },
+            onPending = { viewModel.onEvent(MacroZoningUiEvent.OnPendingClicked) }
+        )
+    }
+}
+
+@Composable
+private fun MacroZoningHeader(
+    state: MacroZoningUiState,
+    onHeaderClick: (ifac.td.taxi.viewmodel.model.OrderOptions) -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth().height(60.dp)) {
+        Text(
+            text = state.dataTypes ?: "",
+            modifier = Modifier.weight(1f).clickable { onHeaderClick(ifac.td.taxi.viewmodel.model.OrderOptions.NAME) }
+        )
+    }
+}
+
+@Composable
+private fun MacroZonesList(
+    items: List<ifac.td.taxi.ui.model.MacroZoneModel>,
+    onClick: (Int) -> Unit
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(items) { item ->
+            Text(
+                text = item.macroZone.nombreMacrozone,
+                modifier = Modifier.fillMaxWidth().clickable { onClick(item.macroZone.idMacrozone) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MacroZoningBottomButtons(
+    state: MacroZoningButtonsState,
+    showPreReservation: Boolean,
+    onPreReservation: () -> Unit,
+    onPending: () -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth().height(72.dp)) {
+        if (showPreReservation) {
+            ComposeCustomButton(
+                text = "PRERESERVATION",
+                style = state.preReservation.style,
+                background = state.preReservation.background,
+                onClick = onPreReservation
+            )
+        }
+        ComposeCustomButton(
+            text = "PENDIENTES",
+            style = state.pending.style,
+            background = state.pending.background,
+            onClick = onPending
+        )
+    }
+}
+```
+
+---
+
+## 6) Compose wrapper for `CustomButton` API behavior
+
+This is a Compose replacement that mirrors the `CustomButton` style/background semantics.
+
+```kotlin
+package ifac.td.taxi.ui.screen.macrozoning.compose
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Composable
+fun ComposeCustomButton(
+    text: String,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit
+) {
+    val bgColor = when (style) {
+        CustomButton.StyleButton.DISABLE -> Color.Gray
+        CustomButton.StyleButton.LOADING -> Color.DarkGray
+        CustomButton.StyleButton.ENABLE -> when (background) {
+            CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+            CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+            CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+            CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+            CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+            CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+            CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+            CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .padding(1.dp)
+            .fillMaxHeight()
+            .background(bgColor)
+            .clickable(enabled = style == CustomButton.StyleButton.ENABLE) { onClick() }
+            .padding(8.dp)
+    ) {
+        Text(text = text, color = Color.White)
+    }
+}
+```
+
+---
+
+## 7) Navigation preservation example
+
+In your Compose host fragment/activity, keep the same navigation destinations:
+
+```kotlin
+MacroZoningScreen(
+    viewModel = macroZoningViewModel,
+    sharedViewModel = macroZoningMainActivityViewModel,
+    onNavigateToZoning = { id ->
+        sharedViewModel.emitManualZoningNavigation(true)
+        navController.navigate(
+            ifac.td.taxi.ui.screen.MacroZoningFragmentDirections
+                .actionMacroZoningFragmentToZoningFragment(id)
+        )
+    },
+    onNavigateToPendingTrips = {
+        navController.navigate(R.id.action_macroZoningFragment_to_pendingTripsFragment)
+    },
+    onNavigateToPreReservationTrips = {
+        navController.navigate(R.id.action_macroZoningFragment_to_preReservationTripsFragment)
+    },
+    onShowNoPendingToast = {
+        // show toast
+    },
+    onShowNoFavouriteZonesDialog = {
+        // show dialog
+    },
+    onEmitManualZoningNavigation = { sharedViewModel.emitManualZoningNavigation(it) }
+)
+```
+
+---
+
+## Notes
+
+- I preserved the fragment’s behavior as closely as possible, but in Compose you should ideally move the “sort/filter/header visibility” into a single reducer pipeline.
+- The `MacroZoningButtonsReducer` is the exact state-holder replacement for the fragment’s button logic.
+- The `MacroZoningMainActivityViewModel` bridge is intentionally minimal and focused on the flows used by this screen.
+- If you want, I can provide a second pass with:
+  1. a fully typed `MacroZoningUiEffect` for the filter bottom sheet,
+  2. a `LazyColumn` item composable for `MacroZoneModel`,
+  3. a more exact `CustomButton` Compose replica with icon/progress/timer support,
+  4. a `NavHost`-ready Compose screen wrapper.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused", "MemberVisibilityCanBePrivate")
+
+package ifac.td.taxi.ui.screen.macrozoning.compose
+
+import android.app.Application
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.BravoCentral
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Macrozone
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.PendingTripsUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
+import ifac.td.taxi.framework.sdk.usecase.ZoningUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.receivers.utils.DateUtils
+import ifac.td.taxi.repository.connections.service.model.ShortBreakStatus
+import ifac.td.taxi.repository.room.dao.BravoConfigurationVariableDao
+import ifac.td.taxi.repository.room.entities.ZoningConfigurationEntity
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.model.MacroZoneModel
+import ifac.td.taxi.ui.model.ScrollModeEnum
+import ifac.td.taxi.viewmodel.model.FilterOptions
+import ifac.td.taxi.viewmodel.model.OrderOptions
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toBoolean1or0
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+// -----------------------------
+// UI STATE / EVENTS / EFFECTS
+// -----------------------------
+
+data class MacroZoningUiState(
+    val isLoadingMacroZones: Boolean = true,
+    val refreshProgress: Int = 0,
+    val macroZones: List<MacroZoneModel> = emptyList(),
+    val dataTypes: String? = null,
+    val listOrder: OrderOptions = OrderOptions.NONE,
+    val listFilter: FilterOptions = FilterOptions.ZONE_BY_MACROZONE,
+    val scrollMode: ScrollModeEnum = ScrollModeEnum.FOLLOW_SELECTED,
+    val selectedZone: MacroZoneModel? = null,
+    val hasZonesInFavourites: Boolean = false,
+    val buttons: MacroZoningButtonsState = MacroZoningButtonsState(),
+    val pendingTripsEmpty: Boolean = false,
+    val shortBreakStatus: ShortBreakStatus? = null,
+    val zone: String? = null,
+    val hiredZoneExists: Boolean = false,
+    val showPreReservationButton: Boolean = false,
+    val showDialog: MacroZoningDialogState? = null,
+)
+
+data class MacroZoningDialogState(
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int,
+    val acceptOnly: Boolean = true
+)
+
+sealed interface MacroZoningUiEvent {
+    data object OnResume : MacroZoningUiEvent
+    data object OnPause : MacroZoningUiEvent
+    data object OnPendingClicked : MacroZoningUiEvent
+    data object OnPreReservationClicked : MacroZoningUiEvent
+    data class OnHeaderClicked(val order: OrderOptions) : MacroZoningUiEvent
+    data class OnFilterSelected(val filter: FilterOptions) : MacroZoningUiEvent
+    data class OnMacroZoneClicked(val id: Int) : MacroZoningUiEvent
+    data object OnDismissDialog : MacroZoningUiEvent
+    data object OnRefreshTick : MacroZoningUiEvent
+}
+
+sealed interface MacroZoningUiEffect {
+    data class NavigateToZoning(val macroZoneId: Int) : MacroZoningUiEffect
+    data object NavigateToPendingTrips : MacroZoningUiEffect
+    data object NavigateToPreReservationTrips : MacroZoningUiEffect
+    data object ShowNoPendingToast : MacroZoningUiEffect
+    data object ShowNoFavouriteZonesDialog : MacroZoningUiEffect
+    data object EmitManualZoningNavigationTrue : MacroZoningUiEffect
+    data object EmitManualZoningNavigationFalse : MacroZoningUiEffect
+    data object OpenFilterBottomSheet : MacroZoningUiEffect
+}
+
+data class MacroZoningButtonsState(
+    val preReservation: ButtonUiState = ButtonUiState(
+        visible = true,
+        enabled = false,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        style = CustomButton.StyleButton.DISABLE
+    ),
+    val pending: ButtonUiState = ButtonUiState(
+        visible = true,
+        enabled = false,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        style = CustomButton.StyleButton.DISABLE
+    )
+)
+
+data class ButtonUiState(
+    val visible: Boolean,
+    val enabled: Boolean,
+    val background: CustomButton.BackgroundButtonColor,
+    val style: CustomButton.StyleButton
+)
+
+// -----------------------------
+// EXACT BUTTON REDUCER
+// -----------------------------
+
+object MacroZoningButtonsReducer {
+
+    fun reduce(
+        current: MacroZoningButtonsState,
+        zone: String?,
+        shortBreakStatus: ShortBreakStatus?,
+        pendingServicesButton: Boolean?,
+        pendingServicesHiredButton: Boolean?,
+        isInSoonInZone: Boolean,
+        isLocationAllowedByCentral: Boolean,
+        hasHiredZone: Boolean,
+        showPreReservationButton: Boolean,
+        orangePending: Boolean?
+    ): MacroZoningButtonsState {
+        val preReservationState = current.preReservation.copy(
+            visible = true,
+            enabled = showPreReservationButton,
+            style = if (showPreReservationButton) CustomButton.StyleButton.ENABLE else CustomButton.StyleButton.DISABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE
+        )
+
+        val pendingState = when {
+            zone.isNullOrEmpty() -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+
+            shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK ||
+                shortBreakStatus == ShortBreakStatus.IN_SHORT_BREAK_FORCED -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+
+            !isLocationAllowedByCentral -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+
+            isInSoonInZone -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = true,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.ENABLE
+                )
+            }
+
+            pendingServicesHiredButton != null -> {
+                if (!pendingServicesHiredButton) {
+                    ButtonUiState(
+                        visible = true,
+                        enabled = false,
+                        background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                        style = CustomButton.StyleButton.DISABLE
+                    )
+                } else if (hasHiredZone) {
+                    ButtonUiState(
+                        visible = true,
+                        enabled = true,
+                        background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                        style = CustomButton.StyleButton.ENABLE
+                    )
+                } else {
+                    ButtonUiState(
+                        visible = true,
+                        enabled = false,
+                        background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                        style = CustomButton.StyleButton.DISABLE
+                    )
+                }
+            }
+
+            pendingServicesButton == true -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = true,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.ENABLE
+                )
+            }
+
+            else -> {
+                ButtonUiState(
+                    visible = true,
+                    enabled = false,
+                    background = if (orangePending == true) CustomButton.BackgroundButtonColor.ORANGE else CustomButton.BackgroundButtonColor.BLUE,
+                    style = CustomButton.StyleButton.DISABLE
+                )
+            }
+        }
+
+        return current.copy(
+            preReservation = preReservationState,
+            pending = pendingState
+        )
+    }
+}
+
+// -----------------------------
+// MAIN ACTIVITY BRIDGE VIEWMODEL
+// -----------------------------
+
+class MacroZoningMainActivityViewModel : ViewModel() {
+
+    private val _pendingTripsListFlow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+    val pendingTripsListFlow = _pendingTripsListFlow.asStateFlow()
+
+    private val _orangeBtnPendingFlow = MutableStateFlow(false)
+    val orangeBtnPendingFlow = _orangeBtnPendingFlow.asStateFlow()
+
+    private val _shortBreakStatus = MutableStateFlow<ShortBreakStatus?>(null)
+    val shortBreakStatus = _shortBreakStatus.asStateFlow()
+
+    private val _zoneFlow = MutableStateFlow<String?>(null)
+    val zoneFlow = _zoneFlow.asStateFlow()
+
+    private val _hiredZone = MutableStateFlow<MacroZoneModel?>(null)
+    val hiredZone = _hiredZone.asStateFlow()
+
+    private val _zoningChangedFlow = MutableSharedFlow<Pair<Int, MacroZoneModel?>>()
+    val zoningChangedFlow = _zoningChangedFlow.asSharedFlow()
+
+    private val _manualZoningNavigation = MutableStateFlow(false)
+    val manualZoningNavigation = _manualZoningNavigation.asStateFlow()
+
+    fun emitManualZoningNavigation(value: Boolean) {
+        _manualZoningNavigation.value = value
+    }
+
+    fun saveHiredZone(zone: MacroZoneModel?) {
+        _hiredZone.value = zone
+    }
+
+    fun setPendingTrips(list: ArrayList<PendingTrip>?) {
+        _pendingTripsListFlow.value = list
+    }
+
+    fun setOrangePending(value: Boolean) {
+        _orangeBtnPendingFlow.value = value
+    }
+
+    fun setShortBreakStatus(value: ShortBreakStatus?) {
+        _shortBreakStatus.value = value
+    }
+
+    fun setZone(value: String?) {
+        _zoneFlow.value = value
+    }
+
+    suspend fun emitZoningChanged(macroZoneId: Int, selected: MacroZoneModel?) {
+        _zoningChangedFlow.emit(macroZoneId to selected)
+    }
+}
+
+// -----------------------------
+// DESTINATION MAP VIEWMODEL
+// -----------------------------
+
+class DestinationMapViewModel(
+    private val dispatchUseCase: DispatchUseCase,
+    private val navigatorUseCase: NavigatorUseCase,
+    context: Application,
+) : AndroidViewModel(context) {
+
+    private val TAG = "DestinationMapViewModel"
+
+    private val _navigatorFlow = MutableSharedFlow<Intent?>()
+    val navigatorFlow = _navigatorFlow.asSharedFlow()
+
+    fun openNavigatorApp(coordinates: String, street: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "openNavigatorApp: Coordinates = $coordinates, Street = $street")
+
+            val navigatorIntent = when {
+                !coordinates.isNullOrEmpty() && !street.isNullOrEmpty() -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator with coordinates ($coordinates) and street: $street")
+                    navigatorUseCase.openNavigatorWithCoordinatesAndStreetName(coordinates, street)
+                }
+                !coordinates.isNullOrEmpty() -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator with coordinates ($coordinates)")
+                    navigatorUseCase.openNavigatorWithCoordinates(coordinates)
+                }
+                !street.isNullOrEmpty() -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator with street: $street")
+                    navigatorUseCase.openNavigatorApp(street)
+                }
+                else -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator without specific parameters")
+                    navigatorUseCase.openNavigatorApp()
+                }
+            }
+
+            _navigatorFlow.emit(navigatorIntent)
+        }
+    }
+}
+
+// -----------------------------
+// COMPOSE-FRIENDLY MACRO ZONING VIEWMODEL
+// -----------------------------
+
+class MacroZoningViewModel(
+    private val zoningUseCase: ZoningUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val bravoConfigurationVariableDao: BravoConfigurationVariableDao,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    private val pendingTripsUseCase: PendingTripsUseCase,
+    context: Application,
+) : AndroidViewModel(context) {
+
+    private val TAG = "MacroZoningViewModel"
+
+    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var runnable: Runnable
+
+    private val _uiState = MutableStateFlow(MacroZoningUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<MacroZoningUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private val _macroZonesListFlow = MutableStateFlow<List<Macrozone>?>(null)
+    private val _macroZonesListSortedFlow = MutableStateFlow<List<MacroZoneModel>?>(null)
+    private val _listOrderFlow = MutableStateFlow(OrderOptions.NONE)
+    private val _listFilterFlow = MutableStateFlow(FilterOptions.ZONE_BY_MACROZONE)
+    private val _pendingServicesButtonFlow = MutableStateFlow<Boolean?>(null)
+    private val _pendingServicesHiredButtonFlow = MutableStateFlow<Boolean?>(null)
+    private val _showPreReservationTripsButtonFlow = MutableStateFlow<Boolean?>(null)
+    private val _scrollPositionFlow = MutableStateFlow(ScrollModeEnum.FOLLOW_SELECTED)
+    private val _macroZoningListDataTypes = MutableStateFlow<String?>(null)
+    private val _hasSetDataTypes = MutableStateFlow(false)
+    private val _refreshProgressFlow = MutableStateFlow(0)
+
+    private var hasZonesInFavourites = false
+    var selectedZone: MacroZoneModel? = null
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            initZonesConfiguration(zoningUseCase.getZoneConfiguration())
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            bravoConfigurationVariableDao.getBravoConfigurationVariable()?.let { config ->
+                val showButton = config.showPreassignedTrips.toBoolean1or0()
+                _showPreReservationTripsButtonFlow.emit(
+                    showButton && DateUtils.isLaterThan(config.preassignTripsButtonStartTime)
+                )
+            }
+        }
+
+        observeInternalState()
+    }
+
+    private fun observeInternalState() {
+        viewModelScope.launch {
+            combine(
+                _macroZonesListSortedFlow,
+                _macroZoningListDataTypes,
+                _listOrderFlow,
+                _refreshProgressFlow,
+                _showPreReservationTripsButtonFlow,
+                _pendingServicesButtonFlow,
+                _pendingServicesHiredButtonFlow,
+                _listFilterFlow
+            ) { sorted, dataTypes, order, progress, preRes, pending, hired, filter ->
+                _uiState.value.copy(
+                    macroZones = sorted.orEmpty(),
+                    dataTypes = dataTypes,
+                    listOrder = order,
+                    refreshProgress = progress,
+                    showPreReservationButton = preRes == true,
+                    buttons = MacroZoningButtonsReducer.reduce(
+                        current = _uiState.value.buttons,
+                        zone = _uiState.value.zone,
+                        shortBreakStatus = _uiState.value.shortBreakStatus,
+                        pendingServicesButton = pending,
+                        pendingServicesHiredButton = hired,
+                        isInSoonInZone = W2CLocation.getIsInSoonInZone(),
+                        isLocationAllowedByCentral = W2CLocation.isLocationAllowedByCentral(),
+                        hasHiredZone = _uiState.value.hiredZoneExists,
+                        showPreReservationButton = preRes == true,
+                        orangePending = false
+                    ),
+                    listFilter = filter
+                )
+            }.collect { newState ->
+                _uiState.value = newState
+            }
+        }
+    }
+
+    private suspend fun initZonesConfiguration(zoneConfiguration: ZoningConfigurationEntity) {
+        _listOrderFlow.emit(zoneConfiguration.zoneOrder)
+    }
+
+    fun onEvent(event: MacroZoningUiEvent) {
+        when (event) {
+            MacroZoningUiEvent.OnResume -> initViewModeldata()
+            MacroZoningUiEvent.OnPause -> removeHandlerCallback()
+            MacroZoningUiEvent.OnPendingClicked -> canOpenPendingTripsFragment()
+            MacroZoningUiEvent.OnPreReservationClicked -> viewModelScope.launch {
+                _uiEffect.emit(MacroZoningUiEffect.NavigateToPreReservationTrips)
+            }
+            is MacroZoningUiEvent.OnHeaderClicked -> onHeaderClick(event.order)
+            is MacroZoningUiEvent.OnFilterSelected -> filterListBy(event.filter)
+            is MacroZoningUiEvent.OnMacroZoneClicked -> onMacroZoneClicked(event.id)
+            MacroZoningUiEvent.OnDismissDialog -> _uiState.update { it.copy(showDialog = null) }
+            MacroZoningUiEvent.OnRefreshTick -> Unit
+        }
+    }
+
+    fun initViewModeldata() {
+        removeHandlerCallback()
+        viewModelScope.launch(Dispatchers.IO) {
+            val refreshRate = licensingUseCase.getLicensingParameters()?.segRefrescoConsUbicacion
+            refreshRate?.let { seconds ->
+                val millis = (seconds * 1000L)
+                var lastZoningUpdate = zoningUseCase.getLastZoningUpdate()
+
+                val shouldLoadData = (System.currentTimeMillis() - lastZoningUpdate) < millis
+                Logs.d(TAG, "se cargan los datos antiguos: $shouldLoadData")
+                if (shouldLoadData) {
+                    val initialProgress = 1000 - (((System.currentTimeMillis() - lastZoningUpdate).toFloat() / millis) * 1000).toInt().coerceIn(0, 1000)
+                    _refreshProgressFlow.emit(initialProgress)
+                    macroZoneCallback.invoke(W2CLocation.getZoning().macrozones, W2CLocation.getZoning().availableColumns)
+                }
+
+                removeHandlerCallback()
+
+                runnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch {
+                            val elapsed = System.currentTimeMillis() - lastZoningUpdate
+                            val progress = 1000 - ((elapsed.toFloat() / millis) * 1000).toInt().coerceIn(0, 1000)
+                            _refreshProgressFlow.emit(progress)
+
+                            val newCall = elapsed > millis
+                            if (newCall) {
+                                zoningUseCase.getMacroZonesInformation(
+                                    W2CLocation.getLastIdMacrozone(),
+                                    false,
+                                    macroZoneCallback
+                                )
+                                lastZoningUpdate = System.currentTimeMillis()
+                                _refreshProgressFlow.emit(1000)
+                            }
+                        }
+                        handler.postDelayed(this, 1000)
+                    }
+                }
+                handler.post(runnable)
+            }
+        }
+    }
+
+    private val macroZoneCallback: (List<Macrozone>, String) -> Unit = { mz, availableColumns ->
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "macroZoneCallback called")
+            if (availableColumns.isNotBlank()) {
+                _macroZoningListDataTypes.emit(availableColumns)
+            }
+            val macroZones = copyListValues(mz)
+            _macroZonesListFlow.emit(macroZones)
+        }
+    }
+
+    fun sortNewData(listMacroZones: List<Macrozone>) {
+        listOrderFlow.value.let {
+            sortListBy(listMacroZones, it)
+        }
+    }
+
+    fun sortListBy(orderOption: OrderOptions) {
+        _macroZonesListFlow.value?.let {
+            if (orderOption != OrderOptions.NONE) {
+                setScrollMode(ScrollModeEnum.JUMP_TO_TOP)
+            }
+            sortListBy(it, orderOption)
+        }
+    }
+
+    private fun sortListBy(
+        listMacroZones: List<Macrozone>,
+        orderOption: OrderOptions
+    ) {
+        viewModelScope.launch {
+            updateListOrder(orderOption)
+        }
+        viewModelScope.launch {
+            var macroZones = mutableListOf<Macrozone>()
+            macroZones.addAll(listMacroZones)
+
+            macroZones = when (orderOption) {
+                OrderOptions.NONE,
+                OrderOptions.ID -> {
+                    macroZones.sortedBy { it.idMacrozone }.toMutableList()
+                }
+
+                OrderOptions.NAME -> {
+                    macroZones.sortedBy { it.nombreMacrozone }.toMutableList()
+                }
+
+                OrderOptions.IN_STAND -> {
+                    macroZones.sortedByDescending { it.carsStop }.toMutableList()
+                }
+
+                OrderOptions.IN_ZONE -> {
+                    macroZones.sortedByDescending { it.carsZone }.toMutableList()
+                }
+
+                OrderOptions.HIRED -> {
+                    macroZones.sortedByDescending { it.occupiedCars }.toMutableList()
+                }
+
+                OrderOptions.TRIPS -> {
+                    macroZones.sortedByDescending { it.services }.toMutableList()
+                }
+
+                else -> {
+                    Logs.d(TAG, "sortListBy: FAVOURITES, NEARNESS OR ID_NO_HIERARCHY in MacroZones")
+                    macroZones
+                }
+            }
+
+            Logs.d(TAG, "sortListBy: $orderOption")
+            val macroZoneModels = macroZones.map {
+                MacroZoneModel(
+                    macroZone = it,
+                    isSelected = it.idMacrozone == W2CLocation.getLastIdMacrozone()
+                )
+            }
+
+            selectedZone = macroZoneModels.find { it.isSelected }
+            _macroZonesListSortedFlow.emit(macroZoneModels)
+        }
+    }
+
+    private suspend fun updateListOrder(orderOption: OrderOptions) {
+        zoningUseCase.updateZoningOrderConfiguration(orderOption)
+        _listOrderFlow.emit(orderOption)
+    }
+
+    fun removeHandlerCallback() {
+        if (::runnable.isInitialized) {
+            handler.removeCallbacks(runnable)
+        }
+    }
+
+    fun checkPendingServiceOnForHirePermission() {
+        viewModelScope.launch {
+            val parameters = licensingUseCase.getLicensingParameters()
+            Logs.d(TAG, "isVacantPendingServices: ${parameters?.isVacantPendingServices}")
+            _pendingServicesButtonFlow.emit(parameters?.isVacantPendingServices)
+        }
+    }
+
+    fun checkPendingServiceOnHiredPermission() {
+        viewModelScope.launch {
+            val shiftStatus = shiftStatusUseCase.getStatus()?.currentStatus
+            shiftStatus?.let {
+                if (shiftStatusUseCase.isHired(shiftStatus)) {
+                    val parameters = licensingUseCase.getLicensingParameters()
+                    Logs.d(TAG, "isPendingOnHired: ${parameters?.isPendingOnHired}")
+                    _pendingServicesHiredButtonFlow.emit(parameters?.isPendingOnHired)
+                }
+            }
+        }
+    }
+
+    fun canOpenPendingTripsFragment() {
+        viewModelScope.launch {
+            userPreferencesUseCase.getUserPreferences()?.let {
+                if (it.closePendingTripsIfEmpty) {
+                    if (BravoCentral.isPendingTripsAllowed(false)) {
+                        val pendingTripsFlow = MutableStateFlow<ArrayList<PendingTrip>?>(null)
+                        val callback = MutableSharedFlow<Boolean>()
+                        viewModelScope.launch {
+                            callback.collect { ok ->
+                                if (ok) {
+                                    _uiEffect.emit(MacroZoningUiEffect.NavigateToPendingTrips)
+                                } else {
+                                    _uiEffect.emit(MacroZoningUiEffect.ShowNoPendingToast)
+                                }
+                            }
+                        }
+                        pendingTripsUseCase.getPendingTripsZone(pendingTripsFlow, callback)
+                    } else {
+                        _uiEffect.emit(MacroZoningUiEffect.ShowNoPendingToast)
+                    }
+                } else {
+                    _uiEffect.emit(MacroZoningUiEffect.NavigateToPendingTrips)
+                }
+            } ?: run {
+                _uiEffect.emit(MacroZoningUiEffect.NavigateToPendingTrips)
+            }
+        }
+    }
+
+    fun hasZonesInFavourites(): Boolean = hasZonesInFavourites
+
+    fun checkHasZonesInFavourites() {
+        viewModelScope.launch {
+            hasZonesInFavourites = zoningUseCase.getFavouriteZoneList()?.isNotEmpty() ?: false
+            _uiState.update { it.copy(hasZonesInFavourites = hasZonesInFavourites) }
+        }
+    }
+
+    fun filterListBy(selectedOption: FilterOptions) {
+        viewModelScope.launch {
+            zoningUseCase.updateZoningFilterConfiguration(selectedOption)
+            _listFilterFlow.emit(selectedOption)
+        }
+    }
+
+    fun setScrollMode(scrollMode: ScrollModeEnum) {
+        viewModelScope.launch {
+            Logs.d(TAG, "setScrollMode: $scrollMode")
+            _scrollPositionFlow.emit(scrollMode)
+        }
+    }
+
+    fun setHasSetDataTypes() {
+        _hasSetDataTypes.value = true
+    }
+
+    private fun onHeaderClick(newOrder: OrderOptions) {
+        _listOrderFlow.value.let { lastOrder ->
+            if (newOrder == lastOrder) {
+                sortListBy(OrderOptions.NONE)
+            } else {
+                sortListBy(newOrder)
+            }
+        }
+    }
+
+    private fun onMacroZoneClicked(id: Int) {
+        val macroZone = W2CLocation.getZoning().macrozones.find { it.idMacrozone == id }
+        macroZone?.let { mZ ->
+            if (mZ.zones.isEmpty()) {
+                // keep as toast/dialog in host if desired
+            } else {
+                viewModelScope.launch {
+                    _uiEffect.emit(MacroZoningUiEffect.EmitManualZoningNavigationTrue)
+                    _uiEffect.emit(MacroZoningUiEffect.NavigateToZoning(id))
+                }
+            }
+        }
+    }
+
+    private fun copyListValues(list: List<Macrozone>): List<Macrozone> {
+        val listToReturn = mutableListOf<Macrozone>()
+        list.forEach { listToReturn.add(it.copyValues()) }
+        return listToReturn
+    }
+
+    override fun onCleared() {
+        removeHandlerCallback()
+        super.onCleared()
+    }
+}
+
+// -----------------------------
+// COMPOSABLE SCREEN
+// -----------------------------
+
+@Composable
+fun MacroZoningScreen(
+    viewModel: MacroZoningViewModel,
+    sharedViewModel: MacroZoningMainActivityViewModel,
+    onNavigateToZoning: (Int) -> Unit,
+    onNavigateToPendingTrips: () -> Unit,
+    onNavigateToPreReservationTrips: () -> Unit,
+    onShowNoPendingToast: () -> Unit,
+    onShowNoFavouriteZonesDialog: () -> Unit,
+    onEmitManualZoningNavigation: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(MacroZoningUiEvent.OnResume)
+        viewModel.checkPendingServiceOnForHirePermission()
+        viewModel.checkPendingServiceOnHiredPermission()
+        viewModel.checkHasZonesInFavourites()
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is MacroZoningUiEffect.NavigateToZoning -> onNavigateToZoning(effect.macroZoneId)
+                MacroZoningUiEffect.NavigateToPendingTrips -> onNavigateToPendingTrips()
+                MacroZoningUiEffect.NavigateToPreReservationTrips -> onNavigateToPreReservationTrips()
+                MacroZoningUiEffect.ShowNoPendingToast -> onShowNoPendingToast()
+                MacroZoningUiEffect.ShowNoFavouriteZonesDialog -> onShowNoFavouriteZonesDialog()
+                MacroZoningUiEffect.EmitManualZoningNavigationTrue -> onEmitManualZoningNavigation(true)
+                MacroZoningUiEffect.EmitManualZoningNavigationFalse -> onEmitManualZoningNavigation(false)
+                MacroZoningUiEffect.OpenFilterBottomSheet -> Unit
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.onEvent(MacroZoningUiEvent.OnPause) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        LinearProgressIndicator(
+            progress = { uiState.refreshProgress / 1000f },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp)
+        )
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            Column {
+                MacroZoningHeader(
+                    state = uiState,
+                    onHeaderClick = { viewModel.onEvent(MacroZoningUiEvent.OnHeaderClicked(it)) }
+                )
+                MacroZonesList(
+                    items = uiState.macroZones,
+                    onClick = { viewModel.onEvent(MacroZoningUiEvent.OnMacroZoneClicked(it)) }
+                )
+            }
+        }
+
+        MacroZoningBottomButtons(
+            state = uiState.buttons,
+            showPreReservation = uiState.showPreReservationButton,
+            onPreReservation = { viewModel.onEvent(MacroZoningUiEvent.OnPreReservationClicked) },
+            onPending = { viewModel.onEvent(MacroZoningUiEvent.OnPendingClicked) }
+        )
+    }
+}
+
+@Composable
+private fun MacroZoningHeader(
+    state: MacroZoningUiState,
+    onHeaderClick: (OrderOptions) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(60.dp)
+            .background(Color.Black)
+    ) {
+        Text(
+            text = state.dataTypes ?: "",
+            color = Color.White,
+            modifier = Modifier
+                .weight(1f)
+                .clickable { onHeaderClick(OrderOptions.NAME) }
+                .padding(8.dp)
+        )
+    }
+}
+
+@Composable
+private fun MacroZonesList(
+    items: List<MacroZoneModel>,
+    onClick: (Int) -> Unit
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(items) { item ->
+            Text(
+                text = item.macroZone.nombreMacrozone,
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(item.macroZone.idMacrozone) }
+                    .padding(12.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MacroZoningBottomButtons(
+    state: MacroZoningButtonsState,
+    showPreReservation: Boolean,
+    onPreReservation: () -> Unit,
+    onPending: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(72.dp)
+            .background(Color.Black)
+    ) {
+        if (showPreReservation && state.preReservation.visible) {
+            ComposeCustomButton(
+                text = "PRERESERVATION",
+                style = state.preReservation.style,
+                background = state.preReservation.background,
+                onClick = onPreReservation
+            )
+        }
+        if (state.pending.visible) {
+            ComposeCustomButton(
+                text = "PENDIENTES",
+                style = state.pending.style,
+                background = state.pending.background,
+                onClick = onPending
+            )
+        }
+    }
+}
+
+@Composable
+fun ComposeCustomButton(
+    text: String,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit
+) {
+    val bgColor = when (style) {
+        CustomButton.StyleButton.DISABLE -> Color.Gray
+        CustomButton.StyleButton.LOADING -> Color.DarkGray
+        CustomButton.StyleButton.ENABLE -> when (background) {
+            CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+            CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+            CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+            CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+            CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+            CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+            CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+            CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .padding(1.dp)
+            .fillMaxHeight()
+            .background(bgColor)
+            .clickable(enabled = style == CustomButton.StyleButton.ENABLE) { onClick() }
+            .padding(8.dp)
+    ) {
+        Text(text = text, color = Color.White)
+    }
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

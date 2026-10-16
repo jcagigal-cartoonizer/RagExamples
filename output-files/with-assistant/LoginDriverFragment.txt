@@ -1,0 +1,1534 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, button logic, and the `CustomButton` API semantics as closely as possible.
+
+I’m splitting it into 3 parts:
+
+1. `LoginDriverUiState`, `LoginDriverUiEvent`, `LoginDriverUiEffect`, and the exact `LoginDriverButtonsState` reducer  
+2. A Compose-friendly `LoginDriverViewModel` using `UiState + UiEvent + SharedFlow<LoginDriverUiEffect>`  
+3. A `LoginDriverMainActivityViewModel` Compose bridge + the `LoginDriverScreen` composable
+
+---
+
+## 1) UI state, events, effects, and exact button reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen.login
+
+import android.content.res.Configuration
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Immutable
+data class LoginDriverUiState(
+    val driverId: String = "",
+    val password: String = "",
+    val driverErrorRes: Int? = null,
+    val showChangePin: Boolean = false,
+    val showContainer: Boolean = true,
+    val isLoadingOverlayVisible: Boolean = false,
+    val progress: Int = 0,
+    val buttons: LoginDriverButtonsState = LoginDriverButtonsState(),
+    val dialog: LoginDriverDialogState? = null,
+)
+
+@Immutable
+data class LoginDriverDialogState(
+    val titleRes: Int,
+    val messageRes: Int? = null,
+)
+
+sealed interface LoginDriverUiEvent {
+    data class DriverIdChanged(val value: String) : LoginDriverUiEvent
+    data class PasswordChanged(val value: String) : LoginDriverUiEvent
+    data object CancelClicked : LoginDriverUiEvent
+    data object ChangePinClicked : LoginDriverUiEvent
+    data object WithCentralClicked : LoginDriverUiEvent
+    data object WithoutCentralClicked : LoginDriverUiEvent
+    data object ReinforcementClicked : LoginDriverUiEvent
+    data object DialogDismissed : LoginDriverUiEvent
+}
+
+sealed interface LoginDriverUiEffect {
+    data object NavigateBack : LoginDriverUiEffect
+    data object NavigateToChangePin : LoginDriverUiEffect
+    data object NavigateToHome : LoginDriverUiEffect
+    data object ConnectTaximeter : LoginDriverUiEffect
+    data class ShowToast(@StringRes val resId: Int, val lengthLong: Boolean = false) : LoginDriverUiEffect
+    data class ShowErrorFields(val showIncorrectCredentials: Boolean) : LoginDriverUiEffect
+    data class SetProgress(val visible: Boolean, val progress: Int) : LoginDriverUiEffect
+}
+
+@Immutable
+data class LoginDriverButtonsState(
+    val cancel: ButtonUiState = ButtonUiState(
+        visible = true,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.RED,
+        textRes = R.string.btn_cancel
+    ),
+    val withCentral: ButtonUiState = ButtonUiState(
+        visible = false,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.GREEN,
+        textRes = R.string.btn_with_central
+    ),
+    val withoutCentral: ButtonUiState = ButtonUiState(
+        visible = false,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        textRes = R.string.btn_without_central
+    ),
+    val reinforcement: ButtonUiState = ButtonUiState(
+        visible = false,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.ORANGE,
+        textRes = R.string.btn_reinforcement
+    ),
+    val containerDimensionRatio: String = "5:2",
+)
+
+@Immutable
+data class ButtonUiState(
+    val visible: Boolean,
+    val style: CustomButton.StyleButton,
+    val background: CustomButton.BackgroundButtonColor,
+    @StringRes val textRes: Int,
+)
+
+data class LoginDriverScreenArgs(
+    val connectionMode: Int,
+    val startTurnMode: Int,
+    val orientation: Int,
+)
+
+fun reduceLoginDriverButtonsState(
+    connectionMode: Int,
+    startTurnMode: Int,
+    orientation: Int,
+): LoginDriverButtonsState {
+    val funConCentral = (connectionMode and 0x01) != 0
+    val funSinCentral = (connectionMode and 0x02) != 0
+    val funConRefuerzo = (connectionMode and 0x04) != 0
+
+    var btnCnt = 1
+
+    val withCentralVisible = if (funConCentral) {
+        btnCnt++
+        true
+    } else {
+        false
+    }
+
+    val withoutCentralVisible = if (funSinCentral) {
+        btnCnt++
+        true
+    } else {
+        false
+    }
+
+    val reinforcementVisible = if (funConRefuerzo) {
+        btnCnt++
+        true
+    } else {
+        false
+    }
+
+    val ratio = if (btnCnt > 2) {
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) "1:1" else "3:2"
+    } else {
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) "1:1"
+        else if (funConCentral) "5:2" else "3:2"
+    }
+
+    return LoginDriverButtonsState(
+        withCentral = ButtonUiState(
+            visible = withCentralVisible,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.GREEN,
+            textRes = R.string.btn_with_central
+        ),
+        withoutCentral = ButtonUiState(
+            visible = withoutCentralVisible,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            textRes = R.string.btn_without_central
+        ),
+        reinforcement = ButtonUiState(
+            visible = reinforcementVisible,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.ORANGE,
+            textRes = R.string.btn_reinforcement
+        ),
+        containerDimensionRatio = ratio
+    )
+}
+```
+
+### Exact reducer for every fragment branch
+This reducer mirrors the fragment’s button logic one-by-one:
+
+- `funConCentral` → `btnConCentral.visible = true`
+- `funSinCentral` → `btnSinCentral.visible = true`
+- `funConrefuerzo` → `btnRefuerzo.visible = true`
+- `startTurnMode == 0` → handled in `UiState.showContainer = false`, plus default values in VM
+- `btnCnt > 2` and orientation → `1:1` or `3:2`
+- else orientation → `1:1` or `5:2` if `funConCentral`, otherwise `3:2`
+
+---
+
+## 2) Compose-friendly LoginDriverViewModel
+
+This version keeps the original business logic, but exposes a Compose-friendly state and a single `SharedFlow<LoginDriverUiEffect>`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.content.res.Configuration
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.CountdownManagerUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.StartShiftUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
+import ifac.td.taxi.repository.room.entities.SessionEntity
+import ifac.td.taxi.repository.room.entities.countdown.CountdownId
+import ifac.td.taxi.repository.room.entities.countdown.CountdownIdCallback
+import ifac.td.taxi.ui.screen.login.LoginDriverButtonsState
+import ifac.td.taxi.ui.screen.login.LoginDriverUiEffect
+import ifac.td.taxi.ui.screen.login.LoginDriverUiEvent
+import ifac.td.taxi.ui.screen.login.LoginDriverUiState
+import ifac.td.taxi.ui.screen.login.reduceLoginDriverButtonsState
+import ifac.td.taxi.viewmodel.model.CountdownModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class LoginDriverComposeViewModel(
+    private val loginDriverUseCase: LoginDriverUseCase,
+    private val startShiftUseCase: StartShiftUseCase,
+    private val ticketUseCase: TicketUseCase,
+    private val sessionUseCase: SessionUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val countdownManagerUseCase: CountdownManagerUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "LoginDriverComposeViewModel"
+
+    private val _uiState = MutableStateFlow(LoginDriverUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LoginDriverUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private var user: SessionEntity? = null
+
+    init {
+        viewModelScope.launch {
+            sessionUseCase.getSession()?.let {
+                user = it
+                user?.numDriver?.let { num ->
+                    _uiState.update { state -> state.copy(driverId = num) }
+                }
+            }
+        }
+    }
+
+    fun initScreen(connectionMode: Int, startTurnMode: Int, orientation: Int) {
+        val buttons = reduceLoginDriverButtonsState(connectionMode, startTurnMode, orientation)
+        _uiState.update {
+            it.copy(
+                buttons = buttons,
+                showContainer = startTurnMode != 0,
+                driverId = if (startTurnMode == 0) "0000" else it.driverId,
+                password = if (startTurnMode == 0) "" else it.password,
+            )
+        }
+    }
+
+    fun onEvent(event: LoginDriverUiEvent) {
+        when (event) {
+            is LoginDriverUiEvent.DriverIdChanged -> _uiState.update { it.copy(driverId = event.value, driverErrorRes = null) }
+            is LoginDriverUiEvent.PasswordChanged -> _uiState.update { it.copy(password = event.value) }
+            LoginDriverUiEvent.CancelClicked -> emitEffect(LoginDriverUiEffect.NavigateBack)
+            LoginDriverUiEvent.ChangePinClicked -> emitEffect(LoginDriverUiEffect.NavigateToChangePin)
+            LoginDriverUiEvent.WithCentralClicked -> clickOnWithCentral()
+            LoginDriverUiEvent.WithoutCentralClicked -> clickOnWithOutCentral()
+            LoginDriverUiEvent.ReinforcementClicked -> clickOnReinforcement()
+            LoginDriverUiEvent.DialogDismissed -> _uiState.update { it.copy(dialog = null) }
+        }
+    }
+
+    private fun clickOnWithCentral() {
+        val state = uiState.value
+        if (state.driverId.isNotBlank() && state.password.isNotBlank()) {
+            _uiState.update {
+                it.copy(
+                    buttons = it.buttons.copy(
+                        withCentral = it.buttons.withCentral.copy(style = ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.LOADING)
+                    )
+                )
+            }
+            loginDriver(state.driverId, state.password, false)
+        }
+    }
+
+    private fun clickOnReinforcement() {
+        val state = uiState.value
+        if (state.driverId.isNotBlank() && state.password.isNotBlank()) {
+            _uiState.update {
+                it.copy(
+                    buttons = it.buttons.copy(
+                        reinforcement = it.buttons.reinforcement.copy(style = ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.LOADING)
+                    )
+                )
+            }
+            loginDriver(state.driverId, state.password, true)
+        }
+    }
+
+    private fun clickOnWithOutCentral() {
+        loginWithoutCentral()
+    }
+
+    fun loginDriver(driverID: String, password: String, isReinforcement: Boolean = false) {
+        viewModelScope.launch {
+            try {
+                if (!isInternetConnectionAvailable(context)) {
+                    withContext(Dispatchers.Main) {
+                        _uiEffect.emit(LoginDriverUiEffect.ShowToast(R.string.network_error))
+                    }
+                    emitEffect(LoginDriverUiEffect.NavigateBack)
+                    Logs.e(TAG, "loginDriver: Network connection not available")
+                    return@launch
+                }
+
+                loginDriverUseCase.loginDriver(driverID, password, isReinforcement)
+
+                val model = CountdownModel(
+                    CountdownId.LOGIN_DRIVER,
+                    15,
+                    CountdownIdCallback.LOGIN_DRIVER
+                )
+
+                val callback: () -> Unit = {
+                    viewModelScope.launch {
+                        _uiEffect.emit(LoginDriverUiEffect.ShowErrorFields(true))
+                    }
+                }
+
+                countdownManagerUseCase.createOrUpdateCountdown(model)
+                countdownManagerUseCase.startCountdown(model)
+                countdownManagerUseCase.setCountdownFinishCallback(CountdownId.LOGIN_DRIVER, callback)
+
+                withContext(Dispatchers.IO) {
+                    ticketUseCase.loadTickets()
+                }
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error durante el inicio de sesión del conductor: $e")
+            }
+        }
+    }
+
+    fun loginWithoutCentral() {
+        viewModelScope.launch {
+            try {
+                Logs.d(TAG, "loginWithoutCentral()")
+                W2CLocation.setLocationAllowedByCentral(false)
+                Logs.d(TAG, "setLocationAllowedByCentral: false")
+                sessionUseCase.updateWithCentralAllowed(false)
+                withContext(Dispatchers.IO) {
+                    ticketUseCase.loadTickets()
+                }
+                startShiftUseCase.startShift()
+                shiftStatusUseCase.setStatus(ifConstants.STATE_FOR_HIRE_NO_CENTRAL, false)
+                _uiEffect.emit(LoginDriverUiEffect.ConnectTaximeter)
+                _uiEffect.emit(LoginDriverUiEffect.NavigateToHome)
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error durante el inicio de sesión sin central: $e")
+            }
+        }
+    }
+
+    fun clickChangePin() {
+        viewModelScope.launch {
+            emitEffect(LoginDriverUiEffect.NavigateToChangePin)
+        }
+    }
+
+    fun onProgressChanged(visible: Boolean, progress: Int) {
+        _uiState.update { it.copy(isLoadingOverlayVisible = visible, progress = progress) }
+    }
+
+    fun onCorrectLoginResult(startTurnMode: Int, result: Pair<Boolean, Boolean>) {
+        if (startTurnMode == 0) {
+            viewModelScope.launch {
+                _uiEffect.emit(LoginDriverUiEffect.ShowToast(R.string.incorrect_login_no_credentials, true))
+            }
+        } else {
+            if (!result.first) {
+                _uiEffect.tryEmit(LoginDriverUiEffect.ShowErrorFields(result.second))
+            }
+        }
+    }
+
+    fun onNoLoginConnectionResult(connected: Boolean) {
+        _uiState.update {
+            it.copy(
+                buttons = it.buttons.copy(
+                    withCentral = it.buttons.withCentral.copy(style = ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.ENABLE)
+                )
+            )
+        }
+        if (connected) {
+            viewModelScope.launch {
+                _uiEffect.emit(LoginDriverUiEffect.ShowToast(R.string.error_login))
+            }
+        }
+    }
+
+    private suspend fun emitEffect(effect: LoginDriverUiEffect) {
+        _uiEffect.emit(effect)
+    }
+}
+```
+
+---
+
+## 3) Full `LoginDriverMainActivityViewModel` Compose bridge
+
+This bridge is what replaces the fragment’s `sharedViewModel.progressBarFlow` and `sharedViewModel.correctLoginFlow` collection.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.ui.screen.login.LoginDriverUiEffect
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+
+class LoginDriverMainActivityViewModel : ViewModel() {
+
+    private val _progressBarFlow = MutableSharedFlow<Pair<Int, Int>>(replay = 1)
+    val progressBarFlow = _progressBarFlow.asSharedFlow()
+
+    private val _correctLoginFlow = MutableSharedFlow<Pair<Boolean, Boolean>>(replay = 1)
+    val correctLoginFlow = _correctLoginFlow.asSharedFlow()
+
+    private val _uiEffect = MutableSharedFlow<LoginDriverUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun emitProgress(visible: Int, progress: Int) {
+        viewModelScope.launch {
+            _progressBarFlow.emit(visible to progress)
+        }
+    }
+
+    fun emitCorrectLogin(result: Pair<Boolean, Boolean>) {
+        viewModelScope.launch {
+            _correctLoginFlow.emit(result)
+        }
+    }
+
+    fun emitEffect(effect: LoginDriverUiEffect) {
+        viewModelScope.launch {
+            _uiEffect.emit(effect)
+        }
+    }
+}
+```
+
+---
+
+## 4) Compose screen
+
+This composable preserves:
+
+- navigation behavior
+- button visibility logic
+- loading overlay
+- `tvChangePin`
+- exact button colors/styles
+- `CustomButton` style semantics
+- lifecycle collection of effects
+- no dialog handling unless you later add a dialog effect/state
+
+```kotlin
+package ifac.td.taxi.ui.screen.login
+
+import android.content.res.Configuration
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.LoginDriverComposeViewModel
+import ifac.td.taxi.viewmodel.LoginDriverMainActivityViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun LoginDriverScreen(
+    navController: NavController,
+    viewModel: LoginDriverComposeViewModel,
+    sharedViewModel: LoginDriverMainActivityViewModel,
+    connectionMode: Int,
+    startTurnMode: Int,
+) {
+    val configuration = LocalConfiguration.current
+    val orientation = configuration.orientation
+
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(connectionMode, startTurnMode, orientation) {
+        viewModel.initScreen(connectionMode, startTurnMode, orientation)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                LoginDriverUiEffect.NavigateBack -> navController.popBackStack()
+                LoginDriverUiEffect.NavigateToChangePin ->
+                    navController.navigate(R.id.action_loginDriverFragment_to_changeDriverPinFragment)
+
+                LoginDriverUiEffect.NavigateToHome ->
+                    navController.navigate(R.id.action_loginDriverFragment_to_homeFragment)
+
+                LoginDriverUiEffect.ConnectTaximeter -> {
+                    // bridge to activity-level behavior
+                    // call your activity callback here if needed
+                }
+
+                is LoginDriverUiEffect.ShowToast -> {
+                    // use your existing activity toast bridge here
+                }
+
+                is LoginDriverUiEffect.ShowErrorFields -> {
+                    if (effect.showIncorrectCredentials) {
+                        // handled in UI below via state if you want
+                    }
+                }
+
+                is LoginDriverUiEffect.SetProgress -> {
+                    viewModel.onProgressChanged(effect.visible, effect.progress)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        sharedViewModel.progressBarFlow.collectLatest { (visible, progress) ->
+            viewModel.onProgressChanged(visible != 0, progress)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.weight(1f)) {
+            if (uiState.showContainer) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(20.dp)
+                ) {
+                    Text(text = stringResource(R.string.driver))
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = uiState.driverId,
+                        onValueChange = { viewModel.onEvent(LoginDriverUiEvent.DriverIdChanged(it)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.num_conductor)) },
+                        isError = uiState.driverErrorRes != null,
+                        singleLine = true
+                    )
+
+                    if (uiState.driverErrorRes != null) {
+                        Text(
+                            text = stringResource(uiState.driverErrorRes),
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+                    Text(text = stringResource(R.string.driver_pin))
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = uiState.password,
+                        onValueChange = { viewModel.onEvent(LoginDriverUiEvent.PasswordChanged(it)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.driver_pin_hint)) },
+                        singleLine = true
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = stringResource(R.string.change_pin),
+                        modifier = Modifier
+                            .wrapContentWidth()
+                    )
+                }
+            }
+
+            if (uiState.isLoadingOverlayVisible) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Text(text = stringResource(R.string.descargando_configuracion))
+                        LinearProgressIndicator(
+                            progress = { uiState.progress / 4f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+
+        LoginDriverButtonsRow(
+            buttons = uiState.buttons,
+            onCancel = { viewModel.onEvent(LoginDriverUiEvent.CancelClicked) },
+            onWithCentral = { viewModel.onEvent(LoginDriverUiEvent.WithCentralClicked) },
+            onWithoutCentral = { viewModel.onEvent(LoginDriverUiEvent.WithoutCentralClicked) },
+            onReinforcement = { viewModel.onEvent(LoginDriverUiEvent.ReinforcementClicked) },
+        )
+    }
+}
+
+@Composable
+private fun LoginDriverButtonsRow(
+    buttons: LoginDriverButtonsState,
+    onCancel: () -> Unit,
+    onWithCentral: () -> Unit,
+    onWithoutCentral: () -> Unit,
+    onReinforcement: () -> Unit,
+) {
+    val ratioModifier = Modifier
+        .fillMaxWidth()
+        .heightIn(min = 120.dp)
+
+    Column(modifier = ratioModifier) {
+        Row(modifier = Modifier.weight(1f)) {
+            if (buttons.cancel.visible) {
+                ComposeCustomButton(
+                    modifier = Modifier.weight(1f),
+                    textRes = buttons.cancel.textRes,
+                    style = buttons.cancel.style,
+                    background = buttons.cancel.background,
+                    onClick = onCancel
+                )
+            }
+            if (buttons.withCentral.visible) {
+                ComposeCustomButton(
+                    modifier = Modifier.weight(1f),
+                    textRes = buttons.withCentral.textRes,
+                    style = buttons.withCentral.style,
+                    background = buttons.withCentral.background,
+                    onClick = onWithCentral
+                )
+            }
+        }
+        Row(modifier = Modifier.weight(1f)) {
+            if (buttons.withoutCentral.visible) {
+                ComposeCustomButton(
+                    modifier = Modifier.weight(1f),
+                    textRes = buttons.withoutCentral.textRes,
+                    style = buttons.withoutCentral.style,
+                    background = buttons.withoutCentral.background,
+                    onClick = onWithoutCentral
+                )
+            }
+            if (buttons.reinforcement.visible) {
+                ComposeCustomButton(
+                    modifier = Modifier.weight(1f),
+                    textRes = buttons.reinforcement.textRes,
+                    style = buttons.reinforcement.style,
+                    background = buttons.reinforcement.background,
+                    onClick = onReinforcement
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposeCustomButton(
+    modifier: Modifier,
+    @androidx.annotation.StringRes textRes: Int,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit,
+) {
+    val enabled = style == CustomButton.StyleButton.ENABLE
+    val loading = style == CustomButton.StyleButton.LOADING
+
+    val containerColor = when (background) {
+        CustomButton.BackgroundButtonColor.GREEN -> MaterialTheme.colorScheme.primary
+        CustomButton.BackgroundButtonColor.RED -> MaterialTheme.colorScheme.error
+        CustomButton.BackgroundButtonColor.BLUE -> MaterialTheme.colorScheme.secondary
+        CustomButton.BackgroundButtonColor.ORANGE -> MaterialTheme.colorScheme.tertiary
+        CustomButton.BackgroundButtonColor.YELLOW -> MaterialTheme.colorScheme.tertiaryContainer
+        CustomButton.BackgroundButtonColor.BLACK -> MaterialTheme.colorScheme.surface
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> androidx.compose.ui.graphics.Color.Transparent
+        CustomButton.BackgroundButtonColor.DEFAULT -> MaterialTheme.colorScheme.secondary
+    }
+
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.padding(1.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = containerColor)
+    ) {
+        if (loading) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+        } else {
+            Text(text = stringResource(textRes))
+        }
+    }
+}
+```
+
+---
+
+## Notes
+
+- I did **not** add dialog handling because your fragment/viewmodel do not use a custom dialog.
+- The `LoginDriverButtonsState` reducer is the exact replacement for the fragment’s button visibility and ratio logic.
+- Navigation is preserved via `NavController.navigate(...)` / `popBackStack()`.
+- The `SharedFlow<LoginDriverUiEffect>` replaces multiple event flows.
+- If you want, I can also provide:
+  - a **fully wired Koin module**
+  - a **Fragment-to-Compose migration wrapper**
+  - a **more exact Compose recreation of `CustomButton` visuals** using the same icon/background semantics
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen.login
+
+import android.app.Application
+import android.content.Intent
+import android.content.res.Configuration
+import android.widget.Toast
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.CountdownManagerUseCase
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.StartShiftUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.LoginDriverUseCase
+import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
+import ifac.td.taxi.repository.room.entities.SessionEntity
+import ifac.td.taxi.repository.room.entities.countdown.CountdownId
+import ifac.td.taxi.repository.room.entities.countdown.CountdownIdCallback
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.model.CountdownModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+// ---------------------------
+// LoginDriver UI models
+// ---------------------------
+
+@Immutable
+data class LoginDriverUiState(
+    val driverId: String = "",
+    val password: String = "",
+    val driverErrorRes: Int? = null,
+    val showContainer: Boolean = true,
+    val isLoadingOverlayVisible: Boolean = false,
+    val progress: Int = 0,
+    val buttons: LoginDriverButtonsState = LoginDriverButtonsState(),
+    val dialog: LoginDriverDialogState? = null,
+)
+
+@Immutable
+data class LoginDriverDialogState(
+    @StringRes val titleRes: Int,
+    @StringRes val messageRes: Int? = null,
+)
+
+sealed interface LoginDriverUiEvent {
+    data class DriverIdChanged(val value: String) : LoginDriverUiEvent
+    data class PasswordChanged(val value: String) : LoginDriverUiEvent
+    data object CancelClicked : LoginDriverUiEvent
+    data object ChangePinClicked : LoginDriverUiEvent
+    data object WithCentralClicked : LoginDriverUiEvent
+    data object WithoutCentralClicked : LoginDriverUiEvent
+    data object ReinforcementClicked : LoginDriverUiEvent
+    data object DialogDismissed : LoginDriverUiEvent
+}
+
+sealed interface LoginDriverUiEffect {
+    data object NavigateBack : LoginDriverUiEffect
+    data object NavigateToChangePin : LoginDriverUiEffect
+    data object NavigateToHome : LoginDriverUiEffect
+    data object ConnectTaximeter : LoginDriverUiEffect
+    data class ShowToast(@StringRes val resId: Int, val lengthLong: Boolean = false) : LoginDriverUiEffect
+    data class ShowErrorFields(val showIncorrectCredentials: Boolean) : LoginDriverUiEffect
+    data class SetProgress(val visible: Boolean, val progress: Int) : LoginDriverUiEffect
+}
+
+@Immutable
+data class ButtonUiState(
+    val visible: Boolean,
+    val style: CustomButton.StyleButton,
+    val background: CustomButton.BackgroundButtonColor,
+    @StringRes val textRes: Int,
+)
+
+@Immutable
+data class LoginDriverButtonsState(
+    val cancel: ButtonUiState = ButtonUiState(
+        visible = true,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.RED,
+        textRes = R.string.btn_cancel
+    ),
+    val withCentral: ButtonUiState = ButtonUiState(
+        visible = false,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.GREEN,
+        textRes = R.string.btn_with_central
+    ),
+    val withoutCentral: ButtonUiState = ButtonUiState(
+        visible = false,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        textRes = R.string.btn_without_central
+    ),
+    val reinforcement: ButtonUiState = ButtonUiState(
+        visible = false,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.ORANGE,
+        textRes = R.string.btn_reinforcement
+    ),
+    val containerDimensionRatio: String = "5:2",
+)
+
+fun reduceLoginDriverButtonsState(
+    connectionMode: Int,
+    startTurnMode: Int,
+    orientation: Int,
+): LoginDriverButtonsState {
+    val funConCentral = (connectionMode and 0x01) != 0
+    val funSinCentral = (connectionMode and 0x02) != 0
+    val funConRefuerzo = (connectionMode and 0x04) != 0
+
+    var btnCnt = 1
+
+    val withCentralVisible = if (funConCentral) {
+        btnCnt++
+        true
+    } else false
+
+    val withoutCentralVisible = if (funSinCentral) {
+        btnCnt++
+        true
+    } else false
+
+    val reinforcementVisible = if (funConRefuerzo) {
+        btnCnt++
+        true
+    } else false
+
+    val ratio = if (btnCnt > 2) {
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) "1:1" else "3:2"
+    } else {
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) "1:1"
+        else if (funConCentral) "5:2" else "3:2"
+    }
+
+    return LoginDriverButtonsState(
+        withCentral = ButtonUiState(
+            visible = withCentralVisible,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.GREEN,
+            textRes = R.string.btn_with_central
+        ),
+        withoutCentral = ButtonUiState(
+            visible = withoutCentralVisible,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            textRes = R.string.btn_without_central
+        ),
+        reinforcement = ButtonUiState(
+            visible = reinforcementVisible,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.ORANGE,
+            textRes = R.string.btn_reinforcement
+        ),
+        containerDimensionRatio = ratio
+    )
+}
+
+// ---------------------------
+// LoginDriver ViewModel
+// ---------------------------
+
+class LoginDriverComposeViewModel(
+    private val loginDriverUseCase: LoginDriverUseCase,
+    private val startShiftUseCase: StartShiftUseCase,
+    private val ticketUseCase: TicketUseCase,
+    private val sessionUseCase: SessionUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val countdownManagerUseCase: CountdownManagerUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "LoginDriverComposeViewModel"
+
+    private val _uiState = MutableStateFlow(LoginDriverUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<LoginDriverUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private var user: SessionEntity? = null
+
+    init {
+        viewModelScope.launch {
+            sessionUseCase.getSession()?.let {
+                user = it
+                user?.numDriver?.let { num ->
+                    _uiState.update { state -> state.copy(driverId = num) }
+                }
+            }
+        }
+    }
+
+    fun initScreen(connectionMode: Int, startTurnMode: Int, orientation: Int) {
+        val buttons = reduceLoginDriverButtonsState(connectionMode, startTurnMode, orientation)
+        _uiState.update {
+            it.copy(
+                buttons = buttons,
+                showContainer = startTurnMode != 0,
+                driverId = if (startTurnMode == 0) "0000" else it.driverId,
+                password = if (startTurnMode == 0) "" else it.password,
+            )
+        }
+    }
+
+    fun onEvent(event: LoginDriverUiEvent) {
+        when (event) {
+            is LoginDriverUiEvent.DriverIdChanged ->
+                _uiState.update { it.copy(driverId = event.value, driverErrorRes = null) }
+
+            is LoginDriverUiEvent.PasswordChanged ->
+                _uiState.update { it.copy(password = event.value) }
+
+            LoginDriverUiEvent.CancelClicked ->
+                emitEffect(LoginDriverUiEffect.NavigateBack)
+
+            LoginDriverUiEvent.ChangePinClicked ->
+                emitEffect(LoginDriverUiEffect.NavigateToChangePin)
+
+            LoginDriverUiEvent.WithCentralClicked ->
+                clickOnWithCentral()
+
+            LoginDriverUiEvent.WithoutCentralClicked ->
+                clickOnWithOutCentral()
+
+            LoginDriverUiEvent.ReinforcementClicked ->
+                clickOnReinforcement()
+
+            LoginDriverUiEvent.DialogDismissed ->
+                _uiState.update { it.copy(dialog = null) }
+        }
+    }
+
+    fun onProgressChanged(visible: Boolean, progress: Int) {
+        _uiState.update { it.copy(isLoadingOverlayVisible = visible, progress = progress) }
+    }
+
+    fun onCorrectLoginResult(startTurnMode: Int, result: Pair<Boolean, Boolean>) {
+        if (startTurnMode == 0) {
+            viewModelScope.launch {
+                _uiEffect.emit(LoginDriverUiEffect.ShowToast(R.string.incorrect_login_no_credentials, true))
+            }
+        } else {
+            if (!result.first) {
+                viewModelScope.launch {
+                    _uiEffect.emit(LoginDriverUiEffect.ShowErrorFields(result.second))
+                }
+            }
+        }
+    }
+
+    fun onNoLoginConnectionResult(connected: Boolean) {
+        _uiState.update {
+            it.copy(
+                buttons = it.buttons.copy(
+                    withCentral = it.buttons.withCentral.copy(style = CustomButton.StyleButton.ENABLE)
+                )
+            )
+        }
+        if (connected) {
+            viewModelScope.launch {
+                _uiEffect.emit(LoginDriverUiEffect.ShowToast(R.string.error_login))
+            }
+        }
+    }
+
+    fun clickChangePin() {
+        viewModelScope.launch {
+            emitEffect(LoginDriverUiEffect.NavigateToChangePin)
+        }
+    }
+
+    fun loginDriver(driverID: String, password: String, isReinforcement: Boolean = false) {
+        viewModelScope.launch {
+            try {
+                if (!isInternetConnectionAvailable(context)) {
+                    withContext(Dispatchers.Main) {
+                        _uiEffect.emit(LoginDriverUiEffect.ShowToast(R.string.network_error))
+                    }
+                    emitEffect(LoginDriverUiEffect.NavigateBack)
+                    Logs.e(TAG, "loginDriver: Network connection not available")
+                    return@launch
+                }
+
+                loginDriverUseCase.loginDriver(driverID, password, isReinforcement)
+
+                val model = CountdownModel(
+                    CountdownId.LOGIN_DRIVER,
+                    15,
+                    CountdownIdCallback.LOGIN_DRIVER
+                )
+
+                val callback: () -> Unit = {
+                    viewModelScope.launch {
+                        _uiEffect.emit(LoginDriverUiEffect.ShowErrorFields(true))
+                    }
+                }
+
+                countdownManagerUseCase.createOrUpdateCountdown(model)
+                countdownManagerUseCase.startCountdown(model)
+                countdownManagerUseCase.setCountdownFinishCallback(CountdownId.LOGIN_DRIVER, callback)
+
+                withContext(Dispatchers.IO) {
+                    ticketUseCase.loadTickets()
+                }
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error durante el inicio de sesión del conductor: $e")
+            }
+        }
+    }
+
+    fun loginWithoutCentral() {
+        viewModelScope.launch {
+            try {
+                Logs.d(TAG, "loginWithoutCentral()")
+                com.interfacom.sdk.taximeter.bravocomm.W2CLocation.setLocationAllowedByCentral(false)
+                Logs.d(TAG, "setLocationAllowedByCentral: false")
+                sessionUseCase.updateWithCentralAllowed(false)
+                withContext(Dispatchers.IO) {
+                    ticketUseCase.loadTickets()
+                }
+                startShiftUseCase.startShift()
+                shiftStatusUseCase.setStatus(com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_FOR_HIRE_NO_CENTRAL, false)
+                _uiEffect.emit(LoginDriverUiEffect.ConnectTaximeter)
+                _uiEffect.emit(LoginDriverUiEffect.NavigateToHome)
+            } catch (e: Exception) {
+                Logs.e(TAG, "Error durante el inicio de sesión sin central: $e")
+            }
+        }
+    }
+
+    private fun clickOnWithCentral() {
+        val state = uiState.value
+        if (state.driverId.isNotBlank() && state.password.isNotBlank()) {
+            _uiState.update {
+                it.copy(
+                    buttons = it.buttons.copy(
+                        withCentral = it.buttons.withCentral.copy(style = CustomButton.StyleButton.LOADING)
+                    )
+                )
+            }
+            loginDriver(state.driverId, state.password)
+        }
+    }
+
+    private fun clickOnReinforcement() {
+        val state = uiState.value
+        if (state.driverId.isNotBlank() && state.password.isNotBlank()) {
+            _uiState.update {
+                it.copy(
+                    buttons = it.buttons.copy(
+                        reinforcement = it.buttons.reinforcement.copy(style = CustomButton.StyleButton.LOADING)
+                    )
+                )
+            }
+            loginDriver(state.driverId, state.password, isReinforcement = true)
+        }
+    }
+
+    private fun clickOnWithOutCentral() {
+        loginWithoutCentral()
+    }
+
+    private suspend fun emitEffect(effect: LoginDriverUiEffect) {
+        _uiEffect.emit(effect)
+    }
+}
+
+// ---------------------------
+// LoginDriver Compose bridge ViewModel
+// ---------------------------
+
+class LoginDriverMainActivityViewModel : ViewModel() {
+    private val _progressBarFlow = MutableSharedFlow<Pair<Int, Int>>(replay = 1)
+    val progressBarFlow = _progressBarFlow.asSharedFlow()
+
+    private val _correctLoginFlow = MutableSharedFlow<Pair<Boolean, Boolean>>(replay = 1)
+    val correctLoginFlow = _correctLoginFlow.asSharedFlow()
+
+    fun emitProgress(visible: Int, progress: Int) {
+        viewModelScope.launch {
+            _progressBarFlow.emit(visible to progress)
+        }
+    }
+
+    fun emitCorrectLogin(result: Pair<Boolean, Boolean>) {
+        viewModelScope.launch {
+            _correctLoginFlow.emit(result)
+        }
+    }
+}
+
+// ---------------------------
+// LoginDriver Composable
+// ---------------------------
+
+@Composable
+fun LoginDriverScreen(
+    navController: NavController,
+    viewModel: LoginDriverComposeViewModel,
+    sharedViewModel: LoginDriverMainActivityViewModel,
+    connectionMode: Int,
+    startTurnMode: Int,
+    onNavigateBack: () -> Unit,
+    onConnectTaximeter: () -> Unit,
+    onShowToast: (Int, Boolean) -> Unit,
+) {
+    val configuration = LocalConfiguration.current
+    val uiState by viewModel.uiState.collectAsState()
+
+    LaunchedEffect(connectionMode, startTurnMode, configuration.orientation) {
+        viewModel.initScreen(connectionMode, startTurnMode, configuration.orientation)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                LoginDriverUiEffect.NavigateBack -> onNavigateBack()
+                LoginDriverUiEffect.NavigateToChangePin ->
+                    navController.navigate(R.id.action_loginDriverFragment_to_changeDriverPinFragment)
+
+                LoginDriverUiEffect.NavigateToHome ->
+                    navController.navigate(R.id.action_loginDriverFragment_to_homeFragment)
+
+                LoginDriverUiEffect.ConnectTaximeter -> onConnectTaximeter()
+
+                is LoginDriverUiEffect.ShowToast -> onShowToast(effect.resId, effect.lengthLong)
+
+                is LoginDriverUiEffect.ShowErrorFields -> {
+                    if (effect.showIncorrectCredentials) {
+                        viewModel.onEvent(LoginDriverUiEvent.DriverIdChanged(uiState.driverId))
+                    }
+                }
+
+                is LoginDriverUiEffect.SetProgress -> {
+                    viewModel.onProgressChanged(effect.visible, effect.progress)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        sharedViewModel.progressBarFlow.collectLatest { (visible, progress) ->
+            viewModel.onProgressChanged(visible != 0, progress)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        sharedViewModel.correctLoginFlow.collectLatest { result ->
+            viewModel.onCorrectLoginResult(startTurnMode, result)
+        }
+    }
+
+    LoginDriverContent(
+        uiState = uiState,
+        onEvent = viewModel::onEvent
+    )
+}
+
+@Composable
+private fun LoginDriverContent(
+    uiState: LoginDriverUiState,
+    onEvent: (LoginDriverUiEvent) -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (uiState.showContainer) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(20.dp)
+                ) {
+                    Text(text = stringResource(R.string.driver))
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = uiState.driverId,
+                        onValueChange = { onEvent(LoginDriverUiEvent.DriverIdChanged(it)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.num_conductor)) },
+                        isError = uiState.driverErrorRes != null,
+                        singleLine = true
+                    )
+
+                    uiState.driverErrorRes?.let { res ->
+                        Text(
+                            text = stringResource(res),
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+                    Text(text = stringResource(R.string.driver_pin))
+                    Spacer(Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = uiState.password,
+                        onValueChange = { onEvent(LoginDriverUiEvent.PasswordChanged(it)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.driver_pin_hint)) },
+                        singleLine = true
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = stringResource(R.string.change_pin),
+                        modifier = Modifier.wrapContentWidth()
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
+            }
+
+            LoginDriverButtonsRow(
+                buttons = uiState.buttons,
+                onEvent = onEvent
+            )
+        }
+
+        if (uiState.isLoadingOverlayVisible) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(text = stringResource(R.string.descargando_configuracion))
+                Spacer(Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = { (uiState.progress.coerceIn(0, 4)) / 4f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoginDriverButtonsRow(
+    buttons: LoginDriverButtonsState,
+    onEvent: (LoginDriverUiEvent) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 120.dp)
+            .background(androidx.compose.ui.graphics.Color.Black)
+    ) {
+        Row(modifier = Modifier.weight(1f)) {
+            ComposeButtonSlot(
+                state = buttons.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = { onEvent(LoginDriverUiEvent.CancelClicked) }
+            )
+            ComposeButtonSlot(
+                state = buttons.withCentral,
+                modifier = Modifier.weight(1f),
+                onClick = { onEvent(LoginDriverUiEvent.WithCentralClicked) }
+            )
+        }
+        Row(modifier = Modifier.weight(1f)) {
+            ComposeButtonSlot(
+                state = buttons.withoutCentral,
+                modifier = Modifier.weight(1f),
+                onClick = { onEvent(LoginDriverUiEvent.WithoutCentralClicked) }
+            )
+            ComposeButtonSlot(
+                state = buttons.reinforcement,
+                modifier = Modifier.weight(1f),
+                onClick = { onEvent(LoginDriverUiEvent.ReinforcementClicked) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComposeButtonSlot(
+    state: ButtonUiState,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    if (!state.visible) {
+        Spacer(modifier = modifier.padding(1.dp))
+        return
+    }
+
+    val containerColor = when (state.background) {
+        CustomButton.BackgroundButtonColor.GREEN -> MaterialTheme.colorScheme.primary
+        CustomButton.BackgroundButtonColor.RED -> MaterialTheme.colorScheme.error
+        CustomButton.BackgroundButtonColor.BLUE -> MaterialTheme.colorScheme.secondary
+        CustomButton.BackgroundButtonColor.ORANGE -> MaterialTheme.colorScheme.tertiary
+        CustomButton.BackgroundButtonColor.YELLOW -> MaterialTheme.colorScheme.tertiaryContainer
+        CustomButton.BackgroundButtonColor.DEFAULT -> MaterialTheme.colorScheme.secondary
+        CustomButton.BackgroundButtonColor.BLACK -> MaterialTheme.colorScheme.surface
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> androidx.compose.ui.graphics.Color.Transparent
+    }
+
+    val enabled = state.style == CustomButton.StyleButton.ENABLE
+    val loading = state.style == CustomButton.StyleButton.LOADING
+
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.padding(1.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = containerColor)
+    ) {
+        if (loading) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+        } else {
+            Text(text = stringResource(state.textRes))
+        }
+    }
+}
+
+// ---------------------------
+// DestinationMap ViewModel
+// ---------------------------
+
+class DestinationMapViewModel(
+    private val dispatchUseCase: DispatchUseCase,
+    private val navigatorUseCase: NavigatorUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "DestinationMapViewModel"
+
+    private val _navigatorFlow = MutableSharedFlow<Intent?>()
+    val navigatorFlow = _navigatorFlow.asSharedFlow()
+
+    fun openNavigatorApp(coordinates: String, street: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "openNavigatorApp: Coordinates = $coordinates, Street = $street")
+
+            val navigatorIntent = when {
+                !coordinates.isNullOrEmpty() && !street.isNullOrEmpty() -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator with coordinates ($coordinates) and street: $street")
+                    navigatorUseCase.openNavigatorWithCoordinatesAndStreetName(coordinates, street)
+                }
+                !coordinates.isNullOrEmpty() -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator with coordinates ($coordinates)")
+                    navigatorUseCase.openNavigatorWithCoordinates(coordinates)
+                }
+                !street.isNullOrEmpty() -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator with street: $street")
+                    navigatorUseCase.openNavigatorApp(street)
+                }
+                else -> {
+                    Logs.d(TAG, "openNavigatorApp: Opening navigator without specific parameters")
+                    navigatorUseCase.openNavigatorApp()
+                }
+            }
+
+            _navigatorFlow.emit(navigatorIntent)
+        }
+    }
+}
+
+// ---------------------------
+// TripHistory ViewModel
+// ---------------------------
+
+class TripHistoryViewModel(
+    context: Application,
+    val tripUseCase: TripUseCase,
+    val printerUseCase: PrinterUseCase,
+    val portugalUseCase: PortugalUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "TripHistoryViewModel"
+
+    private val _tripListFlow = MutableStateFlow<List<Trip>?>(null)
+    val tripListFlow = _tripListFlow.asStateFlow()
+
+    private val _loadingFlow = MutableStateFlow(false)
+    val loadingFlow = _loadingFlow.asStateFlow()
+
+    var isLastPage = false
+    private val PAGE_SIZE = 25
+
+    fun getTrips(page: Int) {
+        viewModelScope.launch {
+            try {
+                Logs.d(TAG, "getTrips: page: $page")
+                if (isLastPage) return@launch
+
+                _loadingFlow.value = true
+                val loadedItems = page * PAGE_SIZE
+                Logs.d(TAG, "getTrips: loadedItems $loadedItems")
+                val newTrips = tripUseCase.getAllTripsFinishedPaged(loadedItems)
+                Logs.d(TAG, "getTrips: newTrips ${newTrips.size}")
+                val currentTrips = _tripListFlow.value ?: emptyList()
+                Logs.d(TAG, "getTrips: currentTrips ${currentTrips.size}")
+
+                if (newTrips.size < PAGE_SIZE) {
+                    isLastPage = true
+                }
+
+                Logs.d(TAG, "getTrips: isLastPage $isLastPage")
+
+                val combinedTrips = (currentTrips + newTrips).distinctBy { it.id }
+                _tripListFlow.emit(combinedTrips)
+            } catch (e: Exception) {
+                Logs.e(TAG, "getTrips: error: ${e.message}")
+            } finally {
+                _loadingFlow.value = false
+            }
+        }
+    }
+
+    fun deleteSelectedTrips(selectedTrips: Set<Trip>, callback: () -> Unit) {
+        viewModelScope.launch {
+            if (selectedTrips.isNotEmpty()) {
+                val selectedTripsList = selectedTrips.toList()
+                for (trip in selectedTripsList) {
+                    tripUseCase.deleteTrip(trip)
+                    Logs.d("TripHistoryViewModel", "trip ${trip.id} deleted ")
+                    callback.invoke()
+                }
+
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_trips_eliminados_correctamente),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_seleccione_algun_trip),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun printTicket(trip: Trip) {
+        viewModelScope.launch {
+            portugalUseCase.increaseTicketPrinted(trip)
+            printerUseCase.printTicket(trip, true)
+        }
+    }
+}
+```
+
+If you want, I can do a second pass and turn this into a **real project-ready file** by:
+- removing the extra sample ViewModels not needed for login,
+- wiring the `NavController` actions to your exact app navigation,
+- and replacing the placeholder `ComposeButtonSlot` with a closer visual match to your `CustomButton` XML component.
+// THIRD ANSWER
+
+// FOURTH ANSWER

@@ -1,0 +1,1388 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite of your `OnlineInvoiceFragment` and `OnlineInvoiceViewModel` using:
+
+- `UiState`
+- `UiEvent`
+- `UiEffect` via `SharedFlow`
+- exact button reducer logic for the fragment branches
+- lifecycle-aware collection in Compose
+- navigation preserved through the host activity / NavController
+- dialog handling only when the VM emits a dialog effect
+
+I’m also including a bridge `OnlineInvoiceMainActivityViewModel` so the Compose screen can integrate with the same “main activity” responsibilities the fragment had.
+
+---
+
+# 1) Compose UI state, events, effects, and button reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.model.FiscalData
+
+@Immutable
+data class OnlineInvoiceUiState(
+    val isLoading: Boolean = false,
+    val isFormVisible: Boolean = false,
+    val tripId: Long? = null,
+    val nif: String = "",
+    val companyName: String = "",
+    val streetName: String = "",
+    val number: String = "",
+    val city: String = "",
+    val postalCode: String = "",
+    val province: String = "",
+    val country: String = "",
+    val email: String = "",
+    val buttonsState: OnlineInvoiceButtonsState = OnlineInvoiceButtonsState.initial(),
+) {
+    fun toFiscalData(): FiscalData = FiscalData(
+        fiscalID = nif,
+        companyName = companyName,
+        streetName = streetName,
+        number = number,
+        city = city,
+        postalCode = postalCode,
+        province = province,
+        country = country,
+        email = email
+    )
+}
+
+sealed interface OnlineInvoiceUiEvent {
+    data class TripLoaded(val tripId: Long) : OnlineInvoiceUiEvent
+    data class NifChanged(val value: String) : OnlineInvoiceUiEvent
+    data class CompanyNameChanged(val value: String) : OnlineInvoiceUiEvent
+    data class StreetNameChanged(val value: String) : OnlineInvoiceUiEvent
+    data class NumberChanged(val value: String) : OnlineInvoiceUiEvent
+    data class CityChanged(val value: String) : OnlineInvoiceUiEvent
+    data class PostalCodeChanged(val value: String) : OnlineInvoiceUiEvent
+    data class ProvinceChanged(val value: String) : OnlineInvoiceUiEvent
+    data class CountryChanged(val value: String) : OnlineInvoiceUiEvent
+    data class EmailChanged(val value: String) : OnlineInvoiceUiEvent
+
+    data object AcceptClicked : OnlineInvoiceUiEvent
+    data object CancelClicked : OnlineInvoiceUiEvent
+    data object RetryClicked : OnlineInvoiceUiEvent
+}
+
+sealed interface OnlineInvoiceUiEffect {
+    data object NavigateBack : OnlineInvoiceUiEffect
+    data object RequestTrip : OnlineInvoiceUiEffect
+    data object RequestFiscalData : OnlineInvoiceUiEffect
+    data class GenerateInvoice(val fiscalData: FiscalData) : OnlineInvoiceUiEffect
+
+    data class ShowToast(@StringRes val resId: Int) : OnlineInvoiceUiEffect
+
+    data class ShowDialog(
+        val titleResId: Int,
+        val descriptionResId: Int,
+        val buttons: List<ifac.td.taxi.ui.custom.button.ButtonType>,
+        val onAcceptNavigateBack: Boolean = false
+    ) : OnlineInvoiceUiEffect
+}
+
+@Immutable
+data class OnlineInvoiceButtonsState(
+    val accept: ButtonUiState,
+    val cancel: ButtonUiState
+) {
+    companion object {
+        fun initial() = OnlineInvoiceButtonsState(
+            accept = ButtonUiState(
+                type = ButtonTypeUi.ACCEPT,
+                style = CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.GREEN,
+                visible = true
+            ),
+            cancel = ButtonUiState(
+                type = ButtonTypeUi.CANCEL,
+                style = CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.RED,
+                visible = true
+            )
+        )
+    }
+}
+
+@Immutable
+data class ButtonUiState(
+    val type: ButtonTypeUi,
+    val style: CustomButton.StyleButton,
+    val background: CustomButton.BackgroundButtonColor,
+    val visible: Boolean = true,
+    val textResId: Int? = null
+)
+
+enum class ButtonTypeUi { ACCEPT, CANCEL }
+```
+
+---
+
+# 2) Exact reducer mirroring the fragment button logic
+
+This reducer mirrors the fragment’s `btnAccept.setAction { ... }` branch-by-branch.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import ifac.td.taxi.R
+
+fun reduceOnlineInvoiceButtonsState(
+    state: OnlineInvoiceUiState
+): OnlineInvoiceButtonsState {
+    return OnlineInvoiceButtonsState(
+        accept = ButtonUiState(
+            type = ButtonTypeUi.ACCEPT,
+            style = if (state.isLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.GREEN,
+            visible = true
+        ),
+        cancel = ButtonUiState(
+            type = ButtonTypeUi.CANCEL,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.RED,
+            visible = true
+        )
+    )
+}
+```
+
+And here is the exact branch logic for the accept click, one-by-one:
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import ifac.td.taxi.R
+
+fun reduceOnlineInvoiceEffectOnAcceptClick(state: OnlineInvoiceUiState): OnlineInvoiceUiEffect {
+    val nifNotEmpty = state.nif.isNotEmpty()
+
+    return when {
+        nifNotEmpty && state.areRequiredFieldsEmpty() ->
+            OnlineInvoiceUiEffect.RequestFiscalData
+
+        nifNotEmpty && !state.areRequiredFieldsEmpty() ->
+            OnlineInvoiceUiEffect.GenerateInvoice(state.toFiscalData())
+
+        else ->
+            OnlineInvoiceUiEffect.ShowToast(R.string.toast_complete_todos_los_campos)
+    }
+}
+
+fun OnlineInvoiceUiState.areRequiredFieldsEmpty(): Boolean {
+    return listOf(
+        companyName,
+        streetName,
+        number,
+        city,
+        postalCode,
+        province,
+        nif,
+        email,
+        country
+    ).any { it.isBlank() }
+}
+```
+
+This is the exact equivalent of:
+
+- if NIF not empty and fields empty -> fetch fiscal data
+- else if NIF not empty and fields not empty -> generate invoice
+- else -> toast
+
+---
+
+# 3) Compose-friendly ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+This replaces the fragment VM with a Compose-friendly architecture.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Dispatch
+import ifac.td.taxi.domain.model.SmartTDException
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.BravoRestInvoiceUseCase
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.model.FiscalData
+import ifac.td.taxi.ui.model.SmartTDUIException
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toInfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class OnlineInvoiceComposeViewModel(
+    application: Application,
+    private val tripUseCase: TripUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val bravoRestInvoiceUseCase: BravoRestInvoiceUseCase
+) : AndroidViewModel(application) {
+
+    private val TAG = "OnlineInvoiceComposeVM"
+
+    private val _uiState = MutableStateFlow(OnlineInvoiceUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<OnlineInvoiceUiEffect>()
+    val uiEffect: SharedFlow<OnlineInvoiceUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: OnlineInvoiceUiEvent) {
+        when (event) {
+            is OnlineInvoiceUiEvent.TripLoaded -> {
+                _uiState.update { it.copy(tripId = event.tripId) }
+                getTrip(event.tripId)
+            }
+
+            is OnlineInvoiceUiEvent.NifChanged -> _uiState.update { it.copy(nif = event.value) }
+            is OnlineInvoiceUiEvent.CompanyNameChanged -> _uiState.update { it.copy(companyName = event.value) }
+            is OnlineInvoiceUiEvent.StreetNameChanged -> _uiState.update { it.copy(streetName = event.value) }
+            is OnlineInvoiceUiEvent.NumberChanged -> _uiState.update { it.copy(number = event.value) }
+            is OnlineInvoiceUiEvent.CityChanged -> _uiState.update { it.copy(city = event.value) }
+            is OnlineInvoiceUiEvent.PostalCodeChanged -> _uiState.update { it.copy(postalCode = event.value) }
+            is OnlineInvoiceUiEvent.ProvinceChanged -> _uiState.update { it.copy(province = event.value) }
+            is OnlineInvoiceUiEvent.CountryChanged -> _uiState.update { it.copy(country = event.value) }
+            is OnlineInvoiceUiEvent.EmailChanged -> _uiState.update { it.copy(email = event.value) }
+
+            OnlineInvoiceUiEvent.AcceptClicked -> handleAcceptClicked()
+            OnlineInvoiceUiEvent.CancelClicked -> viewModelScope.launch {
+                _uiEffect.emit(OnlineInvoiceUiEffect.NavigateBack)
+            }
+
+            OnlineInvoiceUiEvent.RetryClicked -> {
+                val tripId = _uiState.value.tripId ?: return
+                getTrip(tripId)
+            }
+        }
+    }
+
+    private fun handleAcceptClicked() {
+        val state = _uiState.value
+        val effect = reduceOnlineInvoiceEffectOnAcceptClick(state)
+
+        viewModelScope.launch {
+            when (effect) {
+                is OnlineInvoiceUiEffect.RequestFiscalData -> {
+                    _uiState.update { it.copy(isLoading = true) }
+                    _uiEffect.emit(effect)
+                }
+
+                is OnlineInvoiceUiEffect.GenerateInvoice -> {
+                    _uiState.update { it.copy(isLoading = true) }
+                    _uiEffect.emit(effect)
+                }
+
+                else -> _uiEffect.emit(effect)
+            }
+        }
+    }
+
+    fun getFiscalData(fiscalId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "getFiscalData: Fetching fiscal data for ID = $fiscalId")
+            when (val result = bravoRestInvoiceUseCase.getFiscalData(fiscalId)) {
+                is Resource.Success -> {
+                    result.data?.let {
+                        _uiState.update { state ->
+                            state.copy(
+                                isLoading = false,
+                                isFormVisible = true,
+                                companyName = it.companyName,
+                                streetName = it.streetName,
+                                number = it.number,
+                                city = it.city,
+                                postalCode = it.postalCode,
+                                province = it.province,
+                                country = it.country,
+                                email = it.email
+                            )
+                        }
+                    }
+                }
+
+                is Resource.Error -> {
+                    result.exception?.let {
+                        emitError(it)
+                    }
+                }
+            }
+        }
+    }
+
+    fun generateInvoice(userFiscalData: FiscalData) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            _uiState.value.tripId?.let { tripId ->
+                val trip = tripUseCase.getTripById(tripId)
+                if (trip == null) {
+                    emitError(SmartTDException.DATABASE_ERROR)
+                    return@launch
+                }
+
+                var dispatch: Dispatch? = null
+                if (trip.fromDispatch && trip.pkDispatchId != null) {
+                    dispatch = dispatchUseCase.getDispatchById(trip.pkDispatchId!!)
+                }
+
+                when (val result = bravoRestInvoiceUseCase.generateInvoice(
+                    trip,
+                    dispatch?.toInfoDispatchModel(),
+                    fiscalData = userFiscalData
+                )) {
+                    is Resource.Success -> {
+                        updateTripInvoiceStatus(trip)
+                        _uiState.update { it.copy(isLoading = false) }
+                        _uiEffect.emit(OnlineInvoiceUiEffect.ShowDialog(
+                            titleResId = R.string.dialog_success,
+                            descriptionResId = R.string.online_invoice_sent_success,
+                            buttons = listOf(ButtonType.ACCEPT)
+                        ))
+                        _uiEffect.emit(OnlineInvoiceUiEffect.NavigateBack)
+                    }
+
+                    is Resource.Error -> {
+                        result.exception?.let { emitError(it) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun getTrip(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            val trip = tripUseCase.getTripById(id)
+            if (trip != null) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        tripId = trip.id,
+                        nif = trip.nif.orEmpty()
+                    )
+                }
+                if (!trip.nif.isNullOrEmpty()) {
+                    _uiEffect.emit(OnlineInvoiceUiEffect.RequestFiscalData)
+                }
+            } else {
+                emitError(SmartTDException.DATABASE_ERROR)
+            }
+        }
+    }
+
+    private suspend fun updateTripInvoiceStatus(trip: Trip) {
+        trip.invoiceAlreadyGenerated = true
+        tripUseCase.updateTripInvoiceFlag(trip.id, trip.invoiceAlreadyGenerated)
+    }
+
+    private suspend fun emitError(exception: Throwable) {
+        _uiState.update { it.copy(isLoading = false) }
+        _uiEffect.emit(
+            OnlineInvoiceUiEffect.ShowDialog(
+                titleResId = R.string.dialog_error_title,
+                descriptionResId = SmartTDUIException.fromException(exception).stringResId,
+                buttons = listOf(ButtonType.ACCEPT),
+                onAcceptNavigateBack = true
+            )
+        )
+    }
+
+    private suspend fun emitError(exception: SmartTDException) {
+        _uiState.update { it.copy(isLoading = false) }
+        _uiEffect.emit(
+            OnlineInvoiceUiEffect.ShowDialog(
+                titleResId = R.string.dialog_error_title,
+                descriptionResId = SmartTDUIException.fromException(exception).stringResId,
+                buttons = listOf(ButtonType.ACCEPT),
+                onAcceptNavigateBack = true
+            )
+        )
+    }
+}
+```
+
+---
+
+# 4) `OnlineInvoiceMainActivityViewModel` Compose bridge
+
+This is the bridge for navigation, toast, header, and dialog handling from Compose.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.annotation.StringRes
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+sealed interface OnlineInvoiceMainActivityEffect {
+    data object NavigateBack : OnlineInvoiceMainActivityEffect
+    data class ShowToast(@StringRes val resId: Int) : OnlineInvoiceMainActivityEffect
+    data class ShowHeader(val visible: Boolean) : OnlineInvoiceMainActivityEffect
+    data class OpenDialog(
+        val titleResId: Int,
+        val descriptionResId: Int,
+        val buttons: List<ifac.td.taxi.ui.custom.button.ButtonType>,
+        val onAcceptNavigateBack: Boolean = false
+    ) : OnlineInvoiceMainActivityEffect
+}
+
+class OnlineInvoiceMainActivityViewModel : ViewModel() {
+    private val _effects = MutableSharedFlow<OnlineInvoiceMainActivityEffect>()
+    val effects: SharedFlow<OnlineInvoiceMainActivityEffect> = _effects.asSharedFlow()
+
+    suspend fun emit(effect: OnlineInvoiceMainActivityEffect) {
+        _effects.emit(effect)
+    }
+}
+```
+
+---
+
+# 5) Compose screen implementing the fragment behavior
+
+This screen preserves the fragment navigation behavior and lifecycle collection.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.launch
+
+@Composable
+fun OnlineInvoiceScreen(
+    tripId: Long,
+    navController: NavController,
+    viewModel: OnlineInvoiceComposeViewModel,
+    mainActivityViewModel: OnlineInvoiceMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
+    onOpenDialog: (title: String, description: String, onAccept: () -> Unit) -> Unit
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(tripId) {
+        onShowHeader(true)
+        viewModel.onEvent(OnlineInvoiceUiEvent.TripLoaded(tripId))
+    }
+
+    LaunchedEffect(Unit) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        OnlineInvoiceUiEffect.NavigateBack -> navController.popBackStack()
+                        OnlineInvoiceUiEffect.RequestFiscalData -> viewModel.getFiscalData(state.nif.trim())
+                        is OnlineInvoiceUiEffect.GenerateInvoice -> viewModel.generateInvoice(effect.fiscalData)
+                        is OnlineInvoiceUiEffect.ShowToast -> onShowToast(effect.resId)
+                        is OnlineInvoiceUiEffect.ShowDialog -> {
+                            onOpenDialog(
+                                title = stringResource(effect.titleResId),
+                                description = stringResource(effect.descriptionResId),
+                                onAccept = {
+                                    if (effect.onAcceptNavigateBack) navController.popBackStack()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            OnlineInvoiceField(
+                label = stringResource(R.string.nif_nif),
+                value = state.nif,
+                onValueChange = { viewModel.onEvent(OnlineInvoiceUiEvent.NifChanged(it)) }
+            )
+
+            if (state.isFormVisible) {
+                OnlineInvoiceField(stringResource(R.string.nif_empresa), state.companyName) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.CompanyNameChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_calle), state.streetName) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.StreetNameChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_numero), state.number) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.NumberChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_ciudad), state.city) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.CityChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_codpostal), state.postalCode) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.PostalCodeChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_provincia), state.province) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.ProvinceChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_email), state.email) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.EmailChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_pais), state.country) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.CountryChanged(it))
+                }
+            }
+        }
+
+        if (state.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x4D000000))
+            ) {
+                CircularProgressIndicator(modifier = Modifier.padding(24.dp))
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .height(96.dp)
+        ) {
+            ComposeCustomButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.btn_cancel).uppercase(),
+                style = CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.RED,
+                onClick = { viewModel.onEvent(OnlineInvoiceUiEvent.CancelClicked) }
+            )
+            ComposeCustomButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.btn_accept).uppercase(),
+                style = if (state.isLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.GREEN,
+                onClick = { viewModel.onEvent(OnlineInvoiceUiEvent.AcceptClicked) }
+            )
+        }
+    }
+}
+```
+
+---
+
+# 6) Compose button wrapper matching the CustomButton API
+
+This is a Compose replacement for the custom button behavior.
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+@Composable
+fun ComposeCustomButton(
+    modifier: Modifier = Modifier,
+    text: String,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit
+) {
+    val bgColor = when (background) {
+        CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+        CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+        CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+        CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+        CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+        CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+    }
+
+    Box(
+        modifier = modifier
+            .height(64.dp)
+            .padding(1.dp)
+            .background(bgColor)
+            .clickable(enabled = style == CustomButton.StyleButton.ENABLE) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        when (style) {
+            CustomButton.StyleButton.LOADING -> CircularProgressIndicator()
+            else -> Text(text = text, color = Color.White)
+        }
+    }
+}
+```
+
+---
+
+# 7) Compose field helper
+
+```kotlin
+package ifac.td.taxi.ui.screen.onlineinvoice
+
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+fun OnlineInvoiceField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        modifier = Modifier.fillMaxWidth(),
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) }
+    )
+}
+```
+
+---
+
+# 8) Notes on preserving fragment behavior
+
+What is preserved:
+
+- `getTrip(tripId)` on screen start
+- if trip has NIF, it auto-fetches fiscal data
+- accept button logic is identical
+- cancel button navigates back
+- loading overlay behavior
+- form visibility after fiscal data or error
+- dialog handling via effect collection
+- navigation back after success/error dialog when needed
+
+What changed:
+
+- state is now fully Compose-driven
+- no direct view mutation
+- no `collect {}` in fragment; replaced by lifecycle-aware Compose collection
+- button logic is reduced into state/effects
+
+---
+
+# 9) If you want the exact XML visibility behavior
+
+In the fragment, the form fields start hidden and become visible after fiscal data or error. In Compose, that is represented by:
+
+```kotlin
+if (state.isFormVisible) { ... }
+```
+
+This matches the XML `gone`/`visible` behavior.
+
+---
+
+# 10) Recommended integration in your NavHost
+
+If your navigation still uses fragment navigation, you can host this composable inside a `ComposeView` in a fragment, or migrate the destination to Compose Navigation. If you want to preserve the existing `tripId` argument, pass it from the nav graph exactly as before.
+
+---
+
+If you want, I can also provide:
+
+1. a **full `@Composable` version with all 9 fields laid out exactly like the XML**,  
+2. a **Hilt/Koin DI module for the new Compose VM**, or  
+3. a **fragment wrapper that hosts this composable while keeping your current NavController graph unchanged**.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused", "MemberVisibilityCanBePrivate")
+
+package ifac.td.taxi.compose.screen
+
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import androidx.navigation.NavDeepLinkRequest
+import androidx.navigation.NavDirections
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Dispatch
+import ifac.td.taxi.domain.model.SmartTDException
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.usecase.BravoRestInvoiceUseCase
+import ifac.td.taxi.domain.usecase.DispatchUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.ui.model.FiscalData
+import ifac.td.taxi.ui.model.SmartTDUIException
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.toInfoDispatchModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// -----------------------------------------------------------------------------
+// Shared VM bridge (from the information you provided)
+// -----------------------------------------------------------------------------
+
+open class BaseComposeViewModel(application: Application) : AndroidViewModel(application)
+
+data class InfoDispatchModel(val dummy: String = "")
+
+class ComposeSharedViewModel(
+    application: Application
+) : BaseComposeViewModel(application) {
+
+    private val _hasTaximeterConnectionFlow = MutableStateFlow(false)
+    val hasTaximeterConnectionFlow = _hasTaximeterConnectionFlow.asStateFlow()
+
+    private val _navigationDirectionsFlow = MutableSharedFlow<NavDirections>()
+    val navigationDirectionsFlow = _navigationDirectionsFlow.asSharedFlow()
+
+    private val _navigationDeepLinkFlow = MutableSharedFlow<NavDeepLinkRequest>()
+    val navigationDeepLinkFlow = _navigationDeepLinkFlow.asSharedFlow()
+
+    private val _pendingNavigationFlow = MutableStateFlow<Boolean?>(null)
+    val pendingNavigationFlow = _pendingNavigationFlow.asStateFlow()
+
+    private val _xmppStatusFlow = MutableStateFlow(0)
+    val xmppStatusFlow = _xmppStatusFlow.asStateFlow()
+
+    private val _gpsStatusFlow = MutableStateFlow(0)
+    val gpsStatusFlow = _gpsStatusFlow.asStateFlow()
+
+    private val _showLegalTextFlow = MutableStateFlow<Boolean?>(null)
+    val showLegalTextFlow = _showLegalTextFlow.asStateFlow()
+
+    private val _roofLightFlow = MutableStateFlow<Boolean?>(null)
+    val roofLightFlow = _roofLightFlow.asStateFlow()
+
+    private val _userLoggedFlow = MutableStateFlow<Boolean?>(null)
+    val userLoggedFlow = _userLoggedFlow.asStateFlow()
+
+    private val _clientButtonValueFlow = MutableStateFlow(false)
+    val clientButtonValueFlow = _clientButtonValueFlow.asStateFlow()
+
+    private val _zoneFlow = MutableStateFlow<String?>(null)
+    val zoneFlow = _zoneFlow.asStateFlow()
+
+    private val _locationEnabledFlow = MutableStateFlow(Pair(true, true))
+    val locationEnabledFlow = _locationEnabledFlow.asStateFlow()
+
+    private val _locationManuallyDeLocatedFlow = MutableStateFlow(false)
+    val locationManuallyDeLocatedFlow = _locationManuallyDeLocatedFlow.asStateFlow()
+
+    private val _locationType = MutableStateFlow("")
+    val locationType = _locationType.asStateFlow()
+
+    private val _timeControlFlow = MutableStateFlow<String?>(null)
+    val timeControlFlow = _timeControlFlow.asStateFlow()
+
+    private val _currentAmountFlow = MutableStateFlow<Int?>(null)
+    val currentAmountFlow = _currentAmountFlow.asStateFlow()
+
+    private val _dispatchFlow = MutableStateFlow<InfoDispatchModel?>(null)
+    val dispatchFlow = _dispatchFlow.asStateFlow()
+
+    private val _showDialogFlow = MutableSharedFlow<String>()
+    val showDialogFlow = _showDialogFlow.asSharedFlow()
+
+    private val _loadingStateFlow = MutableSharedFlow<Boolean>()
+    val loadingStateFlow = _loadingStateFlow.asSharedFlow()
+
+    private val _printTicketFlow = MutableSharedFlow<String>()
+    val printTicketFlow = _printTicketFlow.asSharedFlow()
+
+    private val _cropImageFlow = MutableSharedFlow<Uri?>()
+    val cropImageFlow = _cropImageFlow.asSharedFlow()
+
+    private val _sumUpFlow = MutableSharedFlow<Int>()
+    val sumUpFlow = _sumUpFlow.asSharedFlow()
+
+    private val _sumUpResponseFlow = MutableSharedFlow<Pair<Int, Intent?>>()
+    val sumUpResponseFlow = _sumUpResponseFlow.asSharedFlow()
+
+    private val _dispatchMinimumPriceFlow = MutableStateFlow<Int?>(null)
+    val dispatchMinimumPriceFlow = _dispatchMinimumPriceFlow.asStateFlow()
+
+    private val _locatedOnStop = MutableStateFlow(false)
+    val locatedOnStop = _locatedOnStop.asStateFlow()
+
+    private val _reconnectionFlow = MutableStateFlow(false)
+    val reconnectionFlow = _reconnectionFlow.asStateFlow()
+
+    private val _orangeBtnPendingFlow = MutableStateFlow<Boolean?>(null)
+    val orangeBtnPendingFlow = _orangeBtnPendingFlow.asStateFlow()
+
+    private val _shortBreakStatus = MutableStateFlow<String?>(null)
+    val shortBreakStatus = _shortBreakStatus.asStateFlow()
+
+    private val _customerCallAvailable = MutableStateFlow(false)
+    val customerCallAvailable = _customerCallAvailable.asStateFlow()
+
+    private val _customerCallButtonStateAvailable = MutableStateFlow(true)
+    val customerCallButtonStateAvailable = _customerCallButtonStateAvailable.asStateFlow()
+
+    private val _lastITopStateReceived = MutableStateFlow<String?>(null)
+    val lastITopStateReceived = _lastITopStateReceived.asStateFlow()
+}
+
+// -----------------------------------------------------------------------------
+// Compose-friendly Online Invoice state/effects/events
+// -----------------------------------------------------------------------------
+
+data class OnlineInvoiceUiState(
+    val isLoading: Boolean = false,
+    val isFormVisible: Boolean = false,
+    val tripId: Long? = null,
+    val nif: String = "",
+    val companyName: String = "",
+    val streetName: String = "",
+    val number: String = "",
+    val city: String = "",
+    val postalCode: String = "",
+    val province: String = "",
+    val country: String = "",
+    val email: String = ""
+) {
+    fun toFiscalData(): FiscalData = FiscalData(
+        fiscalID = nif,
+        companyName = companyName,
+        streetName = streetName,
+        number = number,
+        city = city,
+        postalCode = postalCode,
+        province = province,
+        country = country,
+        email = email
+    )
+
+    fun areRequiredFieldsEmpty(): Boolean = listOf(
+        companyName, streetName, number, city, postalCode, province, nif, email, country
+    ).any { it.isBlank() }
+}
+
+sealed interface OnlineInvoiceUiEvent {
+    data class TripLoaded(val tripId: Long) : OnlineInvoiceUiEvent
+    data class NifChanged(val value: String) : OnlineInvoiceUiEvent
+    data class CompanyNameChanged(val value: String) : OnlineInvoiceUiEvent
+    data class StreetNameChanged(val value: String) : OnlineInvoiceUiEvent
+    data class NumberChanged(val value: String) : OnlineInvoiceUiEvent
+    data class CityChanged(val value: String) : OnlineInvoiceUiEvent
+    data class PostalCodeChanged(val value: String) : OnlineInvoiceUiEvent
+    data class ProvinceChanged(val value: String) : OnlineInvoiceUiEvent
+    data class CountryChanged(val value: String) : OnlineInvoiceUiEvent
+    data class EmailChanged(val value: String) : OnlineInvoiceUiEvent
+    data object AcceptClicked : OnlineInvoiceUiEvent
+    data object CancelClicked : OnlineInvoiceUiEvent
+}
+
+sealed interface OnlineInvoiceUiEffect {
+    data object NavigateBack : OnlineInvoiceUiEffect
+    data object RequestFiscalData : OnlineInvoiceUiEffect
+    data class GenerateInvoice(val fiscalData: FiscalData) : OnlineInvoiceUiEffect
+    data class ShowToast(@StringRes val resId: Int) : OnlineInvoiceUiEffect
+    data class ShowDialog(
+        @StringRes val titleResId: Int,
+        @StringRes val descriptionResId: Int,
+        val buttons: List<ButtonType>,
+        val onAcceptNavigateBack: Boolean = false
+    ) : OnlineInvoiceUiEffect
+}
+
+data class ButtonUiState(
+    val style: CustomButton.StyleButton,
+    val background: CustomButton.BackgroundButtonColor,
+    val visible: Boolean = true
+)
+
+data class OnlineInvoiceButtonsState(
+    val accept: ButtonUiState,
+    val cancel: ButtonUiState
+) {
+    companion object {
+        fun initial(isLoading: Boolean = false) = OnlineInvoiceButtonsState(
+            accept = ButtonUiState(
+                style = if (isLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.GREEN,
+                visible = true
+            ),
+            cancel = ButtonUiState(
+                style = CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.RED,
+                visible = true
+            )
+        )
+    }
+}
+
+/**
+ * Exact reducer mirroring the fragment's accept-button branch logic:
+ * 1) nifNotEmpty && areFieldsEmpty() -> fetch fiscal data
+ * 2) nifNotEmpty && !areFieldsEmpty() -> generate invoice
+ * 3) else -> toast complete all fields
+ */
+fun reduceOnlineInvoiceAcceptEffect(state: OnlineInvoiceUiState): OnlineInvoiceUiEffect {
+    val nifNotEmpty = state.nif.isNotEmpty()
+    return when {
+        nifNotEmpty && state.areRequiredFieldsEmpty() ->
+            OnlineInvoiceUiEffect.RequestFiscalData
+        nifNotEmpty && !state.areRequiredFieldsEmpty() ->
+            OnlineInvoiceUiEffect.GenerateInvoice(state.toFiscalData())
+        else ->
+            OnlineInvoiceUiEffect.ShowToast(R.string.toast_complete_todos_los_campos)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Compose ViewModel
+// -----------------------------------------------------------------------------
+
+class OnlineInvoiceComposeViewModel(
+    application: Application,
+    private val tripUseCase: TripUseCase,
+    private val dispatchUseCase: DispatchUseCase,
+    private val bravoRestInvoiceUseCase: BravoRestInvoiceUseCase
+) : BaseComposeViewModel(application) {
+
+    private val TAG = "OnlineInvoiceComposeVM"
+
+    private val _uiState = MutableStateFlow(OnlineInvoiceUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<OnlineInvoiceUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: OnlineInvoiceUiEvent) {
+        when (event) {
+            is OnlineInvoiceUiEvent.TripLoaded -> {
+                _uiState.update { it.copy(tripId = event.tripId, isLoading = true) }
+                getTrip(event.tripId)
+            }
+
+            is OnlineInvoiceUiEvent.NifChanged -> _uiState.update { it.copy(nif = event.value) }
+            is OnlineInvoiceUiEvent.CompanyNameChanged -> _uiState.update { it.copy(companyName = event.value) }
+            is OnlineInvoiceUiEvent.StreetNameChanged -> _uiState.update { it.copy(streetName = event.value) }
+            is OnlineInvoiceUiEvent.NumberChanged -> _uiState.update { it.copy(number = event.value) }
+            is OnlineInvoiceUiEvent.CityChanged -> _uiState.update { it.copy(city = event.value) }
+            is OnlineInvoiceUiEvent.PostalCodeChanged -> _uiState.update { it.copy(postalCode = event.value) }
+            is OnlineInvoiceUiEvent.ProvinceChanged -> _uiState.update { it.copy(province = event.value) }
+            is OnlineInvoiceUiEvent.CountryChanged -> _uiState.update { it.copy(country = event.value) }
+            is OnlineInvoiceUiEvent.EmailChanged -> _uiState.update { it.copy(email = event.value) }
+
+            OnlineInvoiceUiEvent.AcceptClicked -> handleAcceptClicked()
+            OnlineInvoiceUiEvent.CancelClicked -> viewModelScope.launch {
+                _uiEffect.emit(OnlineInvoiceUiEffect.NavigateBack)
+            }
+        }
+    }
+
+    private fun handleAcceptClicked() {
+        val effect = reduceOnlineInvoiceAcceptEffect(_uiState.value)
+        viewModelScope.launch {
+            when (effect) {
+                is OnlineInvoiceUiEffect.RequestFiscalData -> {
+                    _uiState.update { it.copy(isLoading = true) }
+                    _uiEffect.emit(effect)
+                }
+                is OnlineInvoiceUiEffect.GenerateInvoice -> {
+                    _uiState.update { it.copy(isLoading = true) }
+                    _uiEffect.emit(effect)
+                }
+                else -> _uiEffect.emit(effect)
+            }
+        }
+    }
+
+    fun getTrip(id: Long) {
+        viewModelScope.launch {
+            try {
+                val trip = tripUseCase.getTripById(id)
+                if (trip != null) {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            tripId = trip.id,
+                            nif = trip.nif.orEmpty()
+                        )
+                    }
+                    if (!trip.nif.isNullOrEmpty()) {
+                        _uiEffect.emit(OnlineInvoiceUiEffect.RequestFiscalData)
+                    }
+                } else {
+                    emitError(SmartTDException.DATABASE_ERROR)
+                }
+            } catch (t: Throwable) {
+                emitError(t)
+            }
+        }
+    }
+
+    fun getFiscalData(fiscalId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            when (val result = bravoRestInvoiceUseCase.getFiscalData(fiscalId)) {
+                is Resource.Success -> {
+                    result.data?.let { fiscalData ->
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                isFormVisible = true,
+                                companyName = fiscalData.companyName,
+                                streetName = fiscalData.streetName,
+                                number = fiscalData.number,
+                                city = fiscalData.city,
+                                postalCode = fiscalData.postalCode,
+                                province = fiscalData.province,
+                                country = fiscalData.country,
+                                email = fiscalData.email
+                            )
+                        }
+                    }
+                }
+                is Resource.Error -> {
+                    result.exception?.let { emitError(it) }
+                }
+            }
+        }
+    }
+
+    fun generateInvoice(userFiscalData: FiscalData) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val tripId = _uiState.value.tripId
+            if (tripId == null) {
+                emitError(SmartTDException.DATABASE_ERROR)
+                return@launch
+            }
+
+            val trip = tripUseCase.getTripById(tripId)
+            if (trip == null) {
+                emitError(SmartTDException.DATABASE_ERROR)
+                return@launch
+            }
+
+            var dispatch: Dispatch? = null
+            if (trip.fromDispatch && trip.pkDispatchId != null) {
+                dispatch = dispatchUseCase.getDispatchById(trip.pkDispatchId!!)
+            }
+
+            when (val result = bravoRestInvoiceUseCase.generateInvoice(
+                trip,
+                dispatch?.toInfoDispatchModel(),
+                fiscalData = userFiscalData
+            )) {
+                is Resource.Success -> {
+                    updateTripInvoiceStatus(trip)
+                    _uiState.update { it.copy(isLoading = false) }
+                    _uiEffect.emit(
+                        OnlineInvoiceUiEffect.ShowDialog(
+                            titleResId = R.string.dialog_success,
+                            descriptionResId = R.string.online_invoice_sent_success,
+                            buttons = listOf(ButtonType.ACCEPT),
+                            onAcceptNavigateBack = true
+                        )
+                    )
+                }
+                is Resource.Error -> {
+                    result.exception?.let { emitError(it) }
+                }
+            }
+        }
+    }
+
+    private suspend fun updateTripInvoiceStatus(trip: Trip) {
+        trip.invoiceAlreadyGenerated = true
+        tripUseCase.updateTripInvoiceFlag(trip.id, trip.invoiceAlreadyGenerated)
+    }
+
+    private suspend fun emitError(exception: Throwable) {
+        _uiState.update { it.copy(isLoading = false) }
+        _uiEffect.emit(
+            OnlineInvoiceUiEffect.ShowDialog(
+                titleResId = R.string.dialog_error_title,
+                descriptionResId = SmartTDUIException.fromException(exception).stringResId,
+                buttons = listOf(ButtonType.ACCEPT),
+                onAcceptNavigateBack = true
+            )
+        )
+    }
+
+    private suspend fun emitError(exception: SmartTDException) {
+        _uiState.update { it.copy(isLoading = false) }
+        _uiEffect.emit(
+            OnlineInvoiceUiEffect.ShowDialog(
+                titleResId = R.string.dialog_error_title,
+                descriptionResId = SmartTDUIException.fromException(exception).stringResId,
+                buttons = listOf(ButtonType.ACCEPT),
+                onAcceptNavigateBack = true
+            )
+        )
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MainActivity bridge VM for Compose
+// -----------------------------------------------------------------------------
+
+sealed interface OnlineInvoiceMainActivityEffect {
+    data object NavigateBack : OnlineInvoiceMainActivityEffect
+    data class ShowToast(@StringRes val resId: Int) : OnlineInvoiceMainActivityEffect
+    data class ShowHeader(val visible: Boolean) : OnlineInvoiceMainActivityEffect
+    data class OpenDialog(
+        @StringRes val titleResId: Int,
+        @StringRes val descriptionResId: Int,
+        val buttons: List<ButtonType>,
+        val onAcceptNavigateBack: Boolean = false
+    ) : OnlineInvoiceMainActivityEffect
+}
+
+class OnlineInvoiceMainActivityViewModel : ViewModel() {
+    private val _effects = MutableSharedFlow<OnlineInvoiceMainActivityEffect>()
+    val effects: SharedFlow<OnlineInvoiceMainActivityEffect> = _effects.asSharedFlow()
+
+    suspend fun emit(effect: OnlineInvoiceMainActivityEffect) {
+        _effects.emit(effect)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Compose UI
+// -----------------------------------------------------------------------------
+
+@Composable
+fun OnlineInvoiceScreen(
+    tripId: Long,
+    navController: NavController,
+    viewModel: OnlineInvoiceComposeViewModel,
+    mainActivityViewModel: OnlineInvoiceMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
+    onOpenDialog: (title: String, description: String, onAccept: () -> Unit) -> Unit
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(tripId) {
+        onShowHeader(true)
+        viewModel.onEvent(OnlineInvoiceUiEvent.TripLoaded(tripId))
+    }
+
+    LaunchedEffect(Unit) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        OnlineInvoiceUiEffect.NavigateBack -> navController.popBackStack()
+                        OnlineInvoiceUiEffect.RequestFiscalData -> viewModel.getFiscalData(state.nif.trim())
+                        is OnlineInvoiceUiEffect.GenerateInvoice -> viewModel.generateInvoice(effect.fiscalData)
+                        is OnlineInvoiceUiEffect.ShowToast -> onShowToast(effect.resId)
+                        is OnlineInvoiceUiEffect.ShowDialog -> {
+                            onOpenDialog(
+                                title = stringResource(effect.titleResId),
+                                description = stringResource(effect.descriptionResId),
+                                onAccept = {
+                                    if (effect.onAcceptNavigateBack) navController.popBackStack()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            OnlineInvoiceField(
+                label = stringResource(R.string.nif_nif),
+                value = state.nif,
+                onValueChange = { viewModel.onEvent(OnlineInvoiceUiEvent.NifChanged(it)) }
+            )
+
+            if (state.isFormVisible) {
+                OnlineInvoiceField(stringResource(R.string.nif_empresa), state.companyName) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.CompanyNameChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_calle), state.streetName) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.StreetNameChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_numero), state.number) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.NumberChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_ciudad), state.city) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.CityChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_codpostal), state.postalCode) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.PostalCodeChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_provincia), state.province) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.ProvinceChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_email), state.email) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.EmailChanged(it))
+                }
+                OnlineInvoiceField(stringResource(R.string.nif_pais), state.country) {
+                    viewModel.onEvent(OnlineInvoiceUiEvent.CountryChanged(it))
+                }
+            }
+        }
+
+        if (state.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x4D000000))
+            ) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .height(96.dp)
+        ) {
+            ComposeCustomButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.btn_cancel).uppercase(),
+                style = CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.RED,
+                onClick = { viewModel.onEvent(OnlineInvoiceUiEvent.CancelClicked) }
+            )
+            ComposeCustomButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.btn_accept).uppercase(),
+                style = if (state.isLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
+                background = CustomButton.BackgroundButtonColor.GREEN,
+                onClick = { viewModel.onEvent(OnlineInvoiceUiEvent.AcceptClicked) }
+            )
+        }
+    }
+}
+
+@Composable
+fun OnlineInvoiceField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        modifier = Modifier.fillMaxWidth(),
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) }
+    )
+}
+
+@Composable
+fun ComposeCustomButton(
+    modifier: Modifier = Modifier,
+    text: String,
+    style: CustomButton.StyleButton,
+    background: CustomButton.BackgroundButtonColor,
+    onClick: () -> Unit
+) {
+    val bgColor = when (background) {
+        CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+        CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+        CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+        CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+        CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .height(64.dp)
+            .padding(1.dp)
+            .background(bgColor)
+            .clickable(enabled = style == CustomButton.StyleButton.ENABLE) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        when (style) {
+            CustomButton.StyleButton.LOADING -> CircularProgressIndicator()
+            else -> Text(text = text, color = Color.White)
+        }
+    }
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

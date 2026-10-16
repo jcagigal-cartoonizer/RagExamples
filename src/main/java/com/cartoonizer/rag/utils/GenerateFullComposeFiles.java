@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentor.PREFIXES_AUGMENTOR;
 import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 public class GenerateFullComposeFiles {
 
@@ -37,7 +39,6 @@ public class GenerateFullComposeFiles {
 
         private boolean printAlways;
         private String packageName;
-        private PrintWriter writer;
         private String outputPath;
         private String prefix;
 
@@ -60,7 +61,7 @@ public class GenerateFullComposeFiles {
             if (line.trim().startsWith("---")) {
                 return;
             }
-            if (line.trim().startsWith("// FOURTH ANSWER")) {
+            if (line.trim().startsWith("// SECOND ANSWER")) {
                 startFound = true;
             }
             if (!startFound) {
@@ -70,7 +71,8 @@ public class GenerateFullComposeFiles {
                 printAlways = true;
                 return;
             }
-            boolean isEnd = line.trim().startsWith("## Notes") || line.trim().startsWith("## What changed");
+            boolean isEnd = (line.contains("## ") && line.contains("Notes")) || line.trim().startsWith("## What changed") ||
+                    line.contains("// THIRD ANSWER");
             if (isEnd) {
                 System.out.println("*** GenerateComposeFiles isEndTag line = " + line);
                 printAlways = false;
@@ -88,12 +90,8 @@ public class GenerateFullComposeFiles {
                 System.out.println("ERROR found in " + outputPath);
 
             }
-            if (writer != null) {
-                closeFile();
-            } else {
-                String answerPath = this.origen.getName();
-                System.out.println("*** DEBUG!!! GenerateFullComposeFiles writer IS NULL in " + answerPath);
-            }
+            PostProcess postProcess = new PostProcess(outputPath, lines, orderedLines);
+            postProcess.postProcess();
         }
 
         @Override
@@ -102,8 +100,135 @@ public class GenerateFullComposeFiles {
             printAlways = false;
         }
 
+        private int numLines = 0;
+
+        private void print(String line) {
+            if (printAlways) {
+                numLines++;
+                orderedLines.add(line);
+                lines.put(line, line);
+            }
+        }
+        private boolean errorFound = false;
+    }
+
+    public static class PostProcess {
+// Remove duplicate imports
+// Replace import androidx.compose.runtime.collectAsStateWithLifecycle with import androidx.lifecycle.compose.collectAsStateWithLifecycle  
+
+        public HashMap<String, String> lines = new HashMap<>();
+        public HashMap<Integer, String> processedLines = new HashMap<>();
+        public HashMap<String, String> imports = new HashMap<>();
+        public HashMap<String, String> processedImports = new HashMap<>();
+        public ArrayList<String> orderedLines = new ArrayList<>();
+
+        public String packageName;
+        public String outputPath;
+        private PrintWriter writer;
+        int numLines;
+
+        public PostProcess(String outputPath, HashMap<String, String> lines, ArrayList<String> orderedLines) {
+            this.lines = lines;
+            this.orderedLines = orderedLines;
+            this.outputPath = outputPath;
+            this.packageName = "ifac.td.taxi.ui.screen.compose";
+        }
+
+        public void postProcess() {
+            for (String line : lines.values()) {
+                if (line.trim().startsWith("import ")) {
+                    imports.put(line, line);
+                }
+            }
+            processedLines = new HashMap<>();
+            numLines = 0;
+            processedLines.put(numLines, "package " + packageName);
+            numLines++;
+            for (String line : imports.values()) {
+                if (line.contains("import androidx.compose.runtime.collectAsStateWithLifecycle")) {
+                    line = line.replaceAll(Pattern.quote("import androidx.compose.runtime.collectAsStateWithLifecycle"), "import androidx.lifecycle.compose.collectAsStateWithLifecycle");
+                }
+                processedLines.put(numLines, line);
+                numLines++;
+            }
+            /*
+            No copiar entre
+            // Shared activity VM adapter (replace placeholder with real VM)
+            i
+            // UI state / events / effects
+
+            */
+            boolean doCopy = true;
+            for (String line : orderedLines) {
+                if (line == null || line.trim().equals("null") || line.startsWith("package ")
+                        || line.trim().startsWith("package ") || line.trim().startsWith("import ")) {
+                    continue;
+                }
+                // data class -> @Composable fun ChangeUserPasswordButtonsState + ChangeUserPasswordUiState + add body
+                if (line.contains("ButtonUiState") && !line.contains(PREFIX + "ButtonUiState")) {
+                    line = line.replaceAll("ButtonUiState", PREFIX + "ButtonUiState");
+//                } else if (line.contains("CustomButton") && !line.contains(PREFIX + "CustomButton") &&
+//                        !line.contains("CustomButton.StyleButton")) {
+//                    line = line.replaceAll("CustomButton", PREFIX + "CustomButton");
+//                    System.out.println("*** CustomButton line = " + line);
+                } else if (line.contains("sharedVm.showHeader") || line.contains("sharedVm.showToast")) {
+                    line = "// " + line;
+                } else if (line.contains("navigate(")) {
+                    line = line.replaceAll(Pattern.quote("navigate("), "navigateTo(");
+                } else if (line.contains("openDialog(dialog, callback, fragmentManager)")) {
+                    line = line.replaceAll(Pattern.quote(", fragmentManager"), "");
+                } else if (line.contains("context.getString(")) {
+//                    line = line.replaceAll(Pattern.quote("context.getString("), "stringResource(");
+                } else if (line.contains("private val ")) {
+                    line = line.replaceAll(Pattern.quote("private "), "");
+                }
+                if (line.contains("// Shared activity VM adapter")) {
+                    doCopy = false;
+                }
+                if (line.contains("// UI state / events / effects")) {
+                    doCopy = true;
+                }
+                if (line.contains("### ") && line.contains("otes")) {
+                    doCopy = false;
+                }
+                if (doCopy) {
+                    processedLines.put(numLines, line);
+                    numLines++;
+                }
+            }
+            for (Map.Entry<Integer, String> entry : processedLines.entrySet()) {
+                int num = entry.getKey();
+                String line = entry.getValue();
+//                System.out.println("*** " + num + " -> " + line);
+                print(line);
+            }
+            closeFile();
+        }
+
+        private void print(String line) {
+            try {
+                if (writer == null) {
+                    openFile();
+                }
+                writer.println(line);
+            } catch (Exception e) {
+            }
+        }
+
+        private void openFile() {
+            try {
+//                System.out.println("*** GenerateFullComposeFiles OPEN FILE lines size = " + lines.size() + " " + outputPath);
+                if (writer != null) {
+                    writer.close();
+                }
+                writer = new PrintWriter(outputPath);
+            } catch (Exception ex) {
+                System.out.println("*** EXCEPTION openFile " + outputPath + ": " + ex);
+                writer = null;
+            }
+        }
+
         private void closeFile() {
-            String answerPath = this.origen.getName();
             if (outputPath != null && writer != null) {
                 writer.close();
             } else {
@@ -112,36 +237,5 @@ public class GenerateFullComposeFiles {
             outputPath = null;
             writer = null;
         }
-
-        private void openFile() {
-               try {
-                    System.out.println("*** GenerateFullComposeFiles OPEN FILE orderedLines size = " + orderedLines.size() + " " + outputPath);
-                    if (writer != null) {
-                        writer.close();
-                    }
-                    writer = new PrintWriter(outputPath);
-                    print("package " + packageName);
-                } catch (Exception ex) {
-                    System.out.println("*** EXCEPTION openFile " + outputPath + ": " + ex);
-                    writer = null;
-                }
-        }
-        private int numLines = 0;
-
-        private void print(String line) {
-            if (printAlways) {
-                numLines++;
-                orderedLines.add(line);
-                lines.put(line, line);
-                try {
-                    if (writer == null) {
-                        openFile();
-                    }
-                    writer.println(line);
-                } catch (Exception e) {
-                }
-            }
-        }
-        private boolean errorFound = false;
     }
 }

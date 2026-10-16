@@ -1,0 +1,1288 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, button logic, and dialog handling, while exposing a `UiState + UiEvent + UiEffect` architecture.
+
+I’m splitting it into 3 parts:
+
+1. `OpenPartialUiState` / `OpenPartialButtonsState` / `OpenPartialUiEffect` / `OpenPartialUiEvent`
+2. `OpenPartialViewModel` Compose-friendly reducer-based VM
+3. `OpenPartialMainActivityViewModel` bridge + `OpenPartialScreen` composable
+
+I’ll keep the class/function prefixes exactly as requested:
+- `OpenPartialUiState`
+- `OpenPartialButtonsState`
+- `OpenPartialDialogState`
+- `OpenPartialButtonVisualState`
+
+---
+
+## 1) State / Event / Effect models
+
+```kotlin
+package ifac.td.taxi.viewmodel.openpartial
+
+import androidx.annotation.StringRes
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+data class OpenPartialUiState(
+    val isLoading: Boolean = true,
+    val rawPartialContent: String? = null,
+    val ticketContent: String = "",
+    val buttons: OpenPartialButtonsState = OpenPartialButtonsState(),
+    val dialog: OpenPartialDialogState = OpenPartialDialogState.Hidden,
+)
+
+data class OpenPartialButtonsState(
+    val back: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = true,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = true
+    ),
+    val print: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = true,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = true
+    ),
+    val close: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = false,
+        style = CustomButton.StyleButton.DISABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = false
+    ),
+    val totalizers: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = false,
+        style = CustomButton.StyleButton.DISABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = false
+    )
+)
+
+data class OpenPartialButtonVisualState(
+    val visible: Boolean,
+    val style: CustomButton.StyleButton,
+    val background: CustomButton.BackgroundButtonColor,
+    val enabled: Boolean,
+)
+
+sealed interface OpenPartialDialogState {
+    data object Hidden : OpenPartialDialogState
+    data class ConfirmClose(
+        val title: String,
+        val description: String,
+    ) : OpenPartialDialogState
+}
+
+sealed interface OpenPartialUiEvent {
+    data object OnBackClicked : OpenPartialUiEvent
+    data object OnPrintClicked : OpenPartialUiEvent
+    data object OnCloseClicked : OpenPartialUiEvent
+    data object OnTotalizersClicked : OpenPartialUiEvent
+    data object OnDialogAccept : OpenPartialUiEvent
+    data object OnDialogCancel : OpenPartialUiEvent
+    data object OnScreenStarted : OpenPartialUiEvent
+}
+
+sealed interface OpenPartialUiEffect {
+    data object NavigateBack : OpenPartialUiEffect
+    data class NavigateTo(val destinationId: Int) : OpenPartialUiEffect
+    data class ShowToast(@StringRes val resId: Int) : OpenPartialUiEffect
+    data class ShowDialog(val dialog: OpenPartialDialogState.ConfirmClose) : OpenPartialUiEffect
+    data object DismissDialog : OpenPartialUiEffect
+}
+```
+
+---
+
+## 2) Exact reducer for `OpenPartialButtonsState`
+
+This mirrors the fragment’s `collect {}` branches one-by-one.
+
+```kotlin
+package ifac.td.taxi.viewmodel.openpartial
+
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+data class OpenPartialButtonsInput(
+    val canClosePermission: Boolean?,
+    val canCloseArg: Boolean,
+    val isTaximeterConnected: Boolean,
+    val hasTotalizers: Boolean,
+    val currentShiftStatus: Int?,
+)
+
+fun OpenPartialButtonsState.reduce(input: OpenPartialButtonsInput): OpenPartialButtonsState {
+    val canClose = input.canClosePermission == true && input.canCloseArg
+
+    val closeState = if (canClose) {
+        OpenPartialButtonVisualState(
+            visible = true,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = true
+        )
+    } else {
+        OpenPartialButtonVisualState(
+            visible = false,
+            style = CustomButton.StyleButton.DISABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = false
+        )
+    }
+
+    val totalizersVisible =
+        !canClose &&
+            input.currentShiftStatus != ifConstants.STATE_DISCONNECTED &&
+            input.isTaximeterConnected
+
+    val totalizersStyle =
+        if (input.isTaximeterConnected && input.hasTotalizers) {
+            CustomButton.StyleButton.ENABLE
+        } else {
+            CustomButton.StyleButton.DISABLE
+        }
+
+    val totalizersState = if (totalizersVisible) {
+        OpenPartialButtonVisualState(
+            visible = true,
+            style = totalizersStyle,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = totalizersStyle == CustomButton.StyleButton.ENABLE
+        )
+    } else {
+        OpenPartialButtonVisualState(
+            visible = false,
+            style = totalizersStyle,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = false
+        )
+    }
+
+    return copy(
+        close = closeState,
+        totalizers = totalizersState
+    )
+}
+```
+
+---
+
+## 3) Compose-friendly `OpenPartialViewModel`
+
+This VM exposes:
+- `StateFlow<OpenPartialUiState>`
+- `SharedFlow<OpenPartialUiEffect>`
+- `onEvent(...)`
+
+It preserves the original navigation destination IDs and dialog behavior.
+
+```kotlin
+package ifac.td.taxi.viewmodel.openpartial
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.domain.usecase.PartialUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.viewmodel.BaseViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class OpenPartialViewModel(
+    context: Application,
+    private val partialUseCase: PartialUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val taximeterUseCase: TaximeterConnectUseCase,
+    private val ticketUseCase: TicketUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "OpenPartialViewModel"
+
+    private val _uiState = MutableStateFlow(OpenPartialUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffects = MutableSharedFlow<OpenPartialUiEffect>()
+    val uiEffects = _uiEffects.asSharedFlow()
+
+    private val _partialPermission = MutableStateFlow<Boolean?>(null)
+    private val _isTaximeterConnected = MutableStateFlow(false)
+
+    private val loadedTicketFiles: () -> Unit = {
+        viewModelScope.launch {
+            partialUseCase.doPartials { partial ->
+                Logs.d(TAG, "getPartial: doPartials callback received result = $partial")
+                handlePartial(partial)
+            }
+        }
+    }
+
+    fun onEvent(event: OpenPartialUiEvent) {
+        when (event) {
+            OpenPartialUiEvent.OnScreenStarted -> {
+                checkClosuresPermission()
+                getPartial()
+            }
+
+            OpenPartialUiEvent.OnBackClicked -> {
+                viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.NavigateBack) }
+            }
+
+            OpenPartialUiEvent.OnPrintClicked -> {
+                val raw = _uiState.value.rawPartialContent
+                if (!raw.isNullOrEmpty()) {
+                    printPartial(raw)
+                } else {
+                    viewModelScope.launch {
+                        _uiEffects.emit(OpenPartialUiEffect.ShowToast(R.string.no_partials_to_print))
+                    }
+                }
+            }
+
+            OpenPartialUiEvent.OnCloseClicked -> {
+                viewModelScope.launch {
+                    _uiEffects.emit(
+                        OpenPartialUiEffect.ShowDialog(
+                            OpenPartialDialogState.ConfirmClose(
+                                title = getApplication<Application>().getString(R.string.alert),
+                                description = getApplication<Application>().getString(R.string.alert_close_partial_dialog),
+                            )
+                        )
+                    )
+                }
+            }
+
+            OpenPartialUiEvent.OnTotalizersClicked -> {
+                viewModelScope.launch {
+                    _uiEffects.emit(
+                        OpenPartialUiEffect.NavigateTo(R.id.action_openPartialFragment_to_totalizersFragment)
+                    )
+                }
+            }
+
+            OpenPartialUiEvent.OnDialogAccept -> {
+                closePartials()
+                viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.DismissDialog) }
+            }
+
+            OpenPartialUiEvent.OnDialogCancel -> {
+                viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.DismissDialog) }
+            }
+        }
+    }
+
+    private fun handlePartial(partial: PartialModel?) {
+        if (partial != null) {
+            val raw = partial.bufLastTicketParciales
+            val content = raw.takeIf { !it.isNullOrEmpty() }
+                ?: getApplication<Application>().getString(R.string.no_active_partials_with_data)
+
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    rawPartialContent = raw,
+                    ticketContent = content
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    ticketContent = getApplication<Application>().getString(R.string.no_active_partials)
+                )
+            }
+        }
+    }
+
+    fun getPartial() {
+        Logs.d(TAG, "getPartial: Requesting partials data")
+        viewModelScope.launch {
+            ticketUseCase.loadCampos()
+            ticketUseCase.loadTickets(loadedTicketFiles)
+        }
+    }
+
+    fun closePartials() {
+        viewModelScope.launch {
+            Logs.d(TAG, "closePartials: executing closePartial useCase")
+            partialUseCase.closePartial()
+            _uiEffects.emit(
+                OpenPartialUiEffect.NavigateTo(R.id.action_openPartialsFragment_to_closedPartialFragment)
+            )
+        }
+    }
+
+    fun printPartial(ticket: String) {
+        viewModelScope.launch {
+            Logs.d(TAG, "printPartial: Attempting to print ticket (length: ${ticket.length})")
+            printerUseCase.printTicket(buf = ticket, paperFeed = true)
+        }
+    }
+
+    fun checkClosuresPermission() {
+        viewModelScope.launch {
+            Logs.d(TAG, "checkClosuresPermission: Checking parameters")
+            val parameters = licensingUseCase.getLicensingParameters()
+            _partialPermission.value = parameters?.isClosuresButton
+            _isTaximeterConnected.value = taximeterUseCase.isTaximeterConnected()
+            reduceButtons()
+        }
+    }
+
+    private fun reduceButtons() {
+        val current = _uiState.value.buttons.reduce(
+            OpenPartialButtonsInput(
+                canClosePermission = _partialPermission.value,
+                canCloseArg = true, // fragment arg is injected by bridge below
+                isTaximeterConnected = _isTaximeterConnected.value,
+                hasTotalizers = false, // bridge updates this
+                currentShiftStatus = null // bridge updates this
+            )
+        )
+        _uiState.update { it.copy(buttons = current) }
+    }
+
+    fun updateButtonsFromBridge(
+        canCloseArg: Boolean,
+        hasTotalizers: Boolean,
+        currentShiftStatus: Int?
+    ) {
+        val updated = _uiState.value.buttons.reduce(
+            OpenPartialButtonsInput(
+                canClosePermission = _partialPermission.value,
+                canCloseArg = canCloseArg,
+                isTaximeterConnected = _isTaximeterConnected.value,
+                hasTotalizers = hasTotalizers,
+                currentShiftStatus = currentShiftStatus
+            )
+        )
+        _uiState.update { it.copy(buttons = updated) }
+    }
+}
+```
+
+---
+
+## 4) Full `OpenPartialMainActivityViewModel` Compose bridge
+
+This is the bridge that replaces the fragment’s access to `sharedViewModel.taximeterTotalizersFlow` and `sharedViewModel.shiftStatusFlow`, while preserving the same behavior.
+
+```kotlin
+package ifac.td.taxi.viewmodel.openpartial
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class OpenPartialMainActivityBridgeState(
+    val taximeterTotalizers: Any? = null,
+    val currentShiftStatus: Int? = null,
+)
+
+class OpenPartialMainActivityViewModel : ViewModel() {
+
+    private val TAG = "OpenPartialMainActivityVM"
+
+    private val _taximeterTotalizersFlow = MutableStateFlow<Any?>(null)
+    val taximeterTotalizersFlow = _taximeterTotalizersFlow.asStateFlow()
+
+    private val _shiftStatusFlow = MutableStateFlow<ShiftStatusModel?>(null)
+    val shiftStatusFlow = _shiftStatusFlow.asStateFlow()
+
+    fun setTaximeterTotalizers(value: Any?) {
+        _taximeterTotalizersFlow.value = value
+        Logs.d(TAG, "setTaximeterTotalizers: value=${value != null}")
+    }
+
+    fun setShiftStatus(value: ShiftStatusModel?) {
+        _shiftStatusFlow.value = value
+        Logs.d(TAG, "setShiftStatus: currentStatus=${value?.currentStatus}")
+    }
+
+    fun printTicket(ticket: String) {
+        // bridge to your existing print pipeline
+        Logs.d(TAG, "printTicket: length=${ticket.length}")
+    }
+
+    fun navigateBack() {
+        // bridge to your existing activity navigation
+        Logs.d(TAG, "navigateBack")
+    }
+
+    fun navigateTo(destinationId: Int) {
+        Logs.d(TAG, "navigateTo: destinationId=$destinationId")
+    }
+
+    fun showToast(messageRes: Int) {
+        Logs.d(TAG, "showToast: resId=$messageRes")
+    }
+
+    data class ShiftStatusModel(
+        val currentStatus: Int? = null
+    )
+}
+```
+
+---
+
+## 5) Compose screen
+
+This composable mirrors:
+- loading state
+- ticket content
+- button visibility/style
+- dialog handling
+- navigation effects
+- scroll-to-bottom behavior
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.openpartial.*
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun OpenPartialScreen(
+    viewModel: OpenPartialViewModel,
+    sharedViewModel: OpenPartialMainActivityViewModel,
+    canCloseArg: Boolean,
+    onNavigateBack: () -> Unit,
+    onNavigateTo: (Int) -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scrollState = rememberScrollState()
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(OpenPartialUiEvent.OnScreenStarted)
+    }
+
+    LaunchedEffect(sharedViewModel.taximeterTotalizersFlow.value, sharedViewModel.shiftStatusFlow.value) {
+        viewModel.updateButtonsFromBridge(
+            canCloseArg = canCloseArg,
+            hasTotalizers = sharedViewModel.taximeterTotalizersFlow.value != null,
+            currentShiftStatus = sharedViewModel.shiftStatusFlow.value?.currentStatus
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffects.collectLatest { effect ->
+            when (effect) {
+                OpenPartialUiEffect.NavigateBack -> onNavigateBack()
+                is OpenPartialUiEffect.NavigateTo -> onNavigateTo(effect.destinationId)
+                is OpenPartialUiEffect.ShowToast -> onShowToast(effect.resId)
+                is OpenPartialUiEffect.ShowDialog -> Unit
+                OpenPartialUiEffect.DismissDialog -> Unit
+            }
+        }
+    }
+
+    var dialogState by remember { mutableStateOf<OpenPartialDialogState>(OpenPartialDialogState.Hidden) }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffects.collectLatest { effect ->
+            when (effect) {
+                is OpenPartialUiEffect.ShowDialog -> dialogState = effect.dialog
+                OpenPartialUiEffect.DismissDialog -> dialogState = OpenPartialDialogState.Hidden
+                else -> Unit
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 16.dp)
+        ) {
+            if (uiState.isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(96.dp))
+            } else {
+                TextTicketViewer(text = uiState.ticketContent)
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(96.dp)
+                .background(Color.Black),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OpenPartialButton(
+                type = ButtonType.VOLVER,
+                visualState = uiState.buttons.back,
+                modifier = Modifier.weight(1f),
+                onClick = { viewModel.onEvent(OpenPartialUiEvent.OnBackClicked) }
+            )
+
+            OpenPartialButton(
+                type = ButtonType.IMPRIMIR,
+                visualState = uiState.buttons.print,
+                modifier = Modifier.weight(1f),
+                onClick = { viewModel.onEvent(OpenPartialUiEvent.OnPrintClicked) }
+            )
+
+            if (uiState.buttons.close.visible) {
+                OpenPartialButton(
+                    type = ButtonType.CERRAR,
+                    visualState = uiState.buttons.close,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.onEvent(OpenPartialUiEvent.OnCloseClicked) }
+                )
+            } else if (uiState.buttons.totalizers.visible) {
+                OpenPartialButton(
+                    type = ButtonType.TOTALIZERS,
+                    visualState = uiState.buttons.totalizers,
+                    modifier = Modifier.weight(1f),
+                    onClick = { viewModel.onEvent(OpenPartialUiEvent.OnTotalizersClicked) }
+                )
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
+            }
+        }
+    }
+
+    when (val dialog = dialogState) {
+        is OpenPartialDialogState.Hidden -> Unit
+        is OpenPartialDialogState.ConfirmClose -> {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { viewModel.onEvent(OpenPartialUiEvent.OnDialogCancel) },
+                title = { androidx.compose.material3.Text(dialog.title) },
+                text = { androidx.compose.material3.Text(dialog.description) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { viewModel.onEvent(OpenPartialUiEvent.OnDialogAccept) }
+                    ) { androidx.compose.material3.Text("OK") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { viewModel.onEvent(OpenPartialUiEvent.OnDialogCancel) }
+                    ) { androidx.compose.material3.Text("CANCEL") }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun OpenPartialButton(
+    type: ButtonType,
+    visualState: OpenPartialButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    if (!visualState.visible) return
+
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxHeight(),
+        enabled = visualState.enabled,
+        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+            containerColor = when (visualState.style) {
+                CustomButton.StyleButton.ENABLE -> when (visualState.background) {
+                    CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+                    CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+                    CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+                    CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+                    CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+                    CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+                    CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+                    CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+                }
+                CustomButton.StyleButton.DISABLE -> Color(0xFF9E9E9E)
+                CustomButton.StyleButton.LOADING -> Color(0xFF9E9E9E)
+            }
+        )
+    ) {
+        androidx.compose.material3.Text(text = type.name)
+    }
+}
+
+@Composable
+private fun TextTicketViewer(text: String) {
+    androidx.compose.material3.Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = Color.White,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+```
+
+---
+
+## Notes on parity with the fragment
+
+### Preserved behavior
+- `checkClosuresPermission()` and `getPartial()` are triggered on screen start
+- `partialFlow` behavior is represented by `handlePartial(...)`
+- `btnClose` visibility/style logic is mirrored in `OpenPartialButtonsState.reduce(...)`
+- `btnTotalizers` visibility/style logic is mirrored exactly
+- navigation destination IDs are preserved:
+  - `R.id.action_openPartialsFragment_to_closedPartialFragment`
+  - `R.id.action_openPartialFragment_to_totalizersFragment`
+
+### Dialog handling
+You asked to use dialog state only if the VM uses a `CustomDialog`.  
+Here I used `OpenPartialDialogState.ConfirmClose` because the fragment does use a dialog for close confirmation. In Compose, this is represented with `AlertDialog`, but the state is still dialog-driven and lifecycle-safe.
+
+### About `CustomButton`
+The XML `CustomButton` is a custom view. In Compose, I mapped its visual state into a button renderer. If you want, I can also provide:
+- a `AndroidView { CustomButton(...) }` wrapper
+- or a fully custom Compose replica that matches the XML more closely
+
+---
+
+## Important caveat
+Your original fragment uses `sharedViewModel.shiftStatusFlow` and `sharedViewModel.taximeterTotalizersFlow`.  
+Because you requested a Compose bridge, I created `OpenPartialMainActivityViewModel` as a bridge placeholder. In your real app, you should connect it to the existing main activity shared VM or expose those flows directly into Compose.
+
+---
+
+If you want, I can do a second pass and provide:
+1. a version using `AndroidView` to host the real `CustomButton` and `CustomTicketViewer`
+2. a version that plugs into your existing Koin setup
+3. a version with exact `NavController` calls instead of callback lambdas
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.collectAsState as collectAsStateCompat
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavDeepLinkRequest
+import androidx.navigation.NavDirections
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.compose.viewmodel.BaseComposeViewModel
+import ifac.td.taxi.compose.viewmodel.ComposeSharedViewModel
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.domain.usecase.PartialUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.DestinationMapViewModel
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.addTicketLines
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class OpenPartialUiState(
+    val isLoading: Boolean = true,
+    val rawPartialContent: String? = null,
+    val ticketContent: String = "",
+    val buttons: OpenPartialButtonsState = OpenPartialButtonsState(),
+    val dialog: OpenPartialDialogState = OpenPartialDialogState.Hidden,
+)
+
+data class OpenPartialButtonsState(
+    val back: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = true,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = true
+    ),
+    val print: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = true,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = true
+    ),
+    val close: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = false,
+        style = CustomButton.StyleButton.DISABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = false
+    ),
+    val totalizers: OpenPartialButtonVisualState = OpenPartialButtonVisualState(
+        visible = false,
+        style = CustomButton.StyleButton.DISABLE,
+        background = CustomButton.BackgroundButtonColor.BLUE,
+        enabled = false
+    )
+)
+
+data class OpenPartialButtonVisualState(
+    val visible: Boolean,
+    val style: CustomButton.StyleButton,
+    val background: CustomButton.BackgroundButtonColor,
+    val enabled: Boolean,
+)
+
+sealed interface OpenPartialDialogState {
+    data object Hidden : OpenPartialDialogState
+    data class ConfirmClose(
+        val title: String,
+        val description: String,
+    ) : OpenPartialDialogState
+}
+
+sealed interface OpenPartialUiEvent {
+    data object OnScreenStarted : OpenPartialUiEvent
+    data object OnBackClicked : OpenPartialUiEvent
+    data object OnPrintClicked : OpenPartialUiEvent
+    data object OnCloseClicked : OpenPartialUiEvent
+    data object OnTotalizersClicked : OpenPartialUiEvent
+    data object OnDialogAccept : OpenPartialUiEvent
+    data object OnDialogCancel : OpenPartialUiEvent
+}
+
+sealed interface OpenPartialUiEffect {
+    data object NavigateBack : OpenPartialUiEffect
+    data class NavigateTo(val destinationId: Int) : OpenPartialUiEffect
+    data class ShowToast(@StringRes val resId: Int) : OpenPartialUiEffect
+    data class ShowDialog(val dialog: OpenPartialDialogState.ConfirmClose) : OpenPartialUiEffect
+    data object DismissDialog : OpenPartialUiEffect
+}
+
+data class OpenPartialButtonsInput(
+    val canClosePermission: Boolean?,
+    val canCloseArg: Boolean,
+    val isTaximeterConnected: Boolean,
+    val hasTotalizers: Boolean,
+    val currentShiftStatus: Int?,
+)
+
+fun OpenPartialButtonsState.reduce(input: OpenPartialButtonsInput): OpenPartialButtonsState {
+    val canClose = input.canClosePermission == true && input.canCloseArg
+
+    val closeState = if (canClose) {
+        OpenPartialButtonVisualState(
+            visible = true,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = true
+        )
+    } else {
+        OpenPartialButtonVisualState(
+            visible = false,
+            style = CustomButton.StyleButton.DISABLE,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = false
+        )
+    }
+
+    val totalizersVisible =
+        !canClose &&
+            input.currentShiftStatus != com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_DISCONNECTED &&
+            input.isTaximeterConnected
+
+    val totalizersStyle =
+        if (input.isTaximeterConnected && input.hasTotalizers) {
+            CustomButton.StyleButton.ENABLE
+        } else {
+            CustomButton.StyleButton.DISABLE
+        }
+
+    val totalizersState = if (totalizersVisible) {
+        OpenPartialButtonVisualState(
+            visible = true,
+            style = totalizersStyle,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = totalizersStyle == CustomButton.StyleButton.ENABLE
+        )
+    } else {
+        OpenPartialButtonVisualState(
+            visible = false,
+            style = totalizersStyle,
+            background = CustomButton.BackgroundButtonColor.BLUE,
+            enabled = false
+        )
+    }
+
+    return copy(
+        close = closeState,
+        totalizers = totalizersState
+    )
+}
+
+class OpenPartialViewModel(
+    context: Application,
+    private val partialUseCase: PartialUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val licensingUseCase: LicensingUseCase,
+    private val taximeterUseCase: TaximeterConnectUseCase,
+    private val ticketUseCase: TicketUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "OpenPartialViewModel"
+
+    private val _uiState = MutableStateFlow(OpenPartialUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffects = MutableSharedFlow<OpenPartialUiEffect>()
+    val uiEffects = _uiEffects.asSharedFlow()
+
+    private val _partialPermission = MutableStateFlow<Boolean?>(null)
+    private val _isTaximeterConnected = MutableStateFlow(false)
+
+    private val loadedTicketFiles: () -> Unit = {
+        viewModelScope.launch {
+            partialUseCase.doPartials { partial ->
+                Logs.d(TAG, "getPartial: doPartials callback received result = $partial")
+                handlePartial(partial)
+            }
+        }
+    }
+
+    fun onEvent(event: OpenPartialUiEvent) {
+        when (event) {
+            OpenPartialUiEvent.OnScreenStarted -> {
+                checkClosuresPermission()
+                getPartial()
+            }
+
+            OpenPartialUiEvent.OnBackClicked -> {
+                viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.NavigateBack) }
+            }
+
+            OpenPartialUiEvent.OnPrintClicked -> {
+                val raw = _uiState.value.rawPartialContent
+                if (!raw.isNullOrEmpty()) {
+                    printPartial(raw)
+                } else {
+                    viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.ShowToast(R.string.no_partials_to_print)) }
+                }
+            }
+
+            OpenPartialUiEvent.OnCloseClicked -> {
+                viewModelScope.launch {
+                    _uiEffects.emit(
+                        OpenPartialUiEffect.ShowDialog(
+                            OpenPartialDialogState.ConfirmClose(
+                                title = getApplication<Application>().getString(R.string.alert),
+                                description = getApplication<Application>().getString(R.string.alert_close_partial_dialog),
+                            )
+                        )
+                    )
+                }
+            }
+
+            OpenPartialUiEvent.OnTotalizersClicked -> {
+                viewModelScope.launch {
+                    _uiEffects.emit(
+                        OpenPartialUiEffect.NavigateTo(R.id.action_openPartialFragment_to_totalizersFragment)
+                    )
+                }
+            }
+
+            OpenPartialUiEvent.OnDialogAccept -> {
+                closePartials()
+                viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.DismissDialog) }
+            }
+
+            OpenPartialUiEvent.OnDialogCancel -> {
+                viewModelScope.launch { _uiEffects.emit(OpenPartialUiEffect.DismissDialog) }
+            }
+        }
+    }
+
+    private fun handlePartial(partial: PartialModel?) {
+        if (partial != null) {
+            val raw = partial.bufLastTicketParciales
+            val content = raw.takeIf { !it.isNullOrEmpty() }
+                ?: getApplication<Application>().getString(R.string.no_active_partials_with_data)
+
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    rawPartialContent = raw,
+                    ticketContent = content
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    ticketContent = getApplication<Application>().getString(R.string.no_active_partials)
+                )
+            }
+        }
+    }
+
+    fun getPartial() {
+        Logs.d(TAG, "getPartial: Requesting partials data")
+        viewModelScope.launch {
+            ticketUseCase.loadCampos()
+            ticketUseCase.loadTickets(loadedTicketFiles)
+        }
+    }
+
+    fun closePartials() {
+        viewModelScope.launch {
+            Logs.d(TAG, "closePartials: executing closePartial useCase")
+            partialUseCase.closePartial()
+            _uiEffects.emit(
+                OpenPartialUiEffect.NavigateTo(R.id.action_openPartialsFragment_to_closedPartialFragment)
+            )
+        }
+    }
+
+    fun printPartial(ticket: String) {
+        viewModelScope.launch {
+            Logs.d(TAG, "printPartial: Attempting to print ticket (length: ${ticket.length})")
+            printerUseCase.printTicket(buf = ticket, paperFeed = true)
+        }
+    }
+
+    fun checkClosuresPermission() {
+        viewModelScope.launch {
+            Logs.d(TAG, "checkClosuresPermission: Checking parameters")
+            val parameters = licensingUseCase.getLicensingParameters()
+            _partialPermission.value = parameters?.isClosuresButton
+            _isTaximeterConnected.value = taximeterUseCase.isTaximeterConnected()
+            reduceButtons(canCloseArg = true, hasTotalizers = false, currentShiftStatus = null)
+        }
+    }
+
+    fun updateButtonsFromBridge(
+        canCloseArg: Boolean,
+        hasTotalizers: Boolean,
+        currentShiftStatus: Int?
+    ) {
+        reduceButtons(
+            canCloseArg = canCloseArg,
+            hasTotalizers = hasTotalizers,
+            currentShiftStatus = currentShiftStatus
+        )
+    }
+
+    private fun reduceButtons(
+        canCloseArg: Boolean,
+        hasTotalizers: Boolean,
+        currentShiftStatus: Int?
+    ) {
+        val updated = _uiState.value.buttons.reduce(
+            OpenPartialButtonsInput(
+                canClosePermission = _partialPermission.value,
+                canCloseArg = canCloseArg,
+                isTaximeterConnected = _isTaximeterConnected.value,
+                hasTotalizers = hasTotalizers,
+                currentShiftStatus = currentShiftStatus
+            )
+        )
+        _uiState.update { it.copy(buttons = updated) }
+    }
+}
+
+class OpenPartialMainActivityViewModel : ViewModel() {
+
+    private val TAG = "OpenPartialMainActivityViewModel"
+
+    private val _taximeterTotalizersFlow = MutableStateFlow<Any?>(null)
+    val taximeterTotalizersFlow = _taximeterTotalizersFlow.asStateFlow()
+
+    private val _shiftStatusFlow = MutableStateFlow<ShiftStatusModel?>(null)
+    val shiftStatusFlow = _shiftStatusFlow.asStateFlow()
+
+    fun setTaximeterTotalizers(value: Any?) {
+        _taximeterTotalizersFlow.value = value
+        Logs.d(TAG, "setTaximeterTotalizers: value=${value != null}")
+    }
+
+    fun setShiftStatus(value: ShiftStatusModel?) {
+        _shiftStatusFlow.value = value
+        Logs.d(TAG, "setShiftStatus: currentStatus=${value?.currentStatus}")
+    }
+
+    fun printTicket(ticket: String) {
+        Logs.d(TAG, "printTicket: length=${ticket.length}")
+    }
+
+    fun navigateBack() {
+        Logs.d(TAG, "navigateBack")
+    }
+
+    fun navigateTo(destinationId: Int) {
+        Logs.d(TAG, "navigateTo: destinationId=$destinationId")
+    }
+
+    fun showToast(messageRes: Int) {
+        Logs.d(TAG, "showToast: resId=$messageRes")
+    }
+
+    data class ShiftStatusModel(
+        val currentStatus: Int? = null
+    )
+}
+
+@Composable
+fun OpenPartialScreen(
+    viewModel: OpenPartialViewModel,
+    sharedViewModel: OpenPartialMainActivityViewModel,
+    canCloseArg: Boolean,
+    onNavigateBack: () -> Unit,
+    onNavigateTo: (Int) -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val scrollState = rememberScrollState()
+    var dialogState by remember { mutableStateOf<OpenPartialDialogState>(OpenPartialDialogState.Hidden) }
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(OpenPartialUiEvent.OnScreenStarted)
+    }
+
+    LaunchedEffect(sharedViewModel.taximeterTotalizersFlow.value, sharedViewModel.shiftStatusFlow.value, canCloseArg) {
+        viewModel.updateButtonsFromBridge(
+            canCloseArg = canCloseArg,
+            hasTotalizers = sharedViewModel.taximeterTotalizersFlow.value != null,
+            currentShiftStatus = sharedViewModel.shiftStatusFlow.value?.currentStatus
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffects.collectLatest { effect ->
+            when (effect) {
+                OpenPartialUiEffect.NavigateBack -> onNavigateBack()
+                is OpenPartialUiEffect.NavigateTo -> onNavigateTo(effect.destinationId)
+                is OpenPartialUiEffect.ShowToast -> onShowToast(effect.resId)
+                is OpenPartialUiEffect.ShowDialog -> dialogState = effect.dialog
+                OpenPartialUiEffect.DismissDialog -> dialogState = OpenPartialDialogState.Hidden
+            }
+        }
+    }
+
+    BackHandler {
+        viewModel.onEvent(OpenPartialUiEvent.OnBackClicked)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 16.dp)
+        ) {
+            if (uiState.isLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(96.dp))
+                }
+            } else {
+                TextTicketViewer(text = uiState.ticketContent)
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(96.dp)
+                .background(Color.Black)
+                .padding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom).asPaddingValues()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OpenPartialButton(
+                type = ButtonType.VOLVER,
+                visualState = uiState.buttons.back,
+                modifier = Modifier.weight(1f),
+                onClick = { viewModel.onEvent(OpenPartialUiEvent.OnBackClicked) }
+            )
+
+            OpenPartialButton(
+                type = ButtonType.IMPRIMIR,
+                visualState = uiState.buttons.print,
+                modifier = Modifier.weight(1f),
+                onClick = { viewModel.onEvent(OpenPartialUiEvent.OnPrintClicked) }
+            )
+
+            when {
+                uiState.buttons.close.visible -> {
+                    OpenPartialButton(
+                        type = ButtonType.CERRAR,
+                        visualState = uiState.buttons.close,
+                        modifier = Modifier.weight(1f),
+                        onClick = { viewModel.onEvent(OpenPartialUiEvent.OnCloseClicked) }
+                    )
+                }
+
+                uiState.buttons.totalizers.visible -> {
+                    OpenPartialButton(
+                        type = ButtonType.TOTALIZERS,
+                        visualState = uiState.buttons.totalizers,
+                        modifier = Modifier.weight(1f),
+                        onClick = { viewModel.onEvent(OpenPartialUiEvent.OnTotalizersClicked) }
+                    )
+                }
+
+                else -> {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+
+    when (val dialog = dialogState) {
+        OpenPartialDialogState.Hidden -> Unit
+        is OpenPartialDialogState.ConfirmClose -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.onEvent(OpenPartialUiEvent.OnDialogCancel) },
+                title = { Text(dialog.title) },
+                text = { Text(dialog.description) },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.onEvent(OpenPartialUiEvent.OnDialogAccept) }) {
+                        Text("ACCEPT")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.onEvent(OpenPartialUiEvent.OnDialogCancel) }) {
+                        Text("CANCEL")
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun OpenPartialButton(
+    type: ButtonType,
+    visualState: OpenPartialButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    if (!visualState.visible) return
+
+    Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxHeight(),
+        enabled = visualState.enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = when (visualState.style) {
+                CustomButton.StyleButton.ENABLE -> when (visualState.background) {
+                    CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+                    CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+                    CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+                    CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+                    CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+                    CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+                    CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+                    CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+                }
+
+                CustomButton.StyleButton.DISABLE -> Color(0xFF9E9E9E)
+                CustomButton.StyleButton.LOADING -> Color(0xFF9E9E9E)
+            }
+        )
+    ) {
+        Text(text = type.name)
+    }
+}
+
+@Composable
+private fun TextTicketViewer(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = Color.White,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

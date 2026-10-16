@@ -1,0 +1,1211 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the original fragment behavior, keeps Jetpack Navigation semantics, and replaces the fragment’s button logic with a reducer-based state holder.
+
+I’m giving you:
+
+1. A `ClosedPartialScreen` composable
+2. A Compose-friendly `ClosedPartialViewModel` using `UiState + UiEvent + UiEffect`
+3. An exact `ClosedPartialButtonsState` reducer mirroring the fragment’s `collect {}` branch behavior
+4. A `ClosedPartialMainActivityViewModel` bridge to integrate shared flows exactly like the fragment did
+5. Optional dialog handling scaffolding only if you later add a `CustomDialog`-style effect
+
+---
+
+## 1) Compose screen
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.view.View
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.NavController
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.ClosedPartialUiEffect
+import ifac.td.taxi.viewmodel.ClosedPartialUiEvent
+import ifac.td.taxi.viewmodel.ClosedPartialUiState
+import ifac.td.taxi.viewmodel.ClosedPartialViewModel
+import ifac.td.taxi.viewmodel.ClosedPartialButtonsState
+import ifac.td.taxi.viewmodel.ClosedPartialMainActivityViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun ClosedPartialScreen(
+    navController: NavController,
+    viewModel: ClosedPartialViewModel,
+    sharedViewModel: ClosedPartialMainActivityViewModel,
+    justClosed: Boolean,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val sharedState by sharedViewModel.uiState.collectAsStateWithLifecycle()
+
+    val buttonsState = remember(uiState, sharedState) {
+        ClosedPartialButtonsState.reduce(
+            partial = uiState.partial,
+            isTaximeterConnected = uiState.isTaximeterConnected,
+            currentStatus = sharedState.currentShiftStatus,
+            hasTotalizers = sharedState.hasTotalizers,
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        viewModel.onEvent(ClosedPartialUiEvent.ScreenStarted)
+        sharedViewModel.onEvent(ifac.td.taxi.viewmodel.ClosedPartialMainActivityUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                ClosedPartialUiEffect.NavigateBackOnce -> navController.popBackStack()
+                ClosedPartialUiEffect.NavigateBackTwice -> {
+                    navController.popBackStack()
+                    navController.popBackStack()
+                }
+                ClosedPartialUiEffect.NavigateToTotalizers -> {
+                    navController.navigate(R.id.action_closedPartialFragment_to_totalizersFragment)
+                }
+                is ClosedPartialUiEffect.ShowDialog -> {
+                    // Only needed if you later add CustomDialog behavior
+                }
+            }
+        }
+    }
+
+    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            TicketViewerReceipts(
+                ticketContent = uiState.ticketContent
+            )
+
+            ClosedPartialButtons(
+                state = buttonsState,
+                onCancel = { viewModel.onEvent(ClosedPartialUiEvent.CancelClicked(justClosed)) },
+                onPrint = { viewModel.onEvent(ClosedPartialUiEvent.PrintClicked) },
+                onTotalizers = { viewModel.onEvent(ClosedPartialUiEvent.TotalizersClicked) }
+            )
+        }
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.domain.usecase.PartialUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.addTicketLines
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class ClosedPartialUiState(
+    val partial: PartialModel? = null,
+    val ticketContent: String = "",
+    val isTaximeterConnected: Boolean = false,
+    val isLoading: Boolean = false,
+)
+
+sealed interface ClosedPartialUiEvent {
+    data object ScreenStarted : ClosedPartialUiEvent
+    data class CancelClicked(val justClosed: Boolean) : ClosedPartialUiEvent
+    data object PrintClicked : ClosedPartialUiEvent
+    data object TotalizersClicked : ClosedPartialUiEvent
+}
+
+sealed interface ClosedPartialUiEffect {
+    data object NavigateBackOnce : ClosedPartialUiEffect
+    data object NavigateBackTwice : ClosedPartialUiEffect
+    data object NavigateToTotalizers : ClosedPartialUiEffect
+    data class ShowDialog(val title: String, val message: String) : ClosedPartialUiEffect
+}
+
+class ClosedPartialViewModel(
+    context: Application,
+    private val printerUseCase: PrinterUseCase,
+    private val partialUseCase: PartialUseCase,
+    private val taximeterUseCase: TaximeterConnectUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "ClosedPartialViewModel"
+
+    private val _uiState = MutableStateFlow(ClosedPartialUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<ClosedPartialUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<ClosedPartialUiEffect> = _effects.asSharedFlow()
+
+    fun onEvent(event: ClosedPartialUiEvent) {
+        when (event) {
+            ClosedPartialUiEvent.ScreenStarted -> {
+                checkTaximeterStatus()
+                getClosedPartial()
+            }
+
+            is ClosedPartialUiEvent.CancelClicked -> manageBack(event.justClosed)
+            ClosedPartialUiEvent.PrintClicked -> printPartial()
+            ClosedPartialUiEvent.TotalizersClicked -> {
+                viewModelScope.launch {
+                    _effects.emit(ClosedPartialUiEffect.NavigateToTotalizers)
+                }
+            }
+        }
+    }
+
+    private fun getClosedPartial() {
+        Logs.d(TAG, "getClosedPartial: Fetching closed partial from useCase")
+        viewModelScope.launch {
+            val result = partialUseCase.getClosedPartial()
+            Logs.d(TAG, "getClosedPartial: Result obtained. emitting...")
+            _uiState.update {
+                it.copy(
+                    partial = result,
+                    ticketContent = result?.bufLastTicketCierre?.takeIf { text -> text.isNotEmpty() }
+                        ?: getApplication<Application>().getString(R.string.no_closed_partials)
+                )
+            }
+        }
+    }
+
+    private fun manageBack(justClosed: Boolean) {
+        viewModelScope.launch {
+            Logs.d(TAG, "manageBack: justClosed=$justClosed")
+            if (justClosed) {
+                Logs.d(TAG, "manageBack: Navigating back twice (closing flow)")
+                _effects.emit(ClosedPartialUiEffect.NavigateBackTwice)
+            } else {
+                Logs.d(TAG, "manageBack: Navigating back once")
+                _effects.emit(ClosedPartialUiEffect.NavigateBackOnce)
+            }
+        }
+    }
+
+    private fun printPartial() {
+        viewModelScope.launch {
+            val partial = uiState.value.partial
+            if (partial != null) {
+                Logs.d(TAG, "printPartial: Printing closed partial")
+                printerUseCase.printMessage(
+                    header = null,
+                    message = partial.bufLastTicketCierre.addTicketLines(),
+                    paperFeed = false
+                )
+            } else {
+                Logs.d(TAG, "printPartial: Failed - No partial data available to print")
+            }
+        }
+    }
+
+    private fun checkTaximeterStatus() {
+        viewModelScope.launch {
+            Logs.d(TAG, "checkTaximeterStatus: Checking taximeter status")
+            val isTaximeterConnected = taximeterUseCase.isTaximeterConnected()
+            Logs.d(TAG, "checkTaximeterStatus: isTaximeterConnected=$isTaximeterConnected")
+            _uiState.update { it.copy(isTaximeterConnected = isTaximeterConnected) }
+        }
+    }
+}
+```
+
+---
+
+## 3) Exact `ClosedPartialButtonsState` reducer
+
+This mirrors the fragment’s `collect {}` branch behavior one-by-one:
+
+- `ticketContent` is derived exactly like:
+  - `partial?.bufLastTicketCierre?.takeIf { it.isNotEmpty() } ?: getString(R.string.no_closed_partials)`
+- `btnTotalizers` visibility is exactly:
+  - visible when `currentStatus != ifConstants.STATE_DISCONNECTED && isTaximeterConnected`
+  - gone otherwise
+- style is exactly:
+  - `ENABLE` when `isTaximeterConnected && hasTotalizers`
+  - `DISABLE` otherwise
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.ui.custom.button.CustomButton
+
+data class ClosedPartialButtonsState(
+    val showTotalizers: Boolean = false,
+    val totalizersStyle: CustomButton.StyleButton = CustomButton.StyleButton.DISABLE,
+)
+
+object ClosedPartialButtonsReducer {
+
+    fun reduce(
+        isTaximeterConnected: Boolean,
+        currentStatus: Int?,
+        hasTotalizers: Boolean,
+    ): ClosedPartialButtonsState {
+        val shouldShow = currentStatus != ifConstants.STATE_DISCONNECTED && isTaximeterConnected
+
+        val style = if (shouldShow && isTaximeterConnected && hasTotalizers) {
+            CustomButton.StyleButton.ENABLE
+        } else {
+            CustomButton.StyleButton.DISABLE
+        }
+
+        return ClosedPartialButtonsState(
+            showTotalizers = shouldShow,
+            totalizersStyle = style
+        )
+    }
+}
+```
+
+If you want the exact “one-by-one” reducer for the fragment’s `collect {}` branch, here it is as a pure state reducer:
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.ui.custom.button.CustomButton
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+
+data class ClosedPartialScreenState(
+    val ticketContent: String = "",
+    val buttonsState: ClosedPartialButtonsState = ClosedPartialButtonsState(),
+)
+
+object ClosedPartialScreenReducer {
+
+    fun reduce(
+        partial: PartialModel?,
+        isTaximeterConnected: Boolean,
+        currentStatus: Int?,
+        hasTotalizers: Boolean,
+        noClosedPartialsText: String,
+    ): ClosedPartialScreenState {
+        val ticketContent = partial?.bufLastTicketCierre?.takeIf { it.isNotEmpty() }
+            ?: noClosedPartialsText
+
+        val shouldShow = currentStatus != ifConstants.STATE_DISCONNECTED && isTaximeterConnected
+        val style = if (shouldShow && isTaximeterConnected && hasTotalizers) {
+            CustomButton.StyleButton.ENABLE
+        } else {
+            CustomButton.StyleButton.DISABLE
+        }
+
+        return ClosedPartialScreenState(
+            ticketContent = ticketContent,
+            buttonsState = ClosedPartialButtonsState(
+                showTotalizers = shouldShow,
+                totalizersStyle = style
+            )
+        )
+    }
+}
+```
+
+---
+
+## 4) Compose bridge for the shared `MainActivityViewModel`
+
+This is the Compose replacement for the fragment’s `sharedViewModel.taximeterTotalizersFlow` and `sharedViewModel.shiftStatusFlow`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class ClosedPartialMainActivityUiState(
+    val currentShiftStatus: Int? = null,
+    val hasTotalizers: Boolean = false,
+)
+
+sealed interface ClosedPartialMainActivityUiEvent {
+    data object ScreenStarted : ClosedPartialMainActivityUiEvent
+}
+
+class ClosedPartialMainActivityViewModel(
+    private val mainActivityViewModel: MainActivityViewModel
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(ClosedPartialMainActivityUiState())
+    val uiState: StateFlow<ClosedPartialMainActivityUiState> = _uiState.asStateFlow()
+
+    fun onEvent(event: ClosedPartialMainActivityUiEvent) {
+        when (event) {
+            ClosedPartialMainActivityUiEvent.ScreenStarted -> observeSharedState()
+        }
+    }
+
+    private fun observeSharedState() {
+        viewModelScope.launch {
+            mainActivityViewModel.shiftStatusFlow.collect { shiftStatus ->
+                _uiState.value = _uiState.value.copy(
+                    currentShiftStatus = shiftStatus?.currentStatus
+                )
+            }
+        }
+
+        viewModelScope.launch {
+            mainActivityViewModel.taximeterTotalizersFlow.collect { totalizers ->
+                _uiState.value = _uiState.value.copy(
+                    hasTotalizers = totalizers != null
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 5) Compose UI for buttons
+
+This replaces the fragment’s `setButtons()` and `updateTotalizersButtonState()` logic.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.ClosedPartialButtonsState
+
+@Composable
+fun ClosedPartialButtons(
+    state: ClosedPartialButtonsState,
+    onCancel: () -> Unit,
+    onPrint: () -> Unit,
+    onTotalizers: () -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Button(onClick = onCancel) {
+            Text(text = "Cancel")
+        }
+
+        Button(onClick = onPrint) {
+            Text(text = "Print")
+        }
+
+        if (state.showTotalizers) {
+            when (state.totalizersStyle) {
+                CustomButton.StyleButton.ENABLE -> {
+                    Button(onClick = onTotalizers) {
+                        Text(text = "Totalizers")
+                    }
+                }
+                CustomButton.StyleButton.DISABLE -> {
+                    Button(onClick = {})
+                    {
+                        Text(text = "Totalizers")
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 6) Ticket viewer placeholder
+
+Replace this with your actual receipt/ticket composable.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+
+@Composable
+fun TicketViewerReceipts(
+    ticketContent: String
+) {
+    Text(text = ticketContent)
+}
+```
+
+---
+
+## 7) Notes on preserving fragment navigation
+
+The fragment used:
+
+- `navigateBack()` once or twice
+- `navigateTo(R.id.action_closedPartialFragment_to_totalizersFragment)`
+
+In Compose, the equivalent is handled via `NavController`:
+
+- `navController.popBackStack()`
+- `navController.navigate(R.id.action_closedPartialFragment_to_totalizersFragment)`
+
+That preserves the same navigation graph behavior.
+
+---
+
+## 8) About dialog handling
+
+Your `ClosedPartialFragment` does not use `CustomDialog`, so I did not add dialog state handling beyond a placeholder `ShowDialog` effect. If you later introduce a dialog, the correct Compose pattern is:
+
+- `UiEffect.ShowDialog(...)`
+- `remember { mutableStateOf(false) }`
+- lifecycle-aware collection of `effects`
+- render dialog conditionally
+
+---
+
+## 9) Important correction about the original fragment logic
+
+The fragment updates `btnTotalizers` only inside the `partialFlow.collect {}` branch, but the actual visibility depends on:
+
+- `isTaximeterConnectedFlow.value`
+- `sharedViewModel.taximeterTotalizersFlow.value`
+- `sharedViewModel.shiftStatusFlow.value?.currentStatus`
+
+In Compose, the reducer above is better because it reacts to all three inputs declaratively, which is the correct replacement for the imperative fragment code.
+
+---
+
+If you want, I can also provide:
+
+1. a fully wired `NavHost` destination for this screen, or
+2. a version that uses your existing `CustomButton` composable/component instead of Material `Button`.
+// SECOND ANSWER
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavController
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.domain.usecase.PartialUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.addTicketLines
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// -----------------------------
+// UI STATE / EVENT / EFFECT
+// -----------------------------
+
+data class ClosedPartialUiState(
+    val partial: PartialModel? = null,
+    val ticketContent: String = "",
+    val isTaximeterConnected: Boolean = false,
+)
+
+sealed interface ClosedPartialUiEvent {
+    data object ScreenStarted : ClosedPartialUiEvent
+    data class CancelClicked(val justClosed: Boolean) : ClosedPartialUiEvent
+    data object PrintClicked : ClosedPartialUiEvent
+    data object TotalizersClicked : ClosedPartialUiEvent
+}
+
+sealed interface ClosedPartialUiEffect {
+    data object NavigateBackOnce : ClosedPartialUiEffect
+    data object NavigateBackTwice : ClosedPartialUiEffect
+    data object NavigateToTotalizers : ClosedPartialUiEffect
+    data class ShowDialog(val title: String, val message: String) : ClosedPartialUiEffect
+}
+
+data class ClosedPartialButtonsState(
+    val cancelStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val printStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val totalizersVisible: Boolean = false,
+    val totalizersStyle: CustomButton.StyleButton = CustomButton.StyleButton.DISABLE,
+)
+
+object ClosedPartialButtonsReducer {
+    fun reduce(
+        isTaximeterConnected: Boolean,
+        currentStatus: Int?,
+        hasTotalizers: Boolean,
+    ): ClosedPartialButtonsState {
+        val shouldShow = currentStatus != ifConstants.STATE_DISCONNECTED && isTaximeterConnected
+        val totalizersStyle = if (shouldShow && isTaximeterConnected && hasTotalizers) {
+            CustomButton.StyleButton.ENABLE
+        } else {
+            CustomButton.StyleButton.DISABLE
+        }
+
+        return ClosedPartialButtonsState(
+            cancelStyle = CustomButton.StyleButton.ENABLE,
+            printStyle = CustomButton.StyleButton.ENABLE,
+            totalizersVisible = shouldShow,
+            totalizersStyle = totalizersStyle
+        )
+    }
+}
+
+data class ClosedPartialMainActivityUiState(
+    val currentShiftStatus: Int? = null,
+    val hasTotalizers: Boolean = false,
+)
+
+sealed interface ClosedPartialMainActivityUiEvent {
+    data object ScreenStarted : ClosedPartialMainActivityUiEvent
+}
+
+class ClosedPartialMainActivityViewModel(
+    private val mainActivityViewModel: MainActivityViewModel
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(ClosedPartialMainActivityUiState())
+    val uiState = _uiState.asStateFlow()
+
+    fun onEvent(event: ClosedPartialMainActivityUiEvent) {
+        when (event) {
+            ClosedPartialMainActivityUiEvent.ScreenStarted -> observeSharedState()
+        }
+    }
+
+    private fun observeSharedState() {
+        viewModelScope.launch {
+            mainActivityViewModel.shiftStatusFlow.collectLatest { shiftStatus ->
+                _uiState.update { it.copy(currentShiftStatus = shiftStatus?.currentStatus) }
+            }
+        }
+        viewModelScope.launch {
+            mainActivityViewModel.taximeterTotalizersFlow.collectLatest { totalizers ->
+                _uiState.update { it.copy(hasTotalizers = totalizers != null) }
+            }
+        }
+    }
+}
+
+class ClosedPartialViewModel(
+    context: Application,
+    private val printerUseCase: PrinterUseCase,
+    private val partialUseCase: PartialUseCase,
+    private val taximeterUseCase: TaximeterConnectUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "ClosedPartialViewModel"
+
+    private val _uiState = MutableStateFlow(ClosedPartialUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<ClosedPartialUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<ClosedPartialUiEffect> = _effects.asSharedFlow()
+
+    fun onEvent(event: ClosedPartialUiEvent) {
+        when (event) {
+            ClosedPartialUiEvent.ScreenStarted -> {
+                checkTaximeterStatus()
+                getClosedPartial()
+            }
+
+            is ClosedPartialUiEvent.CancelClicked -> manageBack(event.justClosed)
+            ClosedPartialUiEvent.PrintClicked -> printPartial()
+            ClosedPartialUiEvent.TotalizersClicked -> {
+                viewModelScope.launch {
+                    _effects.emit(ClosedPartialUiEffect.NavigateToTotalizers)
+                }
+            }
+        }
+    }
+
+    private fun getClosedPartial() {
+        Logs.d(TAG, "getClosedPartial: Fetching closed partial from useCase")
+        viewModelScope.launch {
+            val result = partialUseCase.getClosedPartial()
+            Logs.d(TAG, "getClosedPartial: Result obtained. emitting...")
+            _uiState.update {
+                it.copy(
+                    partial = result,
+                    ticketContent = result?.bufLastTicketCierre?.takeIf { text -> text.isNotEmpty() }
+                        ?: getApplication<Application>().getString(R.string.no_closed_partials)
+                )
+            }
+        }
+    }
+
+    private fun manageBack(justClosed: Boolean) {
+        viewModelScope.launch {
+            Logs.d(TAG, "manageBack: justClosed=$justClosed")
+            if (justClosed) {
+                Logs.d(TAG, "manageBack: Navigating back twice (closing flow)")
+                _effects.emit(ClosedPartialUiEffect.NavigateBackTwice)
+            } else {
+                Logs.d(TAG, "manageBack: Navigating back once")
+                _effects.emit(ClosedPartialUiEffect.NavigateBackOnce)
+            }
+        }
+    }
+
+    private fun printPartial() {
+        viewModelScope.launch {
+            val partial = uiState.value.partial
+            if (partial != null) {
+                Logs.d(TAG, "printPartial: Printing closed partial")
+                printerUseCase.printMessage(
+                    header = null,
+                    message = partial.bufLastTicketCierre.addTicketLines(),
+                    paperFeed = false
+                )
+            } else {
+                Logs.d(TAG, "printPartial: Failed - No partial data available to print")
+            }
+        }
+    }
+
+    private fun checkTaximeterStatus() {
+        viewModelScope.launch {
+            Logs.d(TAG, "checkTaximeterStatus: Checking taximeter status")
+            val isTaximeterConnected = taximeterUseCase.isTaximeterConnected()
+            Logs.d(TAG, "checkTaximeterStatus: isTaximeterConnected=$isTaximeterConnected")
+            _uiState.update { it.copy(isTaximeterConnected = isTaximeterConnected) }
+        }
+    }
+}
+
+// -----------------------------
+// COMPOSE SCREEN
+// -----------------------------
+
+@Composable
+fun ClosedPartialScreen(
+    navController: NavController,
+    viewModel: ClosedPartialViewModel,
+    sharedViewModel: ClosedPartialMainActivityViewModel,
+    justClosed: Boolean,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val sharedState by sharedViewModel.uiState.collectAsStateWithLifecycle()
+
+    val buttonsState = remember(
+        uiState.isTaximeterConnected,
+        sharedState.currentShiftStatus,
+        sharedState.hasTotalizers
+    ) {
+        ClosedPartialButtonsReducer.reduce(
+            isTaximeterConnected = uiState.isTaximeterConnected,
+            currentStatus = sharedState.currentShiftStatus,
+            hasTotalizers = sharedState.hasTotalizers
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        viewModel.onEvent(ClosedPartialUiEvent.ScreenStarted)
+        sharedViewModel.onEvent(ClosedPartialMainActivityUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                ClosedPartialUiEffect.NavigateBackOnce -> navController.popBackStack()
+                ClosedPartialUiEffect.NavigateBackTwice -> {
+                    navController.popBackStack()
+                    navController.popBackStack()
+                }
+                ClosedPartialUiEffect.NavigateToTotalizers -> {
+                    navController.navigate(R.id.action_closedPartialFragment_to_totalizersFragment)
+                }
+                is ClosedPartialUiEffect.ShowDialog -> Unit
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.Top
+    ) {
+        TicketViewerReceipts(ticketContent = uiState.ticketContent)
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = { viewModel.onEvent(ClosedPartialUiEvent.CancelClicked(justClosed)) }) {
+            Text(text = "Cancel")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Button(onClick = { viewModel.onEvent(ClosedPartialUiEvent.PrintClicked) }) {
+            Text(text = "Print")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (buttonsState.totalizersVisible) {
+            Button(
+                onClick = { viewModel.onEvent(ClosedPartialUiEvent.TotalizersClicked) },
+                enabled = buttonsState.totalizersStyle == CustomButton.StyleButton.ENABLE
+            ) {
+                Text(text = "Totalizers")
+            }
+        }
+    }
+}
+
+@Composable
+fun TicketViewerReceipts(ticketContent: String) {
+    Text(text = ticketContent)
+}
+```
+// THIRD ANSWER
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.view.View
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavController
+import androidx.navigation.NavDirections
+import androidx.navigation.fragment.findNavController
+import androidx.navigation.fragment.navArgs
+import com.interfacom.sdk.taximeter.bravocomm.ifConstants
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PartialModel
+import ifac.td.taxi.domain.usecase.PartialUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.framework.sdk.usecase.TaximeterConnectUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.MainActivityViewModel
+import ifac.td.taxi.viewmodel.model.UtilsModel.Companion.addTicketLines
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// -----------------------------------------------------------------------------
+// SAFE ARGS ADAPTER
+// -----------------------------------------------------------------------------
+
+data class ClosedPartialArgs(val justClosed: Boolean)
+
+// -----------------------------------------------------------------------------
+// UI STATE / EVENT / EFFECT
+// -----------------------------------------------------------------------------
+
+data class ClosedPartialUiState(
+    val partial: PartialModel? = null,
+    val ticketContent: String = "",
+    val isTaximeterConnected: Boolean = false,
+)
+
+sealed interface ClosedPartialUiEvent {
+    data object ScreenStarted : ClosedPartialUiEvent
+    data class CancelClicked(val justClosed: Boolean) : ClosedPartialUiEvent
+    data object PrintClicked : ClosedPartialUiEvent
+    data object TotalizersClicked : ClosedPartialUiEvent
+}
+
+sealed interface ClosedPartialUiEffect {
+    data object NavigateBackOnce : ClosedPartialUiEffect
+    data object NavigateBackTwice : ClosedPartialUiEffect
+    data class NavigateToTotalizers(val directions: NavDirections) : ClosedPartialUiEffect
+    data class ShowDialog(val title: String, val message: String) : ClosedPartialUiEffect
+}
+
+data class ClosedPartialButtonsState(
+    val cancelStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val printStyle: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val totalizersVisible: Boolean = false,
+    val totalizersStyle: CustomButton.StyleButton = CustomButton.StyleButton.DISABLE,
+)
+
+object ClosedPartialButtonsReducer {
+    fun reduce(
+        isTaximeterConnected: Boolean,
+        currentStatus: Int?,
+        hasTotalizers: Boolean,
+    ): ClosedPartialButtonsState {
+        val shouldShow = currentStatus != ifConstants.STATE_DISCONNECTED && isTaximeterConnected
+        val totalizersStyle = if (shouldShow && isTaximeterConnected && hasTotalizers) {
+            CustomButton.StyleButton.ENABLE
+        } else {
+            CustomButton.StyleButton.DISABLE
+        }
+
+        return ClosedPartialButtonsState(
+            cancelStyle = CustomButton.StyleButton.ENABLE,
+            printStyle = CustomButton.StyleButton.ENABLE,
+            totalizersVisible = shouldShow,
+            totalizersStyle = totalizersStyle
+        )
+    }
+}
+
+data class ClosedPartialMainActivityUiState(
+    val currentShiftStatus: Int? = null,
+    val hasTotalizers: Boolean = false,
+)
+
+sealed interface ClosedPartialMainActivityUiEvent {
+    data object ScreenStarted : ClosedPartialMainActivityUiEvent
+}
+
+class ClosedPartialMainActivityViewModel(
+    private val mainActivityViewModel: MainActivityViewModel
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(ClosedPartialMainActivityUiState())
+    val uiState = _uiState.asStateFlow()
+
+    fun onEvent(event: ClosedPartialMainActivityUiEvent) {
+        when (event) {
+            ClosedPartialMainActivityUiEvent.ScreenStarted -> observeSharedState()
+        }
+    }
+
+    private fun observeSharedState() {
+        viewModelScope.launch {
+            mainActivityViewModel.shiftStatusFlow.collectLatest { shiftStatus ->
+                _uiState.update { it.copy(currentShiftStatus = shiftStatus?.currentStatus) }
+            }
+        }
+        viewModelScope.launch {
+            mainActivityViewModel.taximeterTotalizersFlow.collectLatest { totalizers ->
+                _uiState.update { it.copy(hasTotalizers = totalizers != null) }
+            }
+        }
+    }
+}
+
+class ClosedPartialViewModel(
+    context: Application,
+    private val printerUseCase: PrinterUseCase,
+    private val partialUseCase: PartialUseCase,
+    private val taximeterUseCase: TaximeterConnectUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "ClosedPartialViewModel"
+
+    private val _uiState = MutableStateFlow(ClosedPartialUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<ClosedPartialUiEffect>(extraBufferCapacity = 1)
+    val effects: SharedFlow<ClosedPartialUiEffect> = _effects.asSharedFlow()
+
+    fun onEvent(event: ClosedPartialUiEvent) {
+        when (event) {
+            ClosedPartialUiEvent.ScreenStarted -> {
+                checkTaximeterStatus()
+                getClosedPartial()
+            }
+
+            is ClosedPartialUiEvent.CancelClicked -> manageBack(event.justClosed)
+            ClosedPartialUiEvent.PrintClicked -> printPartial()
+            ClosedPartialUiEvent.TotalizersClicked -> {
+                viewModelScope.launch {
+                    _effects.emit(
+                        ClosedPartialUiEffect.NavigateToTotalizers(
+                            directions = ClosedPartialFragmentDirections
+                                .actionClosedPartialFragmentToTotalizersFragment()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun getClosedPartial() {
+        Logs.d(TAG, "getClosedPartial: Fetching closed partial from useCase")
+        viewModelScope.launch {
+            val result = partialUseCase.getClosedPartial()
+            Logs.d(TAG, "getClosedPartial: Result obtained. emitting...")
+            _uiState.update {
+                it.copy(
+                    partial = result,
+                    ticketContent = result?.bufLastTicketCierre?.takeIf { text -> text.isNotEmpty() }
+                        ?: getApplication<Application>().getString(R.string.no_closed_partials)
+                )
+            }
+        }
+    }
+
+    private fun manageBack(justClosed: Boolean) {
+        viewModelScope.launch {
+            Logs.d(TAG, "manageBack: justClosed=$justClosed")
+            if (justClosed) {
+                Logs.d(TAG, "manageBack: Navigating back twice (closing flow)")
+                _effects.emit(ClosedPartialUiEffect.NavigateBackTwice)
+            } else {
+                Logs.d(TAG, "manageBack: Navigating back once")
+                _effects.emit(ClosedPartialUiEffect.NavigateBackOnce)
+            }
+        }
+    }
+
+    private fun printPartial() {
+        viewModelScope.launch {
+            val partial = uiState.value.partial
+            if (partial != null) {
+                Logs.d(TAG, "printPartial: Printing closed partial")
+                printerUseCase.printMessage(
+                    header = null,
+                    message = partial.bufLastTicketCierre.addTicketLines(),
+                    paperFeed = false
+                )
+            } else {
+                Logs.d(TAG, "printPartial: Failed - No partial data available to print")
+            }
+        }
+    }
+
+    private fun checkTaximeterStatus() {
+        viewModelScope.launch {
+            Logs.d(TAG, "checkTaximeterStatus: Checking taximeter status")
+            val isTaximeterConnected = taximeterUseCase.isTaximeterConnected()
+            Logs.d(TAG, "checkTaximeterStatus: isTaximeterConnected=$isTaximeterConnected")
+            _uiState.update { it.copy(isTaximeterConnected = isTaximeterConnected) }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// COMPOSE SCREEN
+// -----------------------------------------------------------------------------
+
+@Composable
+fun ClosedPartialScreen(
+    navController: NavController,
+    viewModel: ClosedPartialViewModel,
+    sharedViewModel: MainActivityViewModel,
+    justClosed: Boolean,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    val sharedUiState by remember(sharedViewModel) {
+        mutableStateOf(ClosedPartialMainActivityUiState())
+    }
+
+    val currentShiftStatus by sharedViewModel.shiftStatusFlow.collectAsStateWithLifecycle()
+    val taximeterTotalizers by sharedViewModel.taximeterTotalizersFlow.collectAsStateWithLifecycle()
+
+    val buttonsState = remember(
+        uiState.isTaximeterConnected,
+        currentShiftStatus?.currentStatus,
+        taximeterTotalizers
+    ) {
+        ClosedPartialButtonsReducer.reduce(
+            isTaximeterConnected = uiState.isTaximeterConnected,
+            currentStatus = currentShiftStatus?.currentStatus,
+            hasTotalizers = taximeterTotalizers != null
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+        viewModel.onEvent(ClosedPartialUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                ClosedPartialUiEffect.NavigateBackOnce -> navController.popBackStack()
+                ClosedPartialUiEffect.NavigateBackTwice -> {
+                    navController.popBackStack()
+                    navController.popBackStack()
+                }
+                is ClosedPartialUiEffect.NavigateToTotalizers -> {
+                    navController.navigate(effect.directions)
+                }
+                is ClosedPartialUiEffect.ShowDialog -> Unit
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.Top
+    ) {
+        Spacer(modifier = Modifier.height(15.dp))
+
+        TicketViewerReceipts(ticketContent = uiState.ticketContent)
+
+        Spacer(modifier = Modifier.height(15.dp))
+
+        ClosedPartialButton(
+            text = "Cancel",
+            style = buttonsState.cancelStyle,
+            onClick = { viewModel.onEvent(ClosedPartialUiEvent.CancelClicked(justClosed)) }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        ClosedPartialButton(
+            text = "Print",
+            style = buttonsState.printStyle,
+            onClick = { viewModel.onEvent(ClosedPartialUiEvent.PrintClicked) }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (buttonsState.totalizersVisible) {
+            ClosedPartialButton(
+                text = "Totalizers",
+                style = buttonsState.totalizersStyle,
+                onClick = { viewModel.onEvent(ClosedPartialUiEvent.TotalizersClicked) }
+            )
+        }
+    }
+}
+
+@Composable
+fun ClosedPartialButton(
+    text: String,
+    style: CustomButton.StyleButton,
+    onClick: () -> Unit,
+) {
+    val enabled = style == CustomButton.StyleButton.ENABLE
+    ButtonLikeCustomButton(
+        text = text,
+        enabled = enabled,
+        onClick = onClick
+    )
+}
+
+@Composable
+private fun ButtonLikeCustomButton(
+    text: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        enabled = enabled
+    ) {
+        Text(text = text)
+    }
+}
+
+@Composable
+fun TicketViewerReceipts(ticketContent: String) {
+    Text(text = ticketContent)
+}
+
+// -----------------------------------------------------------------------------
+// FRAGMENT BRIDGE (OPTIONAL, FOR SAFE ARGS + NAVIGATION COMPATIBILITY)
+// -----------------------------------------------------------------------------
+
+class ClosedPartialFragment :
+    androidx.fragment.app.Fragment(R.layout.fragment_closed_partial) {
+
+    private val TAG = "ClosedPartialFragment"
+
+    private val safeArgs: ClosedPartialFragmentArgs by navArgs()
+
+    override fun onViewCreated(view: android.view.View, savedInstanceState: android.os.Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        Logs.d(TAG, "onViewCreated: justClosed=${safeArgs.justClosed}")
+    }
+}
+```
+// FOURTH ANSWER

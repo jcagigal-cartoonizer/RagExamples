@@ -1,0 +1,1250 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, keeps the same navigation semantics, and replaces the fragment button logic with state holders + reducer + `SharedFlow<PointsOfInterestUiEffect>`.
+
+I’m giving you:
+
+1. A Compose screen for `PointsOfInterestFragment`
+2. A Compose-friendly `PointsOfInterestViewModel` with `UiState + UiEvent + UiEffect`
+3. A `PointsOfInterestButtonsState` reducer that mirrors the fragment button logic one-by-one
+4. A `PointsOfInterestMainActivityViewModel` Compose bridge for shared navigation/state integration
+5. Dialog state handling only where the original fragment used `CustomDialog`
+
+---
+
+## 1) Compose screen
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
+import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.viewmodel.PointsOfInterestMainActivityViewModel
+import ifac.td.taxi.viewmodel.PointsOfInterestUiEffect
+import ifac.td.taxi.viewmodel.PointsOfInterestUiEvent
+import ifac.td.taxi.viewmodel.PointsOfInterestUiState
+import ifac.td.taxi.viewmodel.PointsOfInterestViewModel
+import ifac.td.taxi.viewmodel.PointsOfInterestDialogState
+import ifac.td.taxi.viewmodel.PointsOfInterestButtonsState
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun PointsOfInterestScreen(
+    viewModel: PointsOfInterestViewModel,
+    sharedViewModel: PointsOfInterestMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onLaunchIntent: (Intent) -> Unit,
+    showHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val dialogState by viewModel.dialogState.collectAsStateWithLifecycle()
+    val focusManager = LocalFocusManager.current
+
+    LaunchedEffect(Unit) {
+        showHeader(true)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is PointsOfInterestUiEffect.NavigateBack -> onNavigateBack()
+                is PointsOfInterestUiEffect.LaunchIntent -> effect.intent?.let(onLaunchIntent)
+                is PointsOfInterestUiEffect.SaveHiredZoneAndBack -> {
+                    sharedViewModel.saveHiredZone(effect.zone)
+                    onNavigateBack()
+                    onNavigateBack()
+                }
+                is PointsOfInterestUiEffect.ShowDialog -> {
+                    // handled by dialogState below
+                }
+            }
+        }
+    }
+
+    if (dialogState is PointsOfInterestDialogState.Visible) {
+        val dialog = dialogState as PointsOfInterestDialogState.Visible
+        PointsOfInterestDialog(
+            dialogState = dialog,
+            onDismiss = { viewModel.onEvent(PointsOfInterestUiEvent.DialogDismissed) },
+            onButtonClick = { button ->
+                viewModel.onEvent(PointsOfInterestUiEvent.DialogButtonClicked(button))
+            }
+        )
+    }
+
+    PointsOfInterestContent(
+        uiState = uiState,
+        onEvent = { event ->
+            if (event is PointsOfInterestUiEvent.SearchSubmitted) focusManager.clearFocus()
+            viewModel.onEvent(event)
+        }
+    )
+}
+
+@Composable
+private fun PointsOfInterestContent(
+    uiState: PointsOfInterestUiState,
+    onEvent: (PointsOfInterestUiEvent) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        OutlinedTextField(
+            value = uiState.searchText,
+            onValueChange = { onEvent(PointsOfInterestUiEvent.SearchTextChanged(it)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            placeholder = { Text(text = "Introduce POI") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(
+                onSearch = { onEvent(PointsOfInterestUiEvent.SearchSubmitted) }
+            )
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            items(uiState.poiItems) { poiItem ->
+                PointsOfInterestPoiRow(
+                    poiItem = poiItem,
+                    onClick = { onEvent(PointsOfInterestUiEvent.PoiClicked(poiItem)) }
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 96.dp)
+                .background(Color.Black),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PointsOfInterestCustomButton(
+                modifier = Modifier.weight(1f),
+                state = uiState.buttons.cancel,
+                onClick = { onEvent(PointsOfInterestUiEvent.CancelClicked) }
+            )
+            PointsOfInterestCustomButton(
+                modifier = Modifier.weight(1f),
+                state = uiState.buttons.search,
+                onClick = { onEvent(PointsOfInterestUiEvent.SearchSubmitted) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PointsOfInterestPoiRow(
+    poiItem: PointsOfInterestPoiUiModel,
+    onClick: () -> Unit
+) {
+    ListItem(
+        headlineContent = { Text(poiItem.title) },
+        supportingContent = { Text(poiItem.description) },
+        modifier = Modifier.fillMaxWidth(),
+        trailingContent = {
+            TextButton(onClick = onClick) { Text("OPEN") }
+        }
+    )
+}
+
+@Composable
+private fun PointsOfInterestCustomButton(
+    modifier: Modifier = Modifier,
+    state: PointsOfInterestButtonVisualState,
+    onClick: () -> Unit
+) {
+    // This is a Compose wrapper around the existing CustomButton API.
+    // If you already have an AndroidView wrapper for CustomButton, use that instead.
+    AndroidViewCustomButton(
+        modifier = modifier,
+        state = state,
+        onClick = onClick
+    )
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.content.Intent
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.poi.response.Poi
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISDataModule
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISListener
+import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
+import ifac.td.taxi.domain.usecase.LocationUseCase
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import java.util.ArrayList
+
+data class PointsOfInterestUiState(
+    val searchText: String = "",
+    val poiItems: List<PointsOfInterestPoiUiModel> = emptyList(),
+    val buttons: PointsOfInterestButtonsState = PointsOfInterestButtonsState()
+)
+
+data class PointsOfInterestPoiUiModel(
+    val title: String,
+    val description: String,
+    val lat: Double?,
+    val lon: Double?,
+    val street: String?,
+    val zone: Zone?
+)
+
+sealed interface PointsOfInterestUiEvent {
+    data class SearchTextChanged(val value: String) : PointsOfInterestUiEvent
+    data object SearchSubmitted : PointsOfInterestUiEvent
+    data object CancelClicked : PointsOfInterestUiEvent
+    data class PoiClicked(val poi: PointsOfInterestPoiUiModel) : PointsOfInterestUiEvent
+
+    data class DialogButtonClicked(val button: ButtonType) : PointsOfInterestUiEvent
+    data object DialogDismissed : PointsOfInterestUiEvent
+}
+
+sealed interface PointsOfInterestUiEffect {
+    data object NavigateBack : PointsOfInterestUiEffect
+    data class LaunchIntent(val intent: Intent?) : PointsOfInterestUiEffect
+    data class SaveHiredZoneAndBack(val zone: Zone?) : PointsOfInterestUiEffect
+    data class ShowDialog(val dialog: PointsOfInterestDialogState.Visible) : PointsOfInterestUiEffect
+}
+
+sealed interface PointsOfInterestDialogState {
+    data object Hidden : PointsOfInterestDialogState
+    data class Visible(
+        val title: String,
+        val description: String,
+        val buttons: List<ButtonType>,
+        val poi: PointsOfInterestPoiUiModel? = null,
+        val kind: Kind
+    ) : PointsOfInterestDialogState {
+        enum class Kind { POI_ACTION, LOCATE_CONFIRMATION }
+    }
+}
+
+data class PointsOfInterestButtonsState(
+    val cancel: PointsOfInterestButtonVisualState = PointsOfInterestButtonVisualState(),
+    val search: PointsOfInterestButtonVisualState = PointsOfInterestButtonVisualState()
+)
+
+data class PointsOfInterestButtonVisualState(
+    val buttonType: ButtonType,
+    val text: String,
+    val iconRes: Int,
+    val background: BackgroundButtonColor,
+    val style: StyleButton,
+    val visible: Boolean = true,
+    val textOnly: Boolean = false,
+    val textOnlyValue: String? = null
+) {
+    constructor() : this(
+        buttonType = ButtonType.EMPTY,
+        text = "",
+        iconRes = 0,
+        background = BackgroundButtonColor.BLACK,
+        style = StyleButton.ENABLE
+    )
+}
+
+class PointsOfInterestViewModel(
+    private val context: Application,
+    private val navigatorUseCase: NavigatorUseCase,
+    private val locationUseCase: LocationUseCase
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(PointsOfInterestUiState())
+    val uiState: StateFlow<PointsOfInterestUiState> = _uiState.asStateFlow()
+
+    private val _dialogState = MutableStateFlow<PointsOfInterestDialogState>(PointsOfInterestDialogState.Hidden)
+    val dialogState: StateFlow<PointsOfInterestDialogState> = _dialogState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PointsOfInterestUiEffect>()
+    val uiEffect: SharedFlow<PointsOfInterestUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: PointsOfInterestUiEvent) {
+        when (event) {
+            is PointsOfInterestUiEvent.SearchTextChanged -> {
+                _uiState.update { it.copy(searchText = event.value) }
+            }
+
+            PointsOfInterestUiEvent.SearchSubmitted -> {
+                getPOIs(_uiState.value.searchText)
+            }
+
+            PointsOfInterestUiEvent.CancelClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PointsOfInterestUiEffect.NavigateBack) }
+            }
+
+            is PointsOfInterestUiEvent.PoiClicked -> {
+                openPoiDialog(event.poi)
+            }
+
+            is PointsOfInterestUiEvent.DialogButtonClicked -> {
+                handleDialogButton(event.button)
+            }
+
+            PointsOfInterestUiEvent.DialogDismissed -> {
+                _dialogState.value = PointsOfInterestDialogState.Hidden
+            }
+        }
+    }
+
+    private fun openPoiDialog(poi: PointsOfInterestPoiUiModel) {
+        val zoneDescription = poi.zone?.nombreZone ?: context.getString(R.string.poi_out_of_zone_short)
+        val streetDescription = poi.street?.let {
+            "\n" + context.getString(R.string.dialog_poi_description_street, it)
+        } ?: ""
+        val description = "\n" + context.getString(R.string.dialog_poi_description, zoneDescription, streetDescription)
+
+        val buttons = if (poi.zone != null) {
+            listOf(ButtonType.UBICAR_DESTINO, ButtonType.NAVEGAR, ButtonType.UBICAR_DESTINO_NAVEGAR)
+        } else {
+            listOf(ButtonType.NAVEGAR)
+        }
+
+        _dialogState.value = PointsOfInterestDialogState.Visible(
+            title = poi.title,
+            description = description,
+            buttons = buttons,
+            poi = poi,
+            kind = PointsOfInterestDialogState.Visible.Kind.POI_ACTION
+        )
+    }
+
+    private fun handleDialogButton(button: ButtonType) {
+        val dialog = _dialogState.value as? PointsOfInterestDialogState.Visible ?: return
+        val poi = dialog.poi ?: return
+
+        when (dialog.kind) {
+            PointsOfInterestDialogState.Visible.Kind.POI_ACTION -> {
+                when (button) {
+                    ButtonType.UBICAR_DESTINO -> {
+                        _dialogState.value = PointsOfInterestDialogState.Visible(
+                            title = poi.zone?.nombreZone.orEmpty(),
+                            description = context.getString(R.string.ask_locate),
+                            buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                            poi = poi,
+                            kind = PointsOfInterestDialogState.Visible.Kind.LOCATE_CONFIRMATION
+                        )
+                    }
+
+                    ButtonType.NAVEGAR -> {
+                        openNavigatorApp(poi.lat, poi.lon, poi.street)
+                        _dialogState.value = PointsOfInterestDialogState.Hidden
+                    }
+
+                    ButtonType.UBICAR_DESTINO_NAVEGAR -> {
+                        _dialogState.value = PointsOfInterestDialogState.Visible(
+                            title = poi.zone?.nombreZone.orEmpty(),
+                            description = context.getString(R.string.ask_locate),
+                            buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                            poi = poi,
+                            kind = PointsOfInterestDialogState.Visible.Kind.LOCATE_CONFIRMATION
+                        )
+                    }
+
+                    else -> Unit
+                }
+            }
+
+            PointsOfInterestDialogState.Visible.Kind.LOCATE_CONFIRMATION -> {
+                when (button) {
+                    ButtonType.ACCEPT -> {
+                        locateOnHired(poi.zone)
+                        if (dialog.buttons.contains(ButtonType.UBICAR_DESTINO_NAVEGAR)) {
+                            openNavigatorApp(poi.lat, poi.lon, poi.street)
+                        }
+                        _dialogState.value = PointsOfInterestDialogState.Hidden
+                    }
+
+                    ButtonType.CANCEL -> {
+                        _dialogState.value = PointsOfInterestDialogState.Hidden
+                    }
+
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    fun getPOIs(keyword: String) {
+        viewModelScope.launch {
+            val poiListener = object : POISListener {
+                override fun getPOISSuccess(poiList: ArrayList<Poi>?) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        if (poiList != null) {
+                            val mapped = poiList.map { poi ->
+                                PointsOfInterestPoiUiModel(
+                                    title = poi.poi,
+                                    description = poi.street.orEmpty(),
+                                    lat = poi.lat,
+                                    lon = poi.lon,
+                                    street = poi.street,
+                                    zone = poi.zone
+                                )
+                            }
+                            _uiState.update { it.copy(poiItems = mapped) }
+                        }
+                    }
+                }
+
+                override fun getPOISFailure() {
+                    Logs.e("PointsOfInterestViewModel", "Failed getting POI list")
+                }
+            }
+
+            POISDataModule.providePOISPresenter(context, poiListener).getPois(keyword)
+        }
+    }
+
+    fun openNavigatorApp(latitude: Double?, longitude: Double?, street: String? = null) {
+        viewModelScope.launch(Dispatchers.Main) {
+            val navigatorIntent = when {
+                latitude != null && longitude != null && !street.isNullOrEmpty() ->
+                    navigatorUseCase.openNavigatorWithCoordinatesAndStreetName("$latitude,$longitude", street)
+                latitude != null && longitude != null ->
+                    navigatorUseCase.openNavigatorWithCoordinates("$latitude,$longitude")
+                !street.isNullOrEmpty() ->
+                    navigatorUseCase.openNavigatorApp(street)
+                else ->
+                    navigatorUseCase.openNavigatorApp()
+            }
+            _uiEffect.emit(PointsOfInterestUiEffect.LaunchIntent(navigatorIntent))
+        }
+    }
+
+    fun locateOnHired(zone: Zone?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            zone?.let { selectedZone ->
+                var idMacroZone: Int? = null
+                var index = 0
+                do {
+                    val hasTheZone =
+                        W2CLocation.getZoning().macrozones[index].zones.find {
+                            selectedZone.idZone == it.idZone && selectedZone.nombreZone == it.nombreZone
+                        }
+                    hasTheZone?.let {
+                        idMacroZone = W2CLocation.getZoning().macrozones[index].idMacrozone
+                    }
+                    index++
+                } while (idMacroZone == null && index < W2CLocation.getZoning().macrozones.size)
+
+                idMacroZone?.let {
+                    locationUseCase.locateOnHired(it, selectedZone.idZone)
+                    _uiEffect.emit(PointsOfInterestUiEffect.SaveHiredZoneAndBack(selectedZone))
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3) Exact `PointsOfInterestButtonsState` reducer
+
+This mirrors the fragment button logic one-by-one for the two buttons in this screen.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
+import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
+
+fun PointsOfInterestButtonsState.reduce(): PointsOfInterestButtonsState {
+    return copy(
+        cancel = PointsOfInterestButtonVisualState(
+            buttonType = ButtonType.CANCEL,
+            text = "CANCEL",
+            iconRes = R.drawable.cerrar,
+            background = BackgroundButtonColor.RED,
+            style = StyleButton.ENABLE,
+            visible = true,
+            textOnly = false
+        ),
+        search = PointsOfInterestButtonVisualState(
+            buttonType = ButtonType.BUSCAR,
+            text = "BUSCAR",
+            iconRes = R.drawable.detalleactivado,
+            background = BackgroundButtonColor.BLUE,
+            style = StyleButton.ENABLE,
+            visible = true,
+            textOnly = false
+        )
+    )
+}
+```
+
+If you want the reducer to be more explicit and branch-by-branch, here is the exact equivalent of the fragment’s button setup:
+
+```kotlin
+fun PointsOfInterestButtonsState.reduceFromFragmentLogic(): PointsOfInterestButtonsState {
+    val cancelState = PointsOfInterestButtonVisualState(
+        buttonType = ButtonType.CANCEL,
+        text = "CANCEL",
+        iconRes = R.drawable.cerrar,
+        background = BackgroundButtonColor.RED,
+        style = StyleButton.ENABLE,
+        visible = true,
+        textOnly = false
+    )
+
+    val searchState = PointsOfInterestButtonVisualState(
+        buttonType = ButtonType.BUSCAR,
+        text = "BUSCAR",
+        iconRes = R.drawable.detalleactivado,
+        background = BackgroundButtonColor.BLUE,
+        style = StyleButton.ENABLE,
+        visible = true,
+        textOnly = false
+    )
+
+    return PointsOfInterestButtonsState(
+        cancel = cancelState,
+        search = searchState
+    )
+}
+```
+
+---
+
+## 4) Dialog state + Compose dialog handling
+
+This is only used because the fragment used `CustomDialog`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+@Composable
+fun PointsOfInterestDialog(
+    dialogState: PointsOfInterestDialogState.Visible,
+    onDismiss: () -> Unit,
+    onButtonClick: (ButtonType) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(dialogState.title) },
+        text = { Text(dialogState.description) },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                dialogState.buttons.forEach { button ->
+                    TextButton(onClick = { onButtonClick(button) }) {
+                        Text(button.name)
+                    }
+                }
+            }
+        }
+    )
+}
+```
+
+---
+
+## 5) Compose bridge for the shared `MainActivityViewModel`
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.content.Intent
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class PointsOfInterestMainActivityViewModel {
+    private val _hiredZone = MutableStateFlow<Zone?>(null)
+    val hiredZone: StateFlow<Zone?> = _hiredZone.asStateFlow()
+
+    fun saveHiredZone(zone: Zone?) {
+        _hiredZone.value = zone
+    }
+}
+```
+
+If you need the exact fragment-like bridge behavior for navigation, expose these callbacks from your activity host:
+
+```kotlin
+interface PointsOfInterestHost {
+    fun showHeader(show: Boolean)
+    fun navigateBack()
+    fun launchIntent(intent: Intent)
+}
+```
+
+---
+
+## 6) AndroidView wrapper for the existing `CustomButton`
+
+Because your project already has a custom View-based button, the safest Compose integration is to wrap it.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.view.ViewGroup
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.PointsOfInterestButtonVisualState
+
+@Composable
+fun AndroidViewCustomButton(
+    modifier: Modifier = Modifier,
+    state: PointsOfInterestButtonVisualState,
+    onClick: () -> Unit
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            CustomButton(context).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                setButtonType(state.buttonType.value)
+                setButtonStyle(state.style)
+                changeBackground(state.background)
+                if (state.textOnly) {
+                    changeTvOnlyText(state.textOnlyValue.orEmpty())
+                } else {
+                    changeText(state.text)
+                }
+                setAction(onClick)
+            }
+        },
+        update = { button ->
+            button.setButtonType(state.buttonType.value)
+            button.setButtonStyle(state.style)
+            button.changeBackground(state.background)
+            if (state.textOnly) {
+                button.changeTvOnlyText(state.textOnlyValue.orEmpty())
+            } else {
+                button.changeText(state.text)
+            }
+            button.setAction(onClick)
+        }
+    )
+}
+```
+
+---
+
+## Notes
+
+- The screen preserves the original navigation behavior:
+  - Cancel -> back
+  - Search -> query POIs
+  - POI click -> dialog
+  - Accept locate -> `locateOnHired(...)`
+  - Navigator intent -> launched through effect
+  - After locate -> back twice, exactly like the fragment
+- Dialog handling is state-driven and only used because the fragment used `CustomDialog`
+- The button state is fully externalized into `PointsOfInterestButtonsState`
+- The reducer is intentionally simple because this screen only has two buttons, but it still mirrors the fragment’s button setup exactly
+
+If you want, I can also provide:
+1. a full Koin module for these Compose viewmodels,
+2. a Navigation-Compose destination wrapper,
+3. or a version that uses `Scaffold` + `TopAppBar` to match your app chrome more closely.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.interfacom.sdk.taximeter.bravocomm.W2CLocation
+import com.interfacom.sdk.taximeter.bravocomm.rest.poi.response.Poi
+import com.interfacom.sdk.taximeter.licensing.models.zoning.Zone
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISDataModule
+import com.interfacom.sdk.taximeter.licensing.rest.pois.POISListener
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.LocationUseCase
+import ifac.td.taxi.framework.sdk.usecase.NavigatorUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
+import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.util.ArrayList
+
+// --------------------------------------------------------------------------------------
+// UI STATE / EVENT / EFFECT / DIALOG
+// --------------------------------------------------------------------------------------
+
+data class PointsOfInterestUiState(
+    val searchText: String = "",
+    val poiItems: List<PointsOfInterestPoiUiModel> = emptyList(),
+    val buttons: PointsOfInterestButtonsState = PointsOfInterestButtonsState().reduce()
+)
+
+sealed interface PointsOfInterestUiEvent {
+    data class SearchTextChanged(val value: String) : PointsOfInterestUiEvent
+    data object SearchSubmitted : PointsOfInterestUiEvent
+    data object CancelClicked : PointsOfInterestUiEvent
+    data class PoiClicked(val poi: PointsOfInterestPoiUiModel) : PointsOfInterestUiEvent
+    data class DialogButtonClicked(val button: ButtonType) : PointsOfInterestUiEvent
+    data object DialogDismissed : PointsOfInterestUiEvent
+}
+
+sealed interface PointsOfInterestUiEffect {
+    data object NavigateBack : PointsOfInterestUiEffect
+    data class LaunchIntent(val intent: Intent?) : PointsOfInterestUiEffect
+    data class SaveHiredZoneAndBack(val zone: Zone?) : PointsOfInterestUiEffect
+}
+
+sealed interface PointsOfInterestDialogState {
+    data object Hidden : PointsOfInterestDialogState
+
+    data class Visible(
+        val title: String,
+        val description: String,
+        val buttons: List<ButtonType>,
+        val poi: PointsOfInterestPoiUiModel? = null,
+        val kind: Kind
+    ) : PointsOfInterestDialogState {
+        enum class Kind { POI_ACTION, LOCATE_CONFIRMATION }
+    }
+}
+
+data class PointsOfInterestPoiUiModel(
+    val title: String,
+    val description: String,
+    val lat: Double?,
+    val lon: Double?,
+    val street: String?,
+    val zone: Zone?
+)
+
+// --------------------------------------------------------------------------------------
+// BUTTON VISUAL STATE + REDUCER
+// --------------------------------------------------------------------------------------
+
+data class PointsOfInterestButtonsState(
+    val cancel: PointsOfInterestButtonVisualState = PointsOfInterestButtonVisualState(),
+    val search: PointsOfInterestButtonVisualState = PointsOfInterestButtonVisualState()
+)
+
+/**
+ * Prefix required by request: PointsOfInterestButtonVisualState
+ */
+data class PointsOfInterestButtonVisualState(
+    val buttonType: ButtonType = ButtonType.EMPTY,
+    val text: String = "",
+    val iconRes: Int = 0,
+    val background: BackgroundButtonColor = BackgroundButtonColor.BLACK,
+    val style: StyleButton = StyleButton.ENABLE,
+    val visible: Boolean = true,
+    val textOnly: Boolean = false,
+    val textOnlyValue: String? = null
+)
+
+/**
+ * Exact reducer for the two buttons in this screen.
+ * Mirrors the fragment's button setup one-by-one:
+ * - btnCancel -> navigateBack
+ * - btnSearch -> getPOIs(searchText)
+ * - both visible
+ * - cancel red / search blue
+ */
+fun PointsOfInterestButtonsState.reduce(): PointsOfInterestButtonsState {
+    return copy(
+        cancel = PointsOfInterestButtonVisualState(
+            buttonType = ButtonType.CANCEL,
+            text = "CANCEL",
+            iconRes = R.drawable.cerrar,
+            background = BackgroundButtonColor.RED,
+            style = StyleButton.ENABLE,
+            visible = true,
+            textOnly = false
+        ),
+        search = PointsOfInterestButtonVisualState(
+            buttonType = ButtonType.BUSCAR,
+            text = "BUSCAR",
+            iconRes = R.drawable.detalleactivado,
+            background = BackgroundButtonColor.BLUE,
+            style = StyleButton.ENABLE,
+            visible = true,
+            textOnly = false
+        )
+    )
+}
+
+// --------------------------------------------------------------------------------------
+// VIEWMODEL
+// --------------------------------------------------------------------------------------
+
+class PointsOfInterestViewModel(
+    private val context: Application,
+    private val navigatorUseCase: NavigatorUseCase,
+    private val locationUseCase: LocationUseCase
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(PointsOfInterestUiState())
+    val uiState: StateFlow<PointsOfInterestUiState> = _uiState.asStateFlow()
+
+    private val _dialogState = MutableStateFlow<PointsOfInterestDialogState>(PointsOfInterestDialogState.Hidden)
+    val dialogState: StateFlow<PointsOfInterestDialogState> = _dialogState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PointsOfInterestUiEffect>()
+    val uiEffect: SharedFlow<PointsOfInterestUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: PointsOfInterestUiEvent) {
+        when (event) {
+            is PointsOfInterestUiEvent.SearchTextChanged -> {
+                _uiState.update { it.copy(searchText = event.value) }
+            }
+
+            PointsOfInterestUiEvent.SearchSubmitted -> {
+                getPOIs(_uiState.value.searchText)
+            }
+
+            PointsOfInterestUiEvent.CancelClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PointsOfInterestUiEffect.NavigateBack) }
+            }
+
+            is PointsOfInterestUiEvent.PoiClicked -> {
+                openPoiDialog(event.poi)
+            }
+
+            is PointsOfInterestUiEvent.DialogButtonClicked -> {
+                handleDialogButton(event.button)
+            }
+
+            PointsOfInterestUiEvent.DialogDismissed -> {
+                _dialogState.value = PointsOfInterestDialogState.Hidden
+            }
+        }
+    }
+
+    fun getPOIs(keyword: String) {
+        viewModelScope.launch {
+            val poiListener = object : POISListener {
+                override fun getPOISSuccess(poiList: ArrayList<Poi>?) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        if (poiList != null) {
+                            Logs.d("PointsOfInterestViewModel", "getPOISSuccess: $poiList")
+                            val mapped = poiList.map { poi ->
+                                PointsOfInterestPoiUiModel(
+                                    title = poi.poi,
+                                    description = poi.street.orEmpty(),
+                                    lat = poi.lat,
+                                    lon = poi.lon,
+                                    street = poi.street,
+                                    zone = poi.zone
+                                )
+                            }
+                            _uiState.update { it.copy(poiItems = mapped) }
+                        }
+                    }
+                }
+
+                override fun getPOISFailure() {
+                    Logs.e("PointsOfInterestViewModel", "Failed getting POI list")
+                }
+            }
+
+            POISDataModule.providePOISPresenter(context, poiListener).getPois(keyword)
+        }
+    }
+
+    fun openNavigatorApp(latitude: Double?, longitude: Double?, street: String? = null) {
+        viewModelScope.launch(Dispatchers.Main) {
+            Logs.d(
+                "PointsOfInterestViewModel",
+                "openNavigatorApp: Received params -> Latitude: $latitude, Longitude: $longitude, Street: $street"
+            )
+
+            val navigatorIntent = when {
+                latitude != null && longitude != null && !street.isNullOrEmpty() -> {
+                    navigatorUseCase.openNavigatorWithCoordinatesAndStreetName("$latitude,$longitude", street)
+                }
+                latitude != null && longitude != null -> {
+                    navigatorUseCase.openNavigatorWithCoordinates("$latitude,$longitude")
+                }
+                !street.isNullOrEmpty() -> {
+                    navigatorUseCase.openNavigatorApp(street)
+                }
+                else -> {
+                    navigatorUseCase.openNavigatorApp()
+                }
+            }
+
+            _uiEffect.emit(PointsOfInterestUiEffect.LaunchIntent(navigatorIntent))
+        }
+    }
+
+    fun locateOnHired(zone: Zone?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            zone?.let { selectedZone ->
+                var idMacroZone: Int? = null
+                var index = 0
+                do {
+                    val hasTheZone =
+                        W2CLocation.getZoning().macrozones[index].zones.find { zone ->
+                            selectedZone.idZone == zone.idZone && selectedZone.nombreZone == zone.nombreZone
+                        }
+                    hasTheZone?.let {
+                        idMacroZone = W2CLocation.getZoning().macrozones[index].idMacrozone
+                    }
+                    index++
+                } while (idMacroZone == null && index < W2CLocation.getZoning().macrozones.size)
+
+                idMacroZone?.let {
+                    locationUseCase.locateOnHired(it, selectedZone.idZone)
+                    _uiEffect.emit(PointsOfInterestUiEffect.SaveHiredZoneAndBack(selectedZone))
+                }
+            }
+        }
+    }
+
+    private fun openPoiDialog(poi: PointsOfInterestPoiUiModel) {
+        val zoneDescription = poi.zone?.nombreZone ?: context.getString(R.string.poi_out_of_zone_short)
+        val streetDescription = poi.street?.let {
+            "\n" + context.getString(R.string.dialog_poi_description_street, it)
+        } ?: ""
+        val description = "\n" + context.getString(R.string.dialog_poi_description, zoneDescription, streetDescription)
+
+        val buttons = if (poi.zone != null) {
+            listOf(ButtonType.UBICAR_DESTINO, ButtonType.NAVEGAR, ButtonType.UBICAR_DESTINO_NAVEGAR)
+        } else {
+            listOf(ButtonType.NAVEGAR)
+        }
+
+        _dialogState.value = PointsOfInterestDialogState.Visible(
+            title = poi.title,
+            description = description,
+            buttons = buttons,
+            poi = poi,
+            kind = PointsOfInterestDialogState.Visible.Kind.POI_ACTION
+        )
+    }
+
+    private fun handleDialogButton(button: ButtonType) {
+        val dialog = _dialogState.value as? PointsOfInterestDialogState.Visible ?: return
+        val poi = dialog.poi ?: return
+
+        when (dialog.kind) {
+            PointsOfInterestDialogState.Visible.Kind.POI_ACTION -> {
+                when (button) {
+                    ButtonType.UBICAR_DESTINO -> {
+                        _dialogState.value = PointsOfInterestDialogState.Visible(
+                            title = poi.zone?.nombreZone.orEmpty(),
+                            description = context.getString(R.string.ask_locate),
+                            buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                            poi = poi,
+                            kind = PointsOfInterestDialogState.Visible.Kind.LOCATE_CONFIRMATION
+                        )
+                    }
+
+                    ButtonType.NAVEGAR -> {
+                        openNavigatorApp(poi.lat, poi.lon, poi.street)
+                        _dialogState.value = PointsOfInterestDialogState.Hidden
+                    }
+
+                    ButtonType.UBICAR_DESTINO_NAVEGAR -> {
+                        _dialogState.value = PointsOfInterestDialogState.Visible(
+                            title = poi.zone?.nombreZone.orEmpty(),
+                            description = context.getString(R.string.ask_locate),
+                            buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                            poi = poi,
+                            kind = PointsOfInterestDialogState.Visible.Kind.LOCATE_CONFIRMATION
+                        )
+                    }
+
+                    else -> Unit
+                }
+            }
+
+            PointsOfInterestDialogState.Visible.Kind.LOCATE_CONFIRMATION -> {
+                when (button) {
+                    ButtonType.ACCEPT -> {
+                        locateOnHired(poi.zone)
+                        if (dialog.buttons.contains(ButtonType.UBICAR_DESTINO_NAVEGAR)) {
+                            openNavigatorApp(poi.lat, poi.lon, poi.street)
+                        }
+                        _dialogState.value = PointsOfInterestDialogState.Hidden
+                    }
+
+                    ButtonType.CANCEL -> {
+                        _dialogState.value = PointsOfInterestDialogState.Hidden
+                    }
+
+                    else -> Unit
+                }
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// MAIN ACTIVITY VIEWMODEL BRIDGE
+// --------------------------------------------------------------------------------------
+
+class PointsOfInterestMainActivityViewModel {
+    private val _hiredZone = MutableStateFlow<Zone?>(null)
+    val hiredZone: StateFlow<Zone?> = _hiredZone.asStateFlow()
+
+    fun saveHiredZone(zone: Zone?) {
+        _hiredZone.value = zone
+    }
+}
+
+// --------------------------------------------------------------------------------------
+// COMPOSABLE SCREEN
+// --------------------------------------------------------------------------------------
+
+@Composable
+fun PointsOfInterestScreen(
+    viewModel: PointsOfInterestViewModel,
+    sharedViewModel: PointsOfInterestMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onLaunchIntent: (Intent) -> Unit,
+    showHeader: (Boolean) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val dialogState by viewModel.dialogState.collectAsStateWithLifecycle()
+    val focusManager = LocalFocusManager.current
+
+    LaunchedEffect(Unit) {
+        showHeader(true)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                PointsOfInterestUiEffect.NavigateBack -> onNavigateBack()
+                is PointsOfInterestUiEffect.LaunchIntent -> effect.intent?.let(onLaunchIntent)
+                is PointsOfInterestUiEffect.SaveHiredZoneAndBack -> {
+                    sharedViewModel.saveHiredZone(effect.zone)
+                    onNavigateBack()
+                    onNavigateBack()
+                }
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            androidx.compose.material3.OutlinedTextField(
+                value = uiState.searchText,
+                onValueChange = { viewModel.onEvent(PointsOfInterestUiEvent.SearchTextChanged(it)) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                placeholder = { Text(text = "Introduce POI") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        focusManager.clearFocus()
+                        viewModel.onEvent(PointsOfInterestUiEvent.SearchSubmitted)
+                    }
+                )
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                items(uiState.poiItems) { poi ->
+                    ListItem(
+                        headlineContent = { Text(poi.title) },
+                        supportingContent = { Text(poi.description) },
+                        trailingContent = {
+                            TextButton(onClick = { viewModel.onEvent(PointsOfInterestUiEvent.PoiClicked(poi)) }) {
+                                Text("OPEN")
+                            }
+                        }
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 96.dp)
+                    .background(Color.Black),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                PointsOfInterestCustomButton(
+                    modifier = Modifier.weight(1f),
+                    state = uiState.buttons.cancel,
+                    onClick = { viewModel.onEvent(PointsOfInterestUiEvent.CancelClicked) }
+                )
+                PointsOfInterestCustomButton(
+                    modifier = Modifier.weight(1f),
+                    state = uiState.buttons.search,
+                    onClick = { viewModel.onEvent(PointsOfInterestUiEvent.SearchSubmitted) }
+                )
+            }
+        }
+
+        if (dialogState is PointsOfInterestDialogState.Visible) {
+            val dialog = dialogState as PointsOfInterestDialogState.Visible
+            AlertDialog(
+                onDismissRequest = { viewModel.onEvent(PointsOfInterestUiEvent.DialogDismissed) },
+                title = { Text(dialog.title) },
+                text = { Text(dialog.description) },
+                confirmButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        dialog.buttons.forEach { button ->
+                            TextButton(onClick = { viewModel.onEvent(PointsOfInterestUiEvent.DialogButtonClicked(button)) }) {
+                                Text(button.name)
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PointsOfInterestCustomButton(
+    modifier: Modifier = Modifier,
+    state: PointsOfInterestButtonVisualState,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            CustomButton(context).apply {
+                setButtonType(state.buttonType.value)
+                setButtonStyle(state.style)
+                changeBackground(state.background)
+                if (state.textOnly) {
+                    changeTvOnlyText(state.textOnlyValue.orEmpty())
+                } else {
+                    changeText(state.text)
+                }
+                setAction(onClick)
+            }
+        },
+        update = { button ->
+            button.setButtonType(state.buttonType.value)
+            button.setButtonStyle(state.style)
+            button.changeBackground(state.background)
+            if (state.textOnly) {
+                button.changeTvOnlyText(state.textOnlyValue.orEmpty())
+            } else {
+                button.changeText(state.text)
+            }
+            button.setAction(onClick)
+        }
+    )
+}
+
+// --------------------------------------------------------------------------------------
+// OPTIONAL: EXACT BRIDGE FOR THE ORIGINAL FRAGMENT NAVIGATION SEMANTICS
+// --------------------------------------------------------------------------------------
+
+/**
+ * If you want to preserve the fragment-style host API in Compose,
+ * wire these callbacks from your Activity/Navigation host.
+ */
+interface PointsOfInterestHost {
+    fun showHeader(show: Boolean)
+    fun navigateBack()
+    fun launchIntent(intent: Intent)
+}
+```
+
+If you want, I can do one more pass and split this into:
+- a **clean production version**,
+- a **Koin module**,
+- and a **Navigation-Compose destination** that plugs into your existing app host.
+// THIRD ANSWER
+
+// FOURTH ANSWER

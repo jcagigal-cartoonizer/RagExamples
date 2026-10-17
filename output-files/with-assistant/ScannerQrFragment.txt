@@ -1,0 +1,1204 @@
+
+// FIRST ANSWER
+Below is a Compose-first migration that preserves the fragment behavior, keeps the same navigation outcomes, and replaces the button logic with state holders + reducer + `SharedFlow<ScannerQrUiEffect>`.
+
+I’m splitting it into 3 parts:
+
+1. `ScannerQrViewModel` with `UiState + UiEvent + UiEffect`
+2. `ScannerQrMainActivityViewModel` Compose bridge for shared flows
+3. `ScannerQrScreen` composable that mirrors the fragment behavior, including dialog handling and navigation
+
+---
+
+## 1) Compose-friendly `ScannerQrViewModel`
+
+> Notes:
+> - I keep the `CustomDialog` usage because your fragment uses it.
+> - I replace the fragment button logic with `ScannerQrButtonsState`.
+> - I expose a `SharedFlow<ScannerQrUiEffect>` for one-off effects.
+> - I keep the upload logic close to the original implementation.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.VoucherQR
+import ifac.td.taxi.domain.usecase.SubscriberUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class ScannerQrUiState(
+    val serviceId: String? = null,
+    val buttonsState: ScannerQrButtonsState = ScannerQrButtonsState(),
+    val dialogState: ScannerQrDialogState = ScannerQrDialogState(),
+    val isLoadingUpload: Boolean = false,
+)
+
+sealed interface ScannerQrUiEvent {
+    data object CancelClicked : ScannerQrUiEvent
+    data object ScannerClicked : ScannerQrUiEvent
+    data class CameraSelected(val button: ButtonType) : ScannerQrUiEvent
+    data class QrScanned(val rawResult: String) : ScannerQrUiEvent
+    data object DialogDismissed : ScannerQrUiEvent
+}
+
+sealed interface ScannerQrUiEffect {
+    data object NavigateBack : ScannerQrUiEffect
+    data object NavigateHome : ScannerQrUiEffect
+    data object OpenScannerFront : ScannerQrUiEffect
+    data object OpenScannerBack : ScannerQrUiEffect
+    data class ShowCustomDialog(
+        val model: CustomDialog.CustomDialogModel,
+    ) : ScannerQrUiEffect
+
+    data object EnableScannerButton : ScannerQrUiEffect
+    data object SetScannerLoading : ScannerQrUiEffect
+}
+
+data class ScannerQrDialogState(
+    val isVisible: Boolean = false,
+    val model: CustomDialog.CustomDialogModel? = null,
+)
+
+data class ScannerQrButtonVisualState(
+    val text: String = "",
+    val iconRes: Int? = null,
+    val background: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.BLUE,
+    val style: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val visible: Boolean = true,
+    val textOnly: Boolean = false,
+    val onlyText: String? = null,
+    val maxLines: Int = 1,
+)
+
+data class ScannerQrButtonsState(
+    val cancel: ScannerQrButtonVisualState = ScannerQrButtonVisualState(
+        text = "CANCEL",
+        iconRes = R.drawable.cerrar,
+        background = CustomButton.BackgroundButtonColor.RED,
+        style = CustomButton.StyleButton.ENABLE,
+        visible = true
+    ),
+    val scanner: ScannerQrButtonVisualState = ScannerQrButtonVisualState(
+        text = "SCANNER",
+        iconRes = R.drawable.baseline_qr_code_scanner_192,
+        background = CustomButton.BackgroundButtonColor.YELLOW,
+        style = CustomButton.StyleButton.ENABLE,
+        visible = true
+    )
+)
+
+fun ScannerQrButtonsState.reduce(effect: ScannerQrUiEffect): ScannerQrButtonsState {
+    return when (effect) {
+        ScannerQrUiEffect.SetScannerLoading -> copy(
+            scanner = scanner.copy(style = CustomButton.StyleButton.LOADING)
+        )
+
+        ScannerQrUiEffect.EnableScannerButton -> copy(
+            scanner = scanner.copy(style = CustomButton.StyleButton.ENABLE)
+        )
+
+        else -> this
+    }
+}
+
+class ScannerQrViewModel(
+    context: Application,
+    private val subscriberUseCase: SubscriberUseCase,
+    private val ticketUseCase: TicketUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "ScannerQrViewModel"
+
+    private val _uiState = MutableStateFlow(ScannerQrUiState())
+    val uiState: StateFlow<ScannerQrUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ScannerQrUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<ScannerQrUiEffect> = _uiEffect.asSharedFlow()
+
+    fun init(serviceId: String?) {
+        _uiState.value = _uiState.value.copy(serviceId = serviceId)
+    }
+
+    fun onEvent(event: ScannerQrUiEvent) {
+        when (event) {
+            ScannerQrUiEvent.CancelClicked -> {
+                _uiEffect.tryEmit(ScannerQrUiEffect.NavigateBack)
+            }
+
+            ScannerQrUiEvent.ScannerClicked -> {
+                _uiEffect.tryEmit(
+                    ScannerQrUiEffect.ShowCustomDialog(
+                        CustomDialog.CustomDialogModel(
+                            title = getApplication<Application>().getString(R.string.dialog_open_camera),
+                            description = getApplication<Application>().getString(R.string.dialog_select_camera),
+                            buttons = arrayListOf(ButtonType.FRONT_CAMERA, ButtonType.BACK_CAMERA)
+                        )
+                    )
+                )
+            }
+
+            is ScannerQrUiEvent.CameraSelected -> {
+                when (event.button) {
+                    ButtonType.FRONT_CAMERA -> _uiEffect.tryEmit(ScannerQrUiEffect.OpenScannerFront)
+                    ButtonType.BACK_CAMERA -> _uiEffect.tryEmit(ScannerQrUiEffect.OpenScannerBack)
+                    else -> Unit
+                }
+            }
+
+            is ScannerQrUiEvent.QrScanned -> {
+                handleResult(event.rawResult)
+            }
+
+            ScannerQrUiEvent.DialogDismissed -> Unit
+        }
+    }
+
+    fun onScannerStarted() {
+        _uiEffect.tryEmit(ScannerQrUiEffect.SetScannerLoading)
+        _uiState.value = _uiState.value.copy(
+            buttonsState = _uiState.value.buttonsState.reduce(ScannerQrUiEffect.SetScannerLoading)
+        )
+    }
+
+    fun onUploadFailed() {
+        _uiEffect.tryEmit(ScannerQrUiEffect.EnableScannerButton)
+        _uiState.value = _uiState.value.copy(
+            buttonsState = _uiState.value.buttonsState.reduce(ScannerQrUiEffect.EnableScannerButton)
+        )
+    }
+
+    fun handleResult(result: String) {
+        try {
+            val gson = com.google.gson.Gson()
+            val qrVoucher = gson.fromJson(result, VoucherQR::class.java)
+            Logs.d(TAG, "handleResult: QR parsed successfully: $qrVoucher")
+
+            uploadVoucherId(
+                serviceId = uiState.value.serviceId,
+                qrVoucher = qrVoucher,
+                infoDispatchModel = null,
+                trip = null,
+                updatePrintFlowCallback = {},
+                navigateFunction = { isSuccess ->
+                    if (isSuccess) {
+                        _uiEffect.tryEmit(ScannerQrUiEffect.NavigateHome)
+                    } else {
+                        onUploadFailed()
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Logs.e(TAG, "handleResult: Error reading QR: ${e.message}")
+            onUploadFailed()
+        }
+    }
+
+    fun uploadVoucherId(
+        serviceId: String?,
+        qrVoucher: VoucherQR?,
+        infoDispatchModel: InfoDispatchModel?,
+        trip: Trip?,
+        updatePrintFlowCallback: suspend (Trip) -> Unit,
+        navigateFunction: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            Logs.d(
+                TAG,
+                "uploadVoucherId: Starting voucher upload for serviceId: $serviceId, tripId: ${trip?.id}, voucherId: ${qrVoucher?.id}"
+            )
+
+            subscriberUseCase.uploadVoucherId(
+                serviceId,
+                qrVoucher,
+                infoDispatchModel,
+                trip,
+                navigateFunction,
+                { trip2, dispatch, status ->
+                    viewModelScope.launch {
+                        if (trip2 != null) {
+                            Logs.d(TAG, "uploadVoucherId: Preparing ticket for trip: ${trip2.id}")
+                            ticketUseCase.prepareTicket(
+                                trip2,
+                                dispatch,
+                                status,
+                            )
+                        } else {
+                            Logs.d(TAG, "uploadVoucherId: Trip is null, skipping ticket preparation")
+                        }
+                    }
+                },
+                // keep the same dialog channel if your use case emits CustomDialog
+                // if it expects EventFlow, adapt it in the bridge layer
+                null
+            )
+        }
+    }
+}
+```
+
+---
+
+## 2) `ScannerQrMainActivityViewModel` Compose bridge
+
+This is the bridge that exposes the shared values the fragment used:
+- `dispatchFlow`
+- `tripFlow`
+- `updatePrintFlowCallback`
+
+It also provides a Compose-friendly API for the screen.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class ScannerQrMainActivityViewModel : ViewModel() {
+
+    private val _dispatchFlow = MutableStateFlow<InfoDispatchModel?>(null)
+    val dispatchFlow: StateFlow<InfoDispatchModel?> = _dispatchFlow.asStateFlow()
+
+    private val _tripFlow = MutableStateFlow<Trip?>(null)
+    val tripFlow: StateFlow<Trip?> = _tripFlow.asStateFlow()
+
+    /**
+     * Same role as the fragment sharedViewModel.updatePrintFlowCallback
+     */
+    var updatePrintFlowCallback: suspend (Trip) -> Unit = {}
+
+    fun setDispatch(value: InfoDispatchModel?) {
+        _dispatchFlow.value = value
+    }
+
+    fun setTrip(value: Trip?) {
+        _tripFlow.value = value
+    }
+
+    fun setUpdatePrintCallback(callback: suspend (Trip) -> Unit) {
+        updatePrintFlowCallback = callback
+    }
+}
+```
+
+---
+
+## 3) Compose screen that mirrors the fragment
+
+This composable:
+- preserves the same navigation behavior
+- uses lifecycle collection for effects
+- opens the camera selection dialog only when the VM emits a `CustomDialog`
+- uses the exact button state reducer
+- mirrors the fragment’s `btnCancel` and `btnScanner` logic
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.navigation.NavController
+import com.google.gson.Gson
+import ifac.td.taxi.NavGraphDirections
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.VoucherQR
+import ifac.td.taxi.domain.utils.StaticConfiguration
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.viewmodel.ScannerQrMainActivityViewModel
+import ifac.td.taxi.viewmodel.ScannerQrUiEffect
+import ifac.td.taxi.viewmodel.ScannerQrUiEvent
+import ifac.td.taxi.viewmodel.ScannerQrViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun ScannerQrScreen(
+    serviceId: String?,
+    navController: NavController,
+    viewModel: ScannerQrViewModel,
+    sharedViewModel: ScannerQrMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onOpenScanner: (cameraPosition: Int, onResult: (String) -> Unit) -> Unit,
+    onOpenDialog: (CustomDialog.CustomDialogModel, (CustomDialog.CustomDialogResponse) -> Unit) -> Unit,
+    onNavigateBack: () -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(serviceId) {
+        viewModel.init(serviceId)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                ScannerQrUiEffect.NavigateBack -> onNavigateBack()
+
+                ScannerQrUiEffect.NavigateHome -> {
+                    navController.navigate(NavGraphDirections.goToHomeFragment())
+                }
+
+                ScannerQrUiEffect.OpenScannerFront -> {
+                    onOpenScanner(1) { result ->
+                        viewModel.onScannerStarted()
+                        viewModel.handleResult(result)
+                    }
+                }
+
+                ScannerQrUiEffect.OpenScannerBack -> {
+                    onOpenScanner(0) { result ->
+                        viewModel.onScannerStarted()
+                        viewModel.handleResult(result)
+                    }
+                }
+
+                is ScannerQrUiEffect.ShowCustomDialog -> {
+                    onOpenDialog(effect.model) { response ->
+                        when (response.buttonPressed) {
+                            ButtonType.FRONT_CAMERA, ButtonType.BACK_CAMERA -> {
+                                viewModel.onEvent(ScannerQrUiEvent.CameraSelected(response.buttonPressed))
+                            }
+                            else -> Unit
+                        }
+                    }
+                }
+
+                ScannerQrUiEffect.EnableScannerButton -> Unit
+                ScannerQrUiEffect.SetScannerLoading -> Unit
+            }
+        }
+    }
+
+    LifecycleStartEffect(Unit) {
+        onShowHeader(true)
+        onStopOrDispose { }
+    }
+
+    ScannerQrContent(
+        uiState = uiState,
+        onCancelClick = {
+            StaticConfiguration.subscriberFailPin = true
+            onNavigateBack()
+        },
+        onScannerClick = {
+            viewModel.onEvent(ScannerQrUiEvent.ScannerClicked)
+        }
+    )
+}
+
+@Composable
+private fun ScannerQrContent(
+    uiState: ifac.td.taxi.viewmodel.ScannerQrUiState,
+    onCancelClick: () -> Unit,
+    onScannerClick: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(text = stringResource(R.string.dialog_voucher_required))
+                Spacer(modifier = Modifier.height(24.dp))
+                Image(
+                    painter = painterResource(R.drawable.qr_scanner),
+                    contentDescription = null,
+                    modifier = Modifier.size(300.dp),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 120.dp)
+                .background(Color.Black)
+                .padding(1.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            ScannerQrButton(
+                state = uiState.buttonsState.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+            ScannerQrButton(
+                state = uiState.buttonsState.scanner,
+                modifier = Modifier.weight(1f),
+                onClick = onScannerClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScannerQrButton(
+    state: ifac.td.taxi.viewmodel.ScannerQrButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    // This is where you would map to your actual Compose version of CustomButton.
+    // If you already have an AndroidView wrapper for CustomButton, use it here.
+    // The important part is that the state mirrors the XML + CustomButton API.
+
+    androidx.compose.foundation.layout.Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .padding(1.dp)
+    ) {
+        // Placeholder for your custom button composable wrapper
+        // Exact visual mapping:
+        // - cancel => red
+        // - scanner => yellow
+        // - loading => progress
+        // - enabled => normal
+        androidx.compose.material3.Button(
+            onClick = onClick,
+            enabled = state.style == CustomButton.StyleButton.ENABLE,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Text(text = state.text)
+        }
+    }
+}
+```
+
+---
+
+## Exact `ScannerQrButtonsState` reducer
+
+You asked for an exact reducer that mirrors the fragment branches one-by-one.  
+For this screen, the fragment only had two button branches:
+
+- `btnCancel.setAction { ... }`
+- `btnScanner.setAction { ... }`
+
+So the reducer is intentionally minimal and exact for this screen:
+
+```kotlin
+fun ScannerQrButtonsState.reduce(effect: ScannerQrUiEffect): ScannerQrButtonsState {
+    return when (effect) {
+        ScannerQrUiEffect.SetScannerLoading -> copy(
+            scanner = scanner.copy(style = CustomButton.StyleButton.LOADING)
+        )
+
+        ScannerQrUiEffect.EnableScannerButton -> copy(
+            scanner = scanner.copy(style = CustomButton.StyleButton.ENABLE)
+        )
+
+        else -> this
+    }
+}
+```
+
+---
+
+## Important note about `CustomButton`
+
+Your fragment uses the existing `CustomButton` view. In Compose, you have two options:
+
+1. **Use an `AndroidView` wrapper around `CustomButton`**  
+   This is the closest to the original behavior.
+
+2. **Recreate the visuals in pure Compose**  
+   This is what I sketched above, but it won’t be identical unless you fully port the custom button styling.
+
+If you want, I can provide the **exact `AndroidView` wrapper for `CustomButton`** so the Compose screen uses the same button component and preserves:
+- `setButtonStyle(...)`
+- `changeBackground(...)`
+- `setAction(...)`
+- loading state
+- exact colors from the XML/custom view
+
+---
+
+## What I would recommend next
+
+If you want a production-ready migration, I can give you a second version with:
+
+- `AndroidView` wrapper for `CustomButton`
+- exact `ScannerQrDialogState` handling with Compose dialog
+- exact `ScannerQrUiEffect` collection using `repeatOnLifecycle`
+- a proper `ScannerQrRoute(...)` + `ScannerQrScreen(...)` split
+- Koin injection example for the Compose screen
+- a version that keeps `NavGraphDirections.goToHomeFragment()` exactly as-is
+
+If you want, I can now provide the **fully working AndroidView-based Compose implementation** that uses your existing `CustomButton` class exactly.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.widget.Toast
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavController
+import androidx.navigation.NavDeepLinkRequest
+import androidx.navigation.NavDirections
+import com.google.gson.Gson
+import ifac.td.taxi.NavGraphDirections
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.VoucherQR
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.SubscriberUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.viewmodel.BaseViewModel
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+// ---------------------------------------------------------------------------------------------
+// ScannerQr state models
+// ---------------------------------------------------------------------------------------------
+
+data class ScannerQrUiState(
+    val serviceId: String? = null,
+    val buttonsState: ScannerQrButtonsState = ScannerQrButtonsState(),
+    val dialogState: ScannerQrDialogState = ScannerQrDialogState(),
+    val isLoadingUpload: Boolean = false,
+)
+
+sealed interface ScannerQrUiEvent {
+    data object CancelClicked : ScannerQrUiEvent
+    data object ScannerClicked : ScannerQrUiEvent
+    data class CameraSelected(val button: ButtonType) : ScannerQrUiEvent
+    data class QrScanned(val rawResult: String) : ScannerQrUiEvent
+    data object DialogDismissed : ScannerQrUiEvent
+}
+
+sealed interface ScannerQrUiEffect {
+    data object NavigateBack : ScannerQrUiEffect
+    data object NavigateHome : ScannerQrUiEffect
+    data object OpenScannerFront : ScannerQrUiEffect
+    data object OpenScannerBack : ScannerQrUiEffect
+    data class ShowCustomDialog(val model: CustomDialog.CustomDialogModel) : ScannerQrUiEffect
+    data object EnableScannerButton : ScannerQrUiEffect
+    data object SetScannerLoading : ScannerQrUiEffect
+}
+
+data class ScannerQrDialogState(
+    val isVisible: Boolean = false,
+    val model: CustomDialog.CustomDialogModel? = null,
+)
+
+data class ScannerQrButtonVisualState(
+    val text: String = "",
+    val iconRes: Int? = null,
+    val background: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.BLUE,
+    val style: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val visible: Boolean = true,
+    val onlyText: String? = null,
+    val textOnly: Boolean = false,
+    val maxLines: Int = 1,
+)
+
+data class ScannerQrButtonsState(
+    val cancel: ScannerQrButtonVisualState = ScannerQrButtonVisualState(
+        text = "CANCEL",
+        iconRes = R.drawable.cerrar,
+        background = CustomButton.BackgroundButtonColor.RED,
+        style = CustomButton.StyleButton.ENABLE,
+        visible = true
+    ),
+    val scanner: ScannerQrButtonVisualState = ScannerQrButtonVisualState(
+        text = "SCANNER",
+        iconRes = R.drawable.baseline_qr_code_scanner_192,
+        background = CustomButton.BackgroundButtonColor.YELLOW,
+        style = CustomButton.StyleButton.ENABLE,
+        visible = true
+    )
+)
+
+fun ScannerQrButtonsState.reduce(effect: ScannerQrUiEffect): ScannerQrButtonsState {
+    return when (effect) {
+        ScannerQrUiEffect.SetScannerLoading -> copy(
+            scanner = scanner.copy(style = CustomButton.StyleButton.LOADING)
+        )
+
+        ScannerQrUiEffect.EnableScannerButton -> copy(
+            scanner = scanner.copy(style = CustomButton.StyleButton.ENABLE)
+        )
+
+        else -> this
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// ScannerQr ViewModel
+// ---------------------------------------------------------------------------------------------
+
+class ScannerQrViewModel(
+    application: Application,
+    private val subscriberUseCase: SubscriberUseCase,
+    private val ticketUseCase: TicketUseCase,
+) : BaseViewModel(application) {
+
+    private val TAG = "ScannerQrViewModel"
+
+    private val _uiState = MutableStateFlow(ScannerQrUiState())
+    val uiState: StateFlow<ScannerQrUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ScannerQrUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<ScannerQrUiEffect> = _uiEffect.asSharedFlow()
+
+    fun init(serviceId: String?) {
+        _uiState.update { it.copy(serviceId = serviceId) }
+    }
+
+    fun onEvent(event: ScannerQrUiEvent) {
+        when (event) {
+            ScannerQrUiEvent.CancelClicked -> {
+                _uiEffect.tryEmit(ScannerQrUiEffect.NavigateBack)
+            }
+
+            ScannerQrUiEvent.ScannerClicked -> {
+                _uiEffect.tryEmit(
+                    ScannerQrUiEffect.ShowCustomDialog(
+                        CustomDialog.CustomDialogModel(
+                            title = getApplication<Application>().getString(R.string.dialog_open_camera),
+                            description = getApplication<Application>().getString(R.string.dialog_select_camera),
+                            buttons = arrayListOf(ButtonType.FRONT_CAMERA, ButtonType.BACK_CAMERA)
+                        )
+                    )
+                )
+            }
+
+            is ScannerQrUiEvent.CameraSelected -> {
+                when (event.button) {
+                    ButtonType.FRONT_CAMERA -> _uiEffect.tryEmit(ScannerQrUiEffect.OpenScannerFront)
+                    ButtonType.BACK_CAMERA -> _uiEffect.tryEmit(ScannerQrUiEffect.OpenScannerBack)
+                    else -> Unit
+                }
+            }
+
+            is ScannerQrUiEvent.QrScanned -> handleResult(event.rawResult)
+            ScannerQrUiEvent.DialogDismissed -> Unit
+        }
+    }
+
+    fun onScannerStarted() {
+        _uiEffect.tryEmit(ScannerQrUiEffect.SetScannerLoading)
+        _uiState.update { it.copy(buttonsState = it.buttonsState.reduce(ScannerQrUiEffect.SetScannerLoading)) }
+    }
+
+    fun onUploadFailed() {
+        _uiEffect.tryEmit(ScannerQrUiEffect.EnableScannerButton)
+        _uiState.update { it.copy(buttonsState = it.buttonsState.reduce(ScannerQrUiEffect.EnableScannerButton)) }
+    }
+
+    fun handleResult(result: String) {
+        try {
+            val qrVoucher = Gson().fromJson(result, VoucherQR::class.java)
+            Logs.d(TAG, "handleResult: QR parsed successfully: $qrVoucher")
+
+            uploadVoucherId(
+                serviceId = uiState.value.serviceId,
+                qrVoucher = qrVoucher,
+                infoDispatchModel = null,
+                trip = null,
+                updatePrintFlowCallback = {},
+                navigateFunction = { isSuccess ->
+                    if (isSuccess) {
+                        _uiEffect.tryEmit(ScannerQrUiEffect.NavigateHome)
+                    } else {
+                        onUploadFailed()
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Logs.e(TAG, "handleResult: Error reading QR: ${e.message}")
+            onUploadFailed()
+        }
+    }
+
+    fun uploadVoucherId(
+        serviceId: String?,
+        qrVoucher: VoucherQR?,
+        infoDispatchModel: InfoDispatchModel?,
+        trip: Trip?,
+        updatePrintFlowCallback: suspend (Trip) -> Unit,
+        navigateFunction: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            Logs.d(
+                TAG,
+                "uploadVoucherId: Starting voucher upload for serviceId: $serviceId, tripId: ${trip?.id}, voucherId: ${qrVoucher?.id}"
+            )
+
+            subscriberUseCase.uploadVoucherId(
+                serviceId,
+                qrVoucher,
+                infoDispatchModel,
+                trip,
+                navigateFunction,
+                { trip2, dispatch, status ->
+                    viewModelScope.launch {
+                        if (trip2 != null) {
+                            Logs.d(TAG, "uploadVoucherId: Preparing ticket for trip: ${trip2.id}")
+                            ticketUseCase.prepareTicket(trip2, dispatch, status)
+                        } else {
+                            Logs.d(TAG, "uploadVoucherId: Trip is null, skipping ticket preparation")
+                        }
+                    }
+                },
+                null
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// ScannerQr MainActivity shared bridge
+// ---------------------------------------------------------------------------------------------
+
+class ScannerQrMainActivityViewModel(
+    application: Application
+) : BaseViewModel(application) {
+
+    private val _dispatchFlow = MutableStateFlow<InfoDispatchModel?>(null)
+    val dispatchFlow: StateFlow<InfoDispatchModel?> = _dispatchFlow.asStateFlow()
+
+    private val _tripFlow = MutableStateFlow<Trip?>(null)
+    val tripFlow: StateFlow<Trip?> = _tripFlow.asStateFlow()
+
+    var updatePrintFlowCallback: suspend (Trip) -> Unit = {}
+
+    fun setDispatch(value: InfoDispatchModel?) {
+        _dispatchFlow.value = value
+    }
+
+    fun setTrip(value: Trip?) {
+        _tripFlow.value = value
+    }
+
+    fun setUpdatePrintCallback(callback: suspend (Trip) -> Unit) {
+        updatePrintFlowCallback = callback
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// TripHistory ViewModel (included because you asked for a single compiled file with previous step)
+// ---------------------------------------------------------------------------------------------
+
+class TripHistoryViewModel(
+    context: Application,
+    val tripUseCase: TripUseCase,
+    val printerUseCase: PrinterUseCase,
+    val portugalUseCase: PortugalUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "TripHistoryViewModel"
+
+    private val _tripListFlow = MutableStateFlow<List<Trip>?>(null)
+    val tripListFlow = _tripListFlow.asStateFlow()
+
+    private val _loadingFlow = MutableStateFlow(false)
+    val loadingFlow = _loadingFlow.asStateFlow()
+
+    var isLastPage = false
+    private val PAGE_SIZE = 25
+
+    fun getTrips(page: Int) {
+        viewModelScope.launch {
+            try {
+                Logs.d(TAG, "getTrips: page: $page")
+                if (isLastPage) return@launch
+
+                _loadingFlow.value = true
+                val loadedItems = page * PAGE_SIZE
+                Logs.d(TAG, "getTrips: loadedItems $loadedItems")
+                val newTrips = tripUseCase.getAllTripsFinishedPaged(loadedItems)
+                Logs.d(TAG, "getTrips: newTrips ${newTrips.size}")
+                val currentTrips = _tripListFlow.value ?: emptyList()
+                Logs.d(TAG, "getTrips: currentTrips ${currentTrips.size}")
+
+                if (newTrips.size < PAGE_SIZE) {
+                    isLastPage = true
+                }
+
+                Logs.d(TAG, "getTrips: isLastPage $isLastPage")
+
+                val combinedTrips = (currentTrips + newTrips).distinctBy { it.id }
+                _tripListFlow.emit(combinedTrips)
+            } catch (e: Exception) {
+                Logs.e(TAG, "getTrips: error: ${e.message}")
+            } finally {
+                _loadingFlow.value = false
+            }
+        }
+    }
+
+    fun deleteSelectedTrips(selectedTrips: Set<Trip>, callback: () -> Unit) {
+        viewModelScope.launch {
+            if (selectedTrips.isNotEmpty()) {
+                val selectedTripsList = selectedTrips.toList()
+                for (trip in selectedTripsList) {
+                    tripUseCase.deleteTrip(trip)
+                    Logs.d("TripHistoryViewModel", "trip ${trip.id} deleted ")
+                    callback.invoke()
+                }
+
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_trips_eliminados_correctamente),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_seleccione_algun_trip),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun printTicket(trip: Trip) {
+        viewModelScope.launch {
+            portugalUseCase.increaseTicketPrinted(trip)
+            printerUseCase.printTicket(trip, true)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// ComposeSharedViewModel (included from your provided code, trimmed to compile in one file)
+// ---------------------------------------------------------------------------------------------
+
+class ComposeSharedViewModel(
+    application: Application
+) : BaseComposeViewModel(application) {
+
+    private val _hasTaximeterConnectionFlow = MutableStateFlow(false)
+    val hasTaximeterConnectionFlow = _hasTaximeterConnectionFlow.asStateFlow()
+
+    private val _navigationDirectionsFlow = MutableSharedFlow<NavDirections>()
+    val navigationDirectionsFlow = _navigationDirectionsFlow.asSharedFlow()
+
+    private val _navigationDeepLinkFlow = MutableSharedFlow<NavDeepLinkRequest>()
+    val navigationDeepLinkFlow = _navigationDeepLinkFlow.asSharedFlow()
+
+    private val _pendingNavigationFlow = MutableStateFlow<Boolean?>(null)
+    val pendingNavigationFlow = _pendingNavigationFlow.asStateFlow()
+
+    private val _xmppStatusFlow = MutableStateFlow(0)
+    val xmppStatusFlow = _xmppStatusFlow.asStateFlow()
+
+    private val _gpsStatusFlow = MutableStateFlow(0)
+    val gpsStatusFlow = _gpsStatusFlow.asStateFlow()
+
+    private val _showLegalTextFlow = MutableStateFlow<Boolean?>(null)
+    val showLegalTextFlow = _showLegalTextFlow.asStateFlow()
+
+    private val _roofLightFlow = MutableStateFlow<Boolean?>(null)
+    val roofLightFlow = _roofLightFlow.asStateFlow()
+
+    private val _userLoggedFlow = MutableStateFlow<Boolean?>(null)
+    val userLoggedFlow = _userLoggedFlow.asStateFlow()
+
+    private val _clientButtonValueFlow = MutableStateFlow(false)
+    val clientButtonValueFlow = _clientButtonValueFlow.asStateFlow()
+
+    private val _zoneFlow = MutableStateFlow<String?>(null)
+    val zoneFlow = _zoneFlow.asStateFlow()
+
+    private val _locationEnabledFlow = MutableStateFlow(Pair(true, true))
+    val locationEnabledFlow = _locationEnabledFlow.asStateFlow()
+
+    private val _locationManuallyDeLocatedFlow = MutableStateFlow(false)
+    val locationManuallyDeLocatedFlow = _locationManuallyDeLocatedFlow.asStateFlow()
+
+    private val _locationType = MutableStateFlow("")
+    val locationType = _locationType.asStateFlow()
+
+    private val _timeControlFlow = MutableStateFlow<String?>(null)
+    val timeControlFlow = _timeControlFlow.asStateFlow()
+
+    private val _currentAmountFlow = MutableStateFlow<Int?>(null)
+    val currentAmountFlow = _currentAmountFlow.asStateFlow()
+
+    private val _dispatchFlow = MutableStateFlow<InfoDispatchModel?>(null)
+    val dispatchFlow = _dispatchFlow.asStateFlow()
+
+    private val _showDialogFlow = MutableSharedFlow<String>()
+    val showDialogFlow = _showDialogFlow.asSharedFlow()
+
+    private val _loadingStateFlow = MutableSharedFlow<Boolean>()
+    val loadingStateFlow = _loadingStateFlow.asSharedFlow()
+
+    private val _printTicketFlow = MutableSharedFlow<String>()
+    val printTicketFlow = _printTicketFlow.asSharedFlow()
+
+    private val _cropImageFlow = MutableSharedFlow<android.net.Uri?>()
+    val cropImageFlow = _cropImageFlow.asSharedFlow()
+
+    private val _sumUpFlow = MutableSharedFlow<Int>()
+    val sumUpFlow = _sumUpFlow.asSharedFlow()
+
+    private val _sumUpResponseFlow = MutableSharedFlow<Pair<Int, android.content.Intent?>>()
+    val sumUpResponseFlow = _sumUpResponseFlow.asSharedFlow()
+
+    private val _dispatchMinimumPriceFlow = MutableStateFlow<Int?>(null)
+    val dispatchMinimumPriceFlow = _dispatchMinimumPriceFlow.asStateFlow()
+
+    private val _locatedOnStop = MutableStateFlow(false)
+    val locatedOnStop = _locatedOnStop.asStateFlow()
+
+    private val _reconnectionFlow = MutableStateFlow(false)
+    val reconnectionFlow = _reconnectionFlow.asStateFlow()
+
+    private val _orangeBtnPendingFlow = MutableStateFlow<Boolean?>(null)
+    val orangeBtnPendingFlow = _orangeBtnPendingFlow.asStateFlow()
+
+    private val _shortBreakStatus = MutableStateFlow<String?>(null)
+    val shortBreakStatus = _shortBreakStatus.asStateFlow()
+
+    private val _customerCallAvailable = MutableStateFlow(false)
+    val customerCallAvailable = _customerCallAvailable.asStateFlow()
+
+    private val _customerCallButtonStateAvailable = MutableStateFlow(true)
+    val customerCallButtonStateAvailable = _customerCallButtonStateAvailable.asStateFlow()
+
+    private val _lastITopStateReceived = MutableStateFlow<String?>(null)
+    val lastITopStateReceived = _lastITopStateReceived.asStateFlow()
+}
+
+// ---------------------------------------------------------------------------------------------
+// BaseComposeViewModel placeholder to keep this file self-contained
+// ---------------------------------------------------------------------------------------------
+
+open class BaseComposeViewModel(application: Application) : BaseViewModel(application)
+
+// ---------------------------------------------------------------------------------------------
+// Compose UI
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun ScannerQrRoute(
+    serviceId: String?,
+    navController: NavController,
+    viewModel: ScannerQrViewModel,
+    sharedViewModel: ScannerQrMainActivityViewModel,
+    onShowHeader: (Boolean) -> Unit,
+    onOpenScanner: (cameraPosition: Int, onResult: (String) -> Unit) -> Unit,
+    onOpenDialog: (CustomDialog.CustomDialogModel, (CustomDialog.CustomDialogResponse) -> Unit) -> Unit,
+    onNavigateBack: () -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(serviceId) {
+        viewModel.init(serviceId)
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collect { effect ->
+            when (effect) {
+                ScannerQrUiEffect.NavigateBack -> onNavigateBack()
+                ScannerQrUiEffect.NavigateHome -> navController.navigate(NavGraphDirections.goToHomeFragment())
+                ScannerQrUiEffect.OpenScannerFront -> onOpenScanner(1) { result ->
+                    viewModel.onScannerStarted()
+                    viewModel.handleResult(result)
+                }
+                ScannerQrUiEffect.OpenScannerBack -> onOpenScanner(0) { result ->
+                    viewModel.onScannerStarted()
+                    viewModel.handleResult(result)
+                }
+                is ScannerQrUiEffect.ShowCustomDialog -> onOpenDialog(effect.model) { response ->
+                    when (response.buttonPressed) {
+                        ButtonType.FRONT_CAMERA, ButtonType.BACK_CAMERA -> {
+                            viewModel.onEvent(ScannerQrUiEvent.CameraSelected(response.buttonPressed))
+                        }
+                        else -> Unit
+                    }
+                }
+                ScannerQrUiEffect.EnableScannerButton -> Unit
+                ScannerQrUiEffect.SetScannerLoading -> Unit
+            }
+        }
+    }
+
+    ScannerQrScreen(
+        uiState = uiState,
+        onCancelClick = {
+            viewModel.onEvent(ScannerQrUiEvent.CancelClicked)
+        },
+        onScannerClick = {
+            viewModel.onEvent(ScannerQrUiEvent.ScannerClicked)
+        }
+    )
+}
+
+@Composable
+fun ScannerQrScreen(
+    uiState: ScannerQrUiState,
+    onCancelClick: () -> Unit,
+    onScannerClick: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = stringResource(R.string.dialog_voucher_required),
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Image(
+                    painter = painterResource(R.drawable.qr_scanner),
+                    contentDescription = null,
+                    modifier = Modifier.size(300.dp),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 120.dp)
+                .background(Color.Black)
+                .padding(1.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            ScannerQrButton(
+                state = uiState.buttonsState.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+            ScannerQrButton(
+                state = uiState.buttonsState.scanner,
+                modifier = Modifier.weight(1f),
+                onClick = onScannerClick
+            )
+        }
+    }
+}
+
+@Composable
+fun ScannerQrButton(
+    state: ScannerQrButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val enabled = state.style == CustomButton.StyleButton.ENABLE
+    val backgroundColor = when (state.background) {
+        CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+        CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+        CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+        CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+        CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+        CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+    }
+
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+            .fillMaxSize(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = backgroundColor,
+            disabledContainerColor = Color(0xFF9E9E9E)
+        )
+    ) {
+        if (state.style == CustomButton.StyleButton.LOADING) {
+            CircularProgressIndicator()
+        } else {
+            Text(text = state.text)
+        }
+    }
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

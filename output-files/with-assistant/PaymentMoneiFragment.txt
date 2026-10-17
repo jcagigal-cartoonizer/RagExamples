@@ -1,0 +1,1334 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite of the `PaymentMoneiFragment` plus a Compose-friendly `PaymentMoneiViewModel` architecture that preserves the original navigation behavior, mirrors the fragment’s state transitions, and replaces the button logic with state holders/reducers.
+
+I’m also including a `PaymentMoneiMainActivityViewModel` bridge so the shared trip/payment data integrates into Compose the same way the fragment did.
+
+---
+
+## 1) Compose UI: `PaymentMoneiScreen`
+
+This composable mirrors the XML layout and fragment behavior:
+
+- shows amount
+- generates QR
+- collects payment status
+- updates button state
+- preserves navigation behavior
+- uses `CustomButton`-equivalent state in Compose
+- uses lifecycle-aware collection
+- uses `SharedFlow<PaymentMoneiUiEffect>` for one-off effects
+
+> Note: since your `CustomButton` is a View, in Compose I model it as a state-driven composable button. If you want, you can also wrap the existing `CustomButton` with `AndroidView`, but the code below is a pure Compose implementation.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.flow.collectLatest
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
+import ifac.td.taxi.framework.util.tickets.Tickets
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.viewmodel.PaymentMoneiMainActivityViewModel
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+
+@Composable
+fun PaymentMoneiScreen(
+    viewModel: PaymentMoneiViewModel,
+    sharedViewModel: PaymentMoneiMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onPrintTicket: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(
+            PaymentMoneiUiEvent.ScreenStarted(
+                totalAmount = sharedViewModel.tripState.value?.totalAmount ?: 0,
+                isoMoneda = sharedViewModel.currencySymbol(),
+                orderId = sharedViewModel.createOrderId()
+            )
+        )
+    }
+
+    LaunchedEffect(viewModel) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collectLatest { effect ->
+                when (effect) {
+                    is PaymentMoneiUiEffect.NavigateBack -> onNavigateBack()
+                    is PaymentMoneiUiEffect.NavigateHome -> onNavigateHome()
+                    is PaymentMoneiUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                    is PaymentMoneiUiEffect.PrintTicket -> onPrintTicket(effect.ticket)
+                }
+            }
+        }
+    }
+
+    PaymentMoneiContent(
+        uiState = uiState,
+        onCancelClick = { viewModel.onEvent(PaymentMoneiUiEvent.CancelClicked) },
+        onPrintClick = { viewModel.onEvent(PaymentMoneiUiEvent.PrintClicked) },
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun PaymentMoneiContent(
+    uiState: PaymentMoneiUiState,
+    onCancelClick: () -> Unit,
+    onPrintClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (uiState.showAmount) {
+            Row(
+                modifier = Modifier.padding(top = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = stringResource(R.string.monei_importes), color = Color.White)
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = uiState.amountText,
+                    color = Color.White
+                )
+            }
+        }
+
+        if (uiState.showResultOk) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = stringResource(R.string.pago_completado),
+                color = Color.White,
+                fontSize = 20.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Box(
+            modifier = Modifier.size(250.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (uiState.qrBitmap != null && uiState.showQr) {
+                Image(
+                    bitmap = uiState.qrBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                CircularProgressIndicator()
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (uiState.showQrDisclaimer) {
+            Text(
+                text = stringResource(R.string.monei_qr_disclaimer),
+                color = Color.White,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        StatusBanner(
+            text = uiState.statusText,
+            backgroundColor = uiState.statusBackgroundColor,
+            visible = uiState.showStatus
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (uiState.showStatusLoading) {
+            CircularProgressIndicator()
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 96.dp)
+                .background(Color.Black),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PaymentMoneiButton(
+                state = uiState.buttons.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+            PaymentMoneiButton(
+                state = uiState.buttons.print,
+                modifier = Modifier.weight(1f),
+                onClick = onPrintClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusBanner(
+    text: String,
+    backgroundColor: Color,
+    visible: Boolean
+) {
+    if (!visible) return
+    Text(
+        text = text,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(backgroundColor)
+            .padding(12.dp),
+        color = Color.White,
+        textAlign = TextAlign.Center,
+        fontSize = 18.sp
+    )
+}
+
+@Composable
+private fun PaymentMoneiButton(
+    state: PaymentMoneiButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val enabled = state.style == PaymentMoneiButtonStyle.ENABLE
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(72.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = state.backgroundColor,
+            disabledContainerColor = state.disabledBackgroundColor,
+            contentColor = Color.White,
+            disabledContentColor = Color(0xFFBDBDBD)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(text = state.text)
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+
+This replaces the fragment’s multiple flows with a single state model and a single effect stream.
+
+### Exact reducer requirement
+You asked for an **exact `PaymentMoneiButtonsState` reducer** that mirrors every `collect {}` branch from the fragment one-by-one.  
+That reducer is included below and maps:
+
+- `generatePaymentFlow.collect { ... }`
+- `infoPaymentFlow.collect { ... }`
+- `actualStatusFlow.collect { ... }`
+
+to a single `PaymentMoneiUiState`.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.graphics.Bitmap
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.WriterException
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.monei.GeneratePaymentRequest
+import ifac.td.taxi.domain.model.monei.InfoPayment
+import ifac.td.taxi.domain.model.monei.MoneiPaymentInfo
+import ifac.td.taxi.domain.usecase.MoneiUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.framework.util.tickets.Tickets
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.model.SmartTDUIException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+class PaymentMoneiViewModel(
+    private val moneiUseCase: MoneiUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    private val TAG = this.javaClass.simpleName
+
+    private val _uiState = MutableStateFlow(PaymentMoneiUiState())
+    val uiState: StateFlow<PaymentMoneiUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PaymentMoneiUiEffect>()
+    val uiEffect: SharedFlow<PaymentMoneiUiEffect> = _uiEffect.asSharedFlow()
+
+    private var currentTrip: Trip? = null
+    private var currentOrderId: String? = null
+
+    fun onEvent(event: PaymentMoneiUiEvent) {
+        when (event) {
+            is PaymentMoneiUiEvent.ScreenStarted -> {
+                currentOrderId = event.orderId
+                initVM(event.totalAmount, event.isoMoneda, event.orderId)
+                _uiState.update {
+                    it.copy(
+                        amountText = event.totalAmount.toCurrency(),
+                        isLoadingQr = true,
+                        showAmount = true,
+                        showQr = false,
+                        showQrDisclaimer = true,
+                        showStatus = true,
+                        showStatusLoading = true
+                    )
+                }
+            }
+
+            PaymentMoneiUiEvent.CancelClicked -> handleCancelClicked()
+            PaymentMoneiUiEvent.PrintClicked -> handlePrintClicked()
+            is PaymentMoneiUiEvent.TripUpdated -> currentTrip = event.trip
+        }
+    }
+
+    fun updateActualStatus(status: String) {
+        viewModelScope.launch {
+            val parsed = StatusPayments.valueOf(status)
+            Logs.d(TAG, "updateActualStatus: $parsed")
+            reduceStatus(parsed)
+        }
+    }
+
+    fun finishPayment(trip: Trip) {
+        viewModelScope.launch {
+            trip.moneiPaymentId = _uiState.value.generatePayment?.id
+            tripUseCase.endTrip(trip, PaymentMethod.MONEI)
+            val status = shiftStatusUseCase.checkForSubStateModifications(com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_FOR_HIRE)
+            status?.let { shiftStatusUseCase.setStatus(it, true) }
+            _uiEffect.emit(PaymentMoneiUiEffect.NavigateHome)
+        }
+    }
+
+    private fun initVM(totalAmount: Int, isoMoneda: String, orderId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            when (val response = moneiUseCase.generatePayment(GeneratePaymentRequest(totalAmount, isoMoneda, orderId))) {
+                is Resource.Success -> response.data?.let { info ->
+                    _uiState.update { it.copy(generatePayment = info) }
+                    reduceGeneratePayment(info)
+                }
+                is Resource.Error -> response.exception?.let {
+                    _uiEffect.emit(PaymentMoneiUiEffect.ShowToast(R.string.toast_onerror_generatepaymentrequest))
+                }
+            }
+        }
+    }
+
+    private fun startPolling(paymentId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                when (val response = moneiUseCase.getInfoPayment(paymentId)) {
+                    is Resource.Success -> response.data?.let { info ->
+                        _uiState.update { it.copy(infoPayment = info) }
+                        reduceInfoPayment(info)
+                    }
+                    is Resource.Error -> response.exception?.let {
+                        _uiEffect.emit(PaymentMoneiUiEffect.ShowToast(R.string.toast_onerror_generatepaymentrequest))
+                    }
+                }
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+    }
+
+    private fun reduceGeneratePayment(info: MoneiPaymentInfo) {
+        // Mirrors generatePaymentFlow.collect { ... }
+        info.urlToPay?.let { url ->
+            _uiState.update {
+                it.copy(
+                    qrBitmap = getQrFromString(url),
+                    showQr = true,
+                    isLoadingQr = false
+                )
+            }
+        }
+        info.status?.let { status ->
+            updateActualStatus(status)
+        }
+        info.id?.let { startPolling(it) }
+    }
+
+    private fun reduceInfoPayment(info: InfoPayment) {
+        // Mirrors infoPaymentFlow.collect { ... }
+        info.nextUrl?.let { url ->
+            _uiState.update {
+                it.copy(
+                    qrBitmap = getQrFromString(url),
+                    showQr = true,
+                    isLoadingQr = false
+                )
+            }
+        }
+        info.status?.let { status ->
+            updateActualStatus(status)
+        }
+    }
+
+    private fun reduceStatus(status: StatusPayments) {
+        // Mirrors actualStatusFlow.collect { updateUIFromStatus(it) }
+        _uiState.update { current ->
+            PaymentMoneiButtonsState.reduce(current, status)
+        }
+
+        when (status) {
+            StatusPayments.EXPIRED -> {
+                viewModelScope.launch { _uiEffect.emit(PaymentMoneiUiEffect.NavigateBack) }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun handleCancelClicked() {
+        when (_uiState.value.status) {
+            StatusPayments.FAILED,
+            StatusPayments.PENDING -> {
+                viewModelScope.launch { _uiEffect.emit(PaymentMoneiUiEffect.NavigateBack) }
+            }
+            StatusPayments.SUCCEEDED -> {
+                currentTrip?.let { finishPayment(it) }
+            }
+            else -> {
+                Logs.d(TAG, "btnCancelClick when StatusPayment: ${_uiState.value.status}")
+            }
+        }
+    }
+
+    private fun handlePrintClicked() {
+        val payment = _uiState.value.generatePayment ?: return
+        val url = payment.urlToPay ?: return
+        val trip = currentTrip ?: return
+        val totalAmount = trip.totalAmount ?: return
+
+        var bufTicket = "Bizum\r\n"
+        bufTicket += getApplication<Application>().getString(R.string.strAmountPascalCase) + " " +
+                Tickets.formatear(Tickets.FORM_MON, 12, totalAmount.toString()) + "\r\n"
+        bufTicket += Tickets.getQrCode(url)
+
+        viewModelScope.launch {
+            _uiEffect.emit(PaymentMoneiUiEffect.PrintTicket(bufTicket))
+        }
+    }
+
+    private fun getQrFromString(info: String): Bitmap? {
+        val barcodeEncoder = BarcodeEncoder()
+        return try {
+            barcodeEncoder.encodeBitmap(info, BarcodeFormat.QR_CODE, 400, 400)
+        } catch (e: WriterException) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    enum class StatusPayments {
+        PENDING,
+        SUCCEEDED,
+        FAILED,
+        CANCELED,
+        REFUNDED,
+        PARTIALLY_REFUNDED,
+        AUTHORIZED,
+        EXPIRED
+    }
+}
+```
+
+---
+
+## 3) `PaymentMoneiUiState`, `PaymentMoneiUiEvent`, `PaymentMoneiUiEffect`, `PaymentMoneiButtonsState`
+
+These are the Compose-friendly state holders.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.monei.InfoPayment
+import ifac.td.taxi.domain.model.monei.MoneiPaymentInfo
+
+data class PaymentMoneiUiState(
+    val amountText: String = "",
+    val qrBitmap: Bitmap? = null,
+    val status: PaymentMoneiViewModel.StatusPayments = PaymentMoneiViewModel.StatusPayments.PENDING,
+    val statusText: String = "PENDING",
+    val statusBackgroundColor: Color = Color(0xFF1976D2),
+    val showAmount: Boolean = true,
+    val showQr: Boolean = false,
+    val showQrDisclaimer: Boolean = true,
+    val showStatus: Boolean = true,
+    val showStatusLoading: Boolean = true,
+    val showResultOk: Boolean = false,
+    val isLoadingQr: Boolean = true,
+    val generatePayment: MoneiPaymentInfo? = null,
+    val infoPayment: InfoPayment? = null,
+    val buttons: PaymentMoneiButtonsState = PaymentMoneiButtonsState()
+)
+
+sealed interface PaymentMoneiUiEvent {
+    data class ScreenStarted(
+        val totalAmount: Int,
+        val isoMoneda: String,
+        val orderId: String
+    ) : PaymentMoneiUiEvent
+
+    data object CancelClicked : PaymentMoneiUiEvent
+    data object PrintClicked : PaymentMoneiUiEvent
+    data class TripUpdated(val trip: Trip) : PaymentMoneiUiEvent
+}
+
+sealed interface PaymentMoneiUiEffect {
+    data object NavigateBack : PaymentMoneiUiEffect
+    data object NavigateHome : PaymentMoneiUiEffect
+    data class ShowToast(val messageRes: Int) : PaymentMoneiUiEffect
+    data class PrintTicket(val ticket: String) : PaymentMoneiUiEffect
+}
+
+data class PaymentMoneiButtonVisualState(
+    val text: String = "",
+    val style: PaymentMoneiButtonStyle = PaymentMoneiButtonStyle.ENABLE,
+    val backgroundColor: Color = Color(0xFF1976D2),
+    val disabledBackgroundColor: Color = Color(0xFF9E9E9E)
+)
+
+enum class PaymentMoneiButtonStyle {
+    ENABLE,
+    DISABLE,
+    LOADING
+}
+
+data class PaymentMoneiButtonsState(
+    val cancel: PaymentMoneiButtonVisualState = PaymentMoneiButtonVisualState(
+        text = "CANCEL",
+        style = PaymentMoneiButtonStyle.ENABLE,
+        backgroundColor = Color(0xFFD32F2F)
+    ),
+    val print: PaymentMoneiButtonVisualState = PaymentMoneiButtonVisualState(
+        text = "IMPRIMIR",
+        style = PaymentMoneiButtonStyle.ENABLE,
+        backgroundColor = Color(0xFF1976D2)
+    )
+) {
+    companion object {
+        fun reduce(
+            current: PaymentMoneiUiState,
+            status: PaymentMoneiViewModel.StatusPayments
+        ): PaymentMoneiUiState {
+            return when (status) {
+                PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> current.copy(
+                    status = status,
+                    statusText = status.name,
+                    statusBackgroundColor = Color(0xFF2E7D32),
+                    showStatus = false,
+                    showStatusLoading = false,
+                    showQr = false,
+                    showQrDisclaimer = false,
+                    showAmount = false,
+                    showResultOk = true,
+                    buttons = current.buttons.copy(
+                        cancel = current.buttons.cancel.copy(
+                            text = "FINISH",
+                            backgroundColor = Color(0xFF2E7D32)
+                        )
+                    )
+                )
+
+                PaymentMoneiViewModel.StatusPayments.PENDING -> current.copy(
+                    status = status,
+                    statusText = "PENDING",
+                    statusBackgroundColor = Color(0xFFFFEB3B),
+                    showStatus = true,
+                    showStatusLoading = true
+                )
+
+                PaymentMoneiViewModel.StatusPayments.FAILED -> current.copy(
+                    status = status,
+                    statusText = status.name,
+                    statusBackgroundColor = Color(0xFFD32F2F),
+                    showStatusLoading = false
+                )
+
+                PaymentMoneiViewModel.StatusPayments.EXPIRED -> current.copy(
+                    status = status,
+                    statusText = status.name,
+                    statusBackgroundColor = Color(0xFFD32F2F)
+                )
+
+                else -> current.copy(
+                    status = status,
+                    statusText = status.name
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 4) Exact `PaymentMoneiButtonsState` reducer mapping fragment branches one-by-one
+
+You explicitly asked for a reducer that mirrors every `collect {}` branch from the fragment.  
+The reducer above does that in these exact mappings:
+
+### `generatePaymentFlow.collect { ... }`
+- `urlToPay != null` → hide loading QR, show QR, set bitmap
+- `status != null` → update status
+
+### `infoPaymentFlow.collect { ... }`
+- `nextUrl != null` → hide loading QR, show QR, set bitmap
+- `status != null` → update status
+
+### `actualStatusFlow.collect { ... }`
+- `SUCCEEDED`
+  - button cancel becomes `FINISH`
+  - hide status loading
+  - hide QR
+  - hide disclaimer
+  - hide amount
+  - hide status
+  - show success text
+- `PENDING`
+  - status text becomes `"PENDING"`
+  - yellow background
+- `FAILED`
+  - red background
+  - hide status loading
+- `EXPIRED`
+  - red background
+  - navigate back
+- `else`
+  - no-op
+
+That is the exact fragment behavior translated into state.
+
+---
+
+## 5) `PaymentMoneiMainActivityViewModel` Compose bridge
+
+This replaces the fragment’s `sharedViewModel.tripFlow` access and preserves the same data flow.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.utils.NumberUtils
+import ifac.td.taxi.framework.util.tickets.TicketsPrinter.get_numRecibo
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+class PaymentMoneiMainActivityViewModel(
+    application: Application
+) : AndroidViewModel(application) {
+
+    private val _tripState = MutableStateFlow<Trip?>(null)
+    val tripState: StateFlow<Trip?> = _tripState.asStateFlow()
+
+    fun setTrip(trip: Trip?) {
+        _tripState.value = trip
+    }
+
+    fun currencySymbol(): String = NumberUtils.currencySymbol()
+
+    fun createOrderId(): String = "${System.currentTimeMillis()}_${get_numRecibo(10000000)}"
+
+    fun printTicket(ticket: String) {
+        viewModelScope.launch {
+            // bridge to your existing printing pipeline
+            // e.g. repository / printer service / callback
+        }
+    }
+}
+```
+
+---
+
+## 6) Navigation preservation
+
+In the fragment, navigation was done via:
+
+- `iMainActivity.navigateBack()`
+- `navigateTo(NavGraphDirections.goToHomeFragment())`
+
+In Compose, preserve that by passing callbacks:
+
+```kotlin
+PaymentMoneiScreen(
+    viewModel = paymentMoneiViewModel,
+    sharedViewModel = paymentMoneiMainActivityViewModel,
+    onNavigateBack = { navController.popBackStack() },
+    onNavigateHome = { navController.navigate(R.id.homeFragment) },
+    onShowToast = { /* show toast */ },
+    onPrintTicket = { sharedViewModel.printTicket(it) }
+)
+```
+
+If you want to keep the exact `NavGraphDirections.goToHomeFragment()` style, you can call it from the effect handler in the hosting Fragment/Activity.
+
+---
+
+## 7) About dialog state
+
+You requested dialog state handling only if the ViewModel uses a custom dialog.  
+This payment screen does not use a custom dialog in the provided fragment, so I did **not** add dialog state/effects.
+
+---
+
+If you want, I can provide a second version that:
+1. uses `AndroidView` to embed the existing `CustomButton` directly in Compose, and  
+2. includes a `PaymentMoneiRoute()` + `PaymentMoneiScreen()` split with full Koin integration.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.WriterException
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PaymentMethod
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.monei.GeneratePaymentRequest
+import ifac.td.taxi.domain.model.monei.InfoPayment
+import ifac.td.taxi.domain.model.monei.MoneiPaymentInfo
+import ifac.td.taxi.domain.usecase.MoneiUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.utils.NumberUtils
+import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.framework.util.tickets.Tickets
+import ifac.td.taxi.framework.util.tickets.TicketsPrinter.get_numRecibo
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// -----------------------------
+// UI STATE / EVENTS / EFFECTS
+// -----------------------------
+
+data class PaymentMoneiUiState(
+    val amountText: String = "",
+    val qrBitmap: Bitmap? = null,
+    val status: PaymentMoneiViewModel.StatusPayments = PaymentMoneiViewModel.StatusPayments.PENDING,
+    val statusText: String = "PENDING",
+    val statusBackgroundColor: Color = Color(0xFF1976D2),
+    val showAmount: Boolean = true,
+    val showQr: Boolean = false,
+    val showQrDisclaimer: Boolean = true,
+    val showStatus: Boolean = true,
+    val showStatusLoading: Boolean = true,
+    val showResultOk: Boolean = false,
+    val isLoadingQr: Boolean = true,
+    val generatePayment: MoneiPaymentInfo? = null,
+    val infoPayment: InfoPayment? = null,
+    val buttons: PaymentMoneiButtonsState = PaymentMoneiButtonsState()
+)
+
+sealed interface PaymentMoneiUiEvent {
+    data class ScreenStarted(
+        val totalAmount: Int,
+        val isoMoneda: String,
+        val orderId: String
+    ) : PaymentMoneiUiEvent
+
+    data object CancelClicked : PaymentMoneiUiEvent
+    data object PrintClicked : PaymentMoneiUiEvent
+    data class TripUpdated(val trip: Trip) : PaymentMoneiUiEvent
+}
+
+sealed interface PaymentMoneiUiEffect {
+    data object NavigateBack : PaymentMoneiUiEffect
+    data object NavigateHome : PaymentMoneiUiEffect
+    data class ShowToast(val messageRes: Int) : PaymentMoneiUiEffect
+    data class PrintTicket(val ticket: String) : PaymentMoneiUiEffect
+}
+
+enum class PaymentMoneiButtonStyle {
+    ENABLE,
+    DISABLE,
+    LOADING
+}
+
+data class PaymentMoneiButtonVisualState(
+    val text: String = "",
+    val style: PaymentMoneiButtonStyle = PaymentMoneiButtonStyle.ENABLE,
+    val backgroundColor: Color = Color(0xFF1976D2),
+    val disabledBackgroundColor: Color = Color(0xFF9E9E9E)
+)
+
+data class PaymentMoneiButtonsState(
+    val cancel: PaymentMoneiButtonVisualState = PaymentMoneiButtonVisualState(
+        text = "CANCEL",
+        style = PaymentMoneiButtonStyle.ENABLE,
+        backgroundColor = Color(0xFFD32F2F)
+    ),
+    val print: PaymentMoneiButtonVisualState = PaymentMoneiButtonVisualState(
+        text = "IMPRIMIR",
+        style = PaymentMoneiButtonStyle.ENABLE,
+        backgroundColor = Color(0xFF1976D2)
+    )
+) {
+    companion object {
+        fun reduce(
+            current: PaymentMoneiUiState,
+            status: PaymentMoneiViewModel.StatusPayments
+        ): PaymentMoneiUiState {
+            return when (status) {
+                PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> current.copy(
+                    status = status,
+                    statusText = status.name,
+                    statusBackgroundColor = Color(0xFF2E7D32),
+                    showStatusLoading = false,
+                    showQr = false,
+                    showQrDisclaimer = false,
+                    showAmount = false,
+                    showStatus = false,
+                    showResultOk = true,
+                    buttons = current.buttons.copy(
+                        cancel = current.buttons.cancel.copy(
+                            text = ButtonType.FINISH.name,
+                            backgroundColor = Color(0xFF2E7D32)
+                        )
+                    )
+                )
+
+                PaymentMoneiViewModel.StatusPayments.PENDING -> current.copy(
+                    status = status,
+                    statusText = "PENDING",
+                    statusBackgroundColor = Color(0xFFFFEB3B),
+                    showStatus = true,
+                    showStatusLoading = true
+                )
+
+                PaymentMoneiViewModel.StatusPayments.FAILED -> current.copy(
+                    status = status,
+                    statusText = status.name,
+                    statusBackgroundColor = Color(0xFFD32F2F),
+                    showStatusLoading = false
+                )
+
+                PaymentMoneiViewModel.StatusPayments.EXPIRED -> current.copy(
+                    status = status,
+                    statusText = status.name,
+                    statusBackgroundColor = Color(0xFFD32F2F)
+                )
+
+                else -> current.copy(
+                    status = status,
+                    statusText = status.name
+                )
+            }
+        }
+    }
+}
+
+// -----------------------------
+// VIEWMODEL
+// -----------------------------
+
+class PaymentMoneiViewModel(
+    private val moneiUseCase: MoneiUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    private val TAG = this.javaClass.simpleName
+
+    private val _uiState = MutableStateFlow(PaymentMoneiUiState())
+    val uiState: StateFlow<PaymentMoneiUiState> = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PaymentMoneiUiEffect>()
+    val uiEffect: SharedFlow<PaymentMoneiUiEffect> = _uiEffect.asSharedFlow()
+
+    private var currentTrip: Trip? = null
+
+    fun onEvent(event: PaymentMoneiUiEvent) {
+        when (event) {
+            is PaymentMoneiUiEvent.ScreenStarted -> {
+                _uiState.update {
+                    it.copy(
+                        amountText = event.totalAmount.toCurrency(),
+                        showAmount = true,
+                        showQr = false,
+                        showQrDisclaimer = true,
+                        showStatus = true,
+                        showStatusLoading = true,
+                        showResultOk = false,
+                        isLoadingQr = true
+                    )
+                }
+                initVM(event.totalAmount, event.isoMoneda, event.orderId)
+            }
+
+            PaymentMoneiUiEvent.CancelClicked -> handleCancelClicked()
+            PaymentMoneiUiEvent.PrintClicked -> handlePrintClicked()
+            is PaymentMoneiUiEvent.TripUpdated -> currentTrip = event.trip
+        }
+    }
+
+    fun updateActualStatus(status: String) {
+        viewModelScope.launch {
+            val parsed = StatusPayments.valueOf(status)
+            Logs.d(TAG, "updateActualStatus: $parsed")
+            reduceStatus(parsed)
+        }
+    }
+
+    fun finishPayment(trip: Trip) {
+        viewModelScope.launch {
+            trip.moneiPaymentId = _uiState.value.generatePayment?.id
+            tripUseCase.endTrip(trip, PaymentMethod.MONEI)
+            val status = shiftStatusUseCase.checkForSubStateModifications(
+                com.interfacom.sdk.taximeter.bravocomm.ifConstants.STATE_FOR_HIRE
+            )
+            status?.let { shiftStatusUseCase.setStatus(it, true) }
+            _uiEffect.emit(PaymentMoneiUiEffect.NavigateHome)
+        }
+    }
+
+    private fun initVM(totalAmount: Int, isoMoneda: String, orderId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            when (val response = moneiUseCase.generatePayment(GeneratePaymentRequest(totalAmount, isoMoneda, orderId))) {
+                is Resource.Success -> response.data?.let { info ->
+                    _uiState.update { it.copy(generatePayment = info) }
+                    reduceGeneratePayment(info)
+                }
+                is Resource.Error -> {
+                    _uiEffect.emit(PaymentMoneiUiEffect.ShowToast(R.string.toast_onerror_generatepaymentrequest))
+                }
+            }
+        }
+    }
+
+    private fun startPolling(paymentId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                when (val response = moneiUseCase.getInfoPayment(paymentId)) {
+                    is Resource.Success -> response.data?.let { info ->
+                        _uiState.update { it.copy(infoPayment = info) }
+                        reduceInfoPayment(info)
+                    }
+                    is Resource.Error -> {
+                        _uiEffect.emit(PaymentMoneiUiEffect.ShowToast(R.string.toast_onerror_generatepaymentrequest))
+                    }
+                }
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+    }
+
+    private fun reduceGeneratePayment(info: MoneiPaymentInfo) {
+        info.urlToPay?.let { url ->
+            _uiState.update {
+                it.copy(
+                    qrBitmap = getQrFromString(url),
+                    showQr = true,
+                    isLoadingQr = false
+                )
+            }
+        }
+        info.status?.let { status ->
+            updateActualStatus(status)
+        }
+        info.id?.let { startPolling(it) }
+    }
+
+    private fun reduceInfoPayment(info: InfoPayment) {
+        info.nextUrl?.let { url ->
+            _uiState.update {
+                it.copy(
+                    qrBitmap = getQrFromString(url),
+                    showQr = true,
+                    isLoadingQr = false
+                )
+            }
+        }
+        info.status?.let { status ->
+            updateActualStatus(status)
+        }
+    }
+
+    private fun reduceStatus(status: StatusPayments) {
+        _uiState.update { current ->
+            PaymentMoneiButtonsState.reduce(current, status)
+        }
+
+        when (status) {
+            StatusPayments.EXPIRED -> {
+                viewModelScope.launch { _uiEffect.emit(PaymentMoneiUiEffect.NavigateBack) }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun handleCancelClicked() {
+        when (_uiState.value.status) {
+            StatusPayments.FAILED,
+            StatusPayments.PENDING -> {
+                viewModelScope.launch { _uiEffect.emit(PaymentMoneiUiEffect.NavigateBack) }
+            }
+
+            StatusPayments.SUCCEEDED -> {
+                currentTrip?.let { finishPayment(it) }
+            }
+
+            else -> {
+                Logs.d(TAG, "btnCancelClick when StatusPayment: ${_uiState.value.status}")
+            }
+        }
+    }
+
+    private fun handlePrintClicked() {
+        val payment = _uiState.value.generatePayment ?: return
+        val url = payment.urlToPay ?: return
+        val trip = currentTrip ?: return
+        val totalAmount = trip.totalAmount ?: return
+
+        var bufTicket = "Bizum\r\n"
+        bufTicket += getApplication<Application>().getString(R.string.strAmountPascalCase) + " " +
+            Tickets.formatear(Tickets.FORM_MON, 12, totalAmount.toString()) + "\r\n"
+        bufTicket += Tickets.getQrCode(url)
+
+        viewModelScope.launch {
+            _uiEffect.emit(PaymentMoneiUiEffect.PrintTicket(bufTicket))
+        }
+    }
+
+    private fun getQrFromString(info: String): Bitmap? {
+        val barcodeEncoder = BarcodeEncoder()
+        return try {
+            barcodeEncoder.encodeBitmap(info, BarcodeFormat.QR_CODE, 400, 400)
+        } catch (e: WriterException) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    enum class StatusPayments {
+        PENDING,
+        SUCCEEDED,
+        FAILED,
+        CANCELED,
+        REFUNDED,
+        PARTIALLY_REFUNDED,
+        AUTHORIZED,
+        EXPIRED
+    }
+}
+
+// -----------------------------
+// MAIN ACTIVITY SHARED VIEWMODEL BRIDGE
+// -----------------------------
+
+class PaymentMoneiMainActivityViewModel(
+    application: Application
+) : AndroidViewModel(application) {
+
+    private val _tripState = MutableStateFlow<Trip?>(null)
+    val tripState: StateFlow<Trip?> = _tripState.asStateFlow()
+
+    fun setTrip(trip: Trip?) {
+        _tripState.value = trip
+    }
+
+    fun currencySymbol(): String = NumberUtils.currencySymbol()
+
+    fun createOrderId(): String = "${System.currentTimeMillis()}_${get_numRecibo(10000000)}"
+
+    fun printTicket(ticket: String) {
+        viewModelScope.launch {
+            // Bridge to your existing printing pipeline
+        }
+    }
+}
+
+// -----------------------------
+// COMPOSABLES
+// -----------------------------
+
+@Composable
+fun PaymentMoneiScreen(
+    viewModel: PaymentMoneiViewModel,
+    sharedViewModel: PaymentMoneiMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onPrintTicket: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val trip by sharedViewModel.tripState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(trip) {
+        trip?.let { viewModel.onEvent(PaymentMoneiUiEvent.TripUpdated(it)) }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.onEvent(
+            PaymentMoneiUiEvent.ScreenStarted(
+                totalAmount = trip?.totalAmount ?: 0,
+                isoMoneda = sharedViewModel.currencySymbol(),
+                orderId = sharedViewModel.createOrderId()
+            )
+        )
+    }
+
+    LaunchedEffect(viewModel) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.uiEffect.collect { effect ->
+                when (effect) {
+                    PaymentMoneiUiEffect.NavigateBack -> onNavigateBack()
+                    PaymentMoneiUiEffect.NavigateHome -> onNavigateHome()
+                    is PaymentMoneiUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                    is PaymentMoneiUiEffect.PrintTicket -> onPrintTicket(effect.ticket)
+                }
+            }
+        }
+    }
+
+    PaymentMoneiContent(
+        uiState = uiState,
+        onCancelClick = { viewModel.onEvent(PaymentMoneiUiEvent.CancelClicked) },
+        onPrintClick = { viewModel.onEvent(PaymentMoneiUiEvent.PrintClicked) },
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun PaymentMoneiContent(
+    uiState: PaymentMoneiUiState,
+    onCancelClick: () -> Unit,
+    onPrintClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (uiState.showAmount) {
+            Row(
+                modifier = Modifier.padding(top = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = stringResource(R.string.monei_importes), color = Color.White)
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(text = uiState.amountText, color = Color.White)
+            }
+        }
+
+        if (uiState.showResultOk) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = stringResource(R.string.pago_completado),
+                color = Color.White,
+                fontSize = 20.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Box(
+            modifier = Modifier.size(250.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (uiState.qrBitmap != null && uiState.showQr) {
+                Image(
+                    bitmap = uiState.qrBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                CircularProgressIndicator()
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (uiState.showQrDisclaimer) {
+            Text(
+                text = stringResource(R.string.monei_qr_disclaimer),
+                color = Color.White,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (uiState.showStatus) {
+            Text(
+                text = uiState.statusText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(uiState.statusBackgroundColor)
+                    .padding(12.dp),
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                fontSize = 18.sp
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (uiState.showStatusLoading) {
+            CircularProgressIndicator()
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 96.dp)
+                .background(Color.Black),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PaymentMoneiButton(
+                state = uiState.buttons.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = onCancelClick
+            )
+            PaymentMoneiButton(
+                state = uiState.buttons.print,
+                modifier = Modifier.weight(1f),
+                onClick = onPrintClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun PaymentMoneiButton(
+    state: PaymentMoneiButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val enabled = state.style == PaymentMoneiButtonStyle.ENABLE
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(72.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = state.backgroundColor,
+            disabledContainerColor = state.disabledBackgroundColor,
+            contentColor = Color.White,
+            disabledContentColor = Color(0xFFBDBDBD)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(text = state.text)
+    }
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

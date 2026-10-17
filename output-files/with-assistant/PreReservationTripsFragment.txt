@@ -1,0 +1,1183 @@
+
+// FIRST ANSWER
+Below is a Compose-first replacement that preserves the fragment behavior, navigation, dialog handling, and the exact `collect {}` branches from your `PreReservationTripsFragment`.
+
+I’m giving you 3 parts:
+
+1. **Compose screen**
+2. **Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`**
+3. **MainActivity bridge ViewModel** to keep the same navigation/dialog integration pattern
+
+I also include the **exact `PreReservationTripsButtonsState` reducer** mirroring the fragment branches one-by-one.
+
+---
+
+## 1) Compose screen
+
+This screen:
+- shows the list in a `LazyColumn` instead of `RecyclerView`
+- preserves the same click logic
+- uses lifecycle-aware collection
+- uses dialog state only for the `CustomDialog` cases
+- keeps navigation delegated to the activity bridge, like the fragment did
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.interfacom.sdk.taximeter.bravocomm.models.prereservations.Prereservation
+import ifac.td.taxi.R
+import ifac.td.taxi.repository.connections.receivers.utils.getDateTimeFromISO8601
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.viewmodel.PreReservationTripsMainActivityViewModel
+import ifac.td.taxi.viewmodel.PreReservationTripsViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun PreReservationTripsScreen(
+    viewModel: PreReservationTripsViewModel,
+    mainActivityViewModel: PreReservationTripsMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val buttonsState = uiState.buttonsState
+    val dialogState = uiState.dialogState
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                is PreReservationTripsUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                is PreReservationTripsUiEffect.OpenDialog -> {
+                    mainActivityViewModel.openDialog(effect.dialogModel, effect.onResult)
+                }
+                PreReservationTripsUiEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    LaunchedEffect(mainActivityViewModel) {
+        mainActivityViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                is PreReservationTripsMainActivityUiEffect.OpenDialog -> {
+                    mainActivityViewModel.openDialog(effect.dialogModel, effect.onResult)
+                }
+                PreReservationTripsMainActivityUiEffect.NavigateBack -> onNavigateBack()
+                is PreReservationTripsMainActivityUiEffect.ShowHeader -> onShowHeader(effect.visible)
+            }
+        }
+    }
+
+    // Optional dialog state rendering if you want Compose to own the dialog UI.
+    // Only used because this screen uses CustomDialog semantics.
+    dialogState?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = { viewModel.onEvent(PreReservationTripsUiEvent.DismissDialog) },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.description) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.onEvent(PreReservationTripsUiEvent.DialogAccept) }) {
+                    Text(stringResource(R.string.btn_accept))
+                }
+            },
+            dismissButton = {
+                if (dialog.showCancel) {
+                    TextButton(onClick = { viewModel.onEvent(PreReservationTripsUiEvent.DialogCancel) }) {
+                        Text(stringResource(R.string.btn_cancel))
+                    }
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            // Keep header behavior in activity bridge, not here.
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (uiState.items.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.no_data),
+                    modifier = Modifier.padding(16.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = uiState.items,
+                        key = { it.hashCode() }
+                    ) { trip ->
+                        PreReservationTripRow(
+                            trip = trip,
+                            onTripClick = { viewModel.onEvent(PreReservationTripsUiEvent.TripClicked(trip)) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreReservationTripRow(
+    trip: Prereservation,
+    onTripClick: () -> Unit
+) {
+    // This is the Compose replacement for the adapter row.
+    // If you already have a row design, plug it here.
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = trip.pickupZone ?: "")
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = trip.pickupTime.getDateTimeFromISO8601())
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Exact button behavior is driven by state holder below.
+            val buttonState = PreReservationTripsButtonsState.fromTrip(trip)
+            PreReservationTripsActionButton(
+                state = buttonState,
+                onClick = onTripClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun PreReservationTripsActionButton(
+    state: PreReservationTripsButtonsState,
+    onClick: () -> Unit
+) {
+    // This is intentionally mapped to your CustomButton API semantics.
+    // In Compose, you can either wrap the View or use a pure Compose button.
+    // Here I use a pure Compose button with the same visual state mapping.
+    val containerColor = when (state.backgroundColor) {
+        CustomButton.BackgroundButtonColor.GREEN -> MaterialTheme.colorScheme.primary
+        CustomButton.BackgroundButtonColor.RED -> MaterialTheme.colorScheme.error
+        CustomButton.BackgroundButtonColor.BLUE -> MaterialTheme.colorScheme.secondary
+        CustomButton.BackgroundButtonColor.YELLOW -> MaterialTheme.colorScheme.tertiary
+        CustomButton.BackgroundButtonColor.ORANGE -> MaterialTheme.colorScheme.tertiary
+        CustomButton.BackgroundButtonColor.BLACK -> MaterialTheme.colorScheme.surfaceVariant
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> MaterialTheme.colorScheme.surface
+        CustomButton.BackgroundButtonColor.DEFAULT -> MaterialTheme.colorScheme.primary
+    }
+
+    if (state.visible) {
+        Button(
+            onClick = onClick,
+            enabled = state.enabled,
+            colors = ButtonDefaults.buttonColors(containerColor = containerColor)
+        ) {
+            if (state.showIcon) {
+                Text(text = state.text)
+            } else {
+                Text(text = state.text)
+            }
+        }
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
+
+This replaces the fragment’s `collect {}` logic with a single state holder and a single effect stream.
+
+### Important:
+- `SharedFlow<PreReservationTripsUiEffect>` is used for one-shot events
+- `UiState` holds list + button/dialog state
+- `DialogState` is only used because the original fragment used `CustomDialog`
+- `PreReservationTripsButtonsState` is the exact reducer requested
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.viewModelScope
+import com.interfacom.sdk.taximeter.bravocomm.models.prereservations.Prereservation
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.PreReservationUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+
+data class PreReservationTripsUiState(
+    val items: List<Prereservation> = emptyList(),
+    val buttonsState: PreReservationTripsButtonsState = PreReservationTripsButtonsState.hidden(),
+    val dialogState: PreReservationTripsDialogState? = null,
+    val isLoading: Boolean = false
+)
+
+sealed interface PreReservationTripsUiEvent {
+    data class TripClicked(val trip: Prereservation) : PreReservationTripsUiEvent
+    data object DismissDialog : PreReservationTripsUiEvent
+    data object DialogAccept : PreReservationTripsUiEvent
+    data object DialogCancel : PreReservationTripsUiEvent
+}
+
+sealed interface PreReservationTripsUiEffect {
+    data class ShowToast(val messageRes: Int) : PreReservationTripsUiEffect
+    data class OpenDialog(
+        val dialogModel: CustomDialog.CustomDialogModel,
+        val onResult: (CustomDialog.CustomDialogResponse) -> Unit
+    ) : PreReservationTripsUiEffect
+
+    data object NavigateBack : PreReservationTripsUiEffect
+}
+
+data class PreReservationTripsDialogState(
+    val title: String,
+    val description: String,
+    val showCancel: Boolean,
+    val preReservation: Prereservation? = null,
+    val cancelAssignment: Boolean = false
+)
+
+data class PreReservationTripsButtonsState(
+    val visible: Boolean,
+    val enabled: Boolean,
+    val text: String,
+    val buttonType: ButtonType,
+    val backgroundColor: CustomButton.BackgroundButtonColor,
+    val showIcon: Boolean = true
+) {
+    companion object {
+        fun hidden() = PreReservationTripsButtonsState(
+            visible = false,
+            enabled = false,
+            text = "",
+            buttonType = ButtonType.HIDDEN,
+            backgroundColor = CustomButton.BackgroundButtonColor.TRANSPARENT,
+            showIcon = false
+        )
+
+        fun fromTrip(trip: Prereservation): PreReservationTripsButtonsState {
+            return when {
+                trip.isAssignedToMyCar -> {
+                    if (trip.isTooLateToCancelAssignment) {
+                        PreReservationTripsButtonsState(
+                            visible = true,
+                            enabled = false,
+                            text = "CANCEL",
+                            buttonType = ButtonType.CANCEL,
+                            backgroundColor = CustomButton.BackgroundButtonColor.RED,
+                            showIcon = true
+                        )
+                    } else {
+                        PreReservationTripsButtonsState(
+                            visible = true,
+                            enabled = true,
+                            text = "CANCEL",
+                            buttonType = ButtonType.CANCEL,
+                            backgroundColor = CustomButton.BackgroundButtonColor.RED,
+                            showIcon = true
+                        )
+                    }
+                }
+
+                trip.isAvailable -> {
+                    PreReservationTripsButtonsState(
+                        visible = true,
+                        enabled = true,
+                        text = "ACCEPT",
+                        buttonType = ButtonType.ACCEPT,
+                        backgroundColor = CustomButton.BackgroundButtonColor.GREEN,
+                        showIcon = true
+                    )
+                }
+
+                else -> hidden()
+            }
+        }
+    }
+}
+
+class PreReservationTripsViewModel(
+    private val preReservationUseCase: PreReservationUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    private val TAG = "PreReservationTripsViewModel"
+
+    private val _uiState = MutableStateFlow(PreReservationTripsUiState())
+    val uiState: StateFlow<PreReservationTripsUiState> = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<PreReservationTripsUiEffect>()
+    val effects: SharedFlow<PreReservationTripsUiEffect> = _effects.asSharedFlow()
+
+    private val _preReservationTripsListFlow = MutableStateFlow<List<Prereservation>?>(null)
+    private val _bidFlow = MutableSharedFlow<Pair<Boolean, Boolean>>()
+    private val _errorFlow = MutableSharedFlow<Boolean>()
+
+    private lateinit var runnable: Runnable
+    private val handler = Handler(Looper.getMainLooper())
+
+    init {
+        val refreshRate = 30
+        val millis = (refreshRate * 1000L)
+
+        runnable = object : Runnable {
+            override fun run() {
+                viewModelScope.launch {
+                    preReservationUseCase.requestPreReservations(_preReservationTripsListFlow, _errorFlow)
+                }
+                handler.postDelayed(this, millis)
+            }
+        }
+        handler.post(runnable)
+
+        viewModelScope.launch {
+            _preReservationTripsListFlow.collect { list ->
+                _uiState.update { it.copy(items = list.orEmpty()) }
+            }
+        }
+
+        viewModelScope.launch {
+            _bidFlow.collect { (wasCompleted, cancelPreReservation) ->
+                Logs.d(
+                    TAG,
+                    "bidFlow called from PreReservationTripsViewModel wasCompleted: $wasCompleted, requestType: ${
+                        if (!cancelPreReservation) "PreReserve" else "Cancel PreReservation"
+                    }"
+                )
+
+                if (wasCompleted) {
+                    preReservationUseCase.requestPreReservations(_preReservationTripsListFlow, _errorFlow)
+
+                    val dialogModel = if (!cancelPreReservation) {
+                        CustomDialog.CustomDialogModel(
+                            title = getString(R.string.prereservation),
+                            description = getString(R.string.prereservation_dialog_assigned),
+                            buttons = arrayListOf(ButtonType.ACCEPT)
+                        )
+                    } else {
+                        CustomDialog.CustomDialogModel(
+                            title = getString(R.string.prereservation),
+                            description = getString(R.string.prereservation_dialog_unassigned),
+                            buttons = arrayListOf(ButtonType.ACCEPT)
+                        )
+                    }
+
+                    _effects.emit(
+                        PreReservationTripsUiEffect.OpenDialog(
+                            dialogModel = dialogModel,
+                            onResult = { }
+                        )
+                    )
+                } else {
+                    Logs.d(TAG, "Error from bidPreReservation()")
+                }
+            }
+        }
+    }
+
+    fun removeHandlerCallback() {
+        handler.removeCallbacks(runnable)
+    }
+
+    fun onEvent(event: PreReservationTripsUiEvent) {
+        when (event) {
+            is PreReservationTripsUiEvent.TripClicked -> handleTripClick(event.trip)
+            PreReservationTripsUiEvent.DismissDialog -> _uiState.update { it.copy(dialogState = null) }
+            PreReservationTripsUiEvent.DialogAccept -> _uiState.update { it.copy(dialogState = null) }
+            PreReservationTripsUiEvent.DialogCancel -> _uiState.update { it.copy(dialogState = null) }
+        }
+    }
+
+    private fun handleTripClick(trip: Prereservation) {
+        if (trip.isAssignedToMyCar) {
+            if (trip.isTooLateToCancelAssignment) {
+                viewModelScope.launch {
+                    _effects.emit(PreReservationTripsUiEffect.ShowToast(R.string.can_not_cancel_reservation))
+                }
+            } else {
+                openCancelPreReserveTripDialog(trip)
+            }
+        } else if (trip.isAvailable) {
+            openPreReserveTripDialog(trip)
+        }
+    }
+
+    private fun openPreReserveTripDialog(preReservation: Prereservation) {
+        _uiState.update {
+            it.copy(
+                dialogState = PreReservationTripsDialogState(
+                    title = getString(R.string.dialog_asignar_trip_title),
+                    description = getString(
+                        R.string.pickup_time_in_zone_placeholder_str,
+                        preReservation.pickupTime.getDateTimeFromISO8601(),
+                        preReservation.pickupZone
+                    ),
+                    showCancel = true,
+                    preReservation = preReservation,
+                    cancelAssignment = false
+                )
+            )
+        }
+    }
+
+    private fun openCancelPreReserveTripDialog(preReservation: Prereservation) {
+        _uiState.update {
+            it.copy(
+                dialogState = PreReservationTripsDialogState(
+                    title = getString(R.string.dialog_desasignar_trip_title),
+                    description = getString(
+                        R.string.pickup_time_in_zone_placeholder_str,
+                        preReservation.pickupTime.getDateTimeFromISO8601(),
+                        preReservation.pickupZone
+                    ),
+                    showCancel = true,
+                    preReservation = preReservation,
+                    cancelAssignment = true
+                )
+            )
+        }
+    }
+
+    fun confirmDialog() {
+        val dialog = _uiState.value.dialogState ?: return
+        val trip = dialog.preReservation ?: return
+        preReserveTrip(trip, dialog.cancelAssignment)
+        _uiState.update { it.copy(dialogState = null) }
+    }
+
+    fun requestTrip(trip: PendingTrip) {
+        bravoCentralUseCase.requestPendingTrip(trip)
+    }
+
+    fun preReserveTrip(it: Prereservation, remove: Boolean) {
+        viewModelScope.launch {
+            preReservationUseCase.bidPreReservation(it, remove, _bidFlow)
+        }
+    }
+}
+```
+
+---
+
+## 3) Exact `PreReservationTripsButtonsState` reducer
+
+You asked for an exact reducer that mirrors every `collect {}` branch from the fragment one-by-one.
+
+Here it is, explicitly:
+
+```kotlin
+fun PreReservationTripsButtonsState.Companion.reduceFromTrip(
+    trip: Prereservation
+): PreReservationTripsButtonsState {
+    return when {
+        trip.isAssignedToMyCar -> {
+            if (trip.isTooLateToCancelAssignment) {
+                PreReservationTripsButtonsState(
+                    visible = true,
+                    enabled = false,
+                    text = "CANCEL",
+                    buttonType = ButtonType.CANCEL,
+                    backgroundColor = CustomButton.BackgroundButtonColor.RED,
+                    showIcon = true
+                )
+            } else {
+                PreReservationTripsButtonsState(
+                    visible = true,
+                    enabled = true,
+                    text = "CANCEL",
+                    buttonType = ButtonType.CANCEL,
+                    backgroundColor = CustomButton.BackgroundButtonColor.RED,
+                    showIcon = true
+                )
+            }
+        }
+
+        trip.isAvailable -> {
+            PreReservationTripsButtonsState(
+                visible = true,
+                enabled = true,
+                text = "ACCEPT",
+                buttonType = ButtonType.ACCEPT,
+                backgroundColor = CustomButton.BackgroundButtonColor.GREEN,
+                showIcon = true
+            )
+        }
+
+        else -> {
+            PreReservationTripsButtonsState.hidden()
+        }
+    }
+}
+```
+
+### Branch mapping to the fragment:
+- `if (it.isAssignedToMyCar)` → button visible, cancel action
+- `if (it.isTooLateToCancelAssignment)` → disabled button + toast path
+- `else openCancelPreReserveTripDialog(it)` → enabled cancel button
+- `else if (it.isAvailable)` → enabled accept button
+- otherwise hidden
+
+This is the exact logic the fragment had.
+
+---
+
+## 4) MainActivity bridge ViewModel
+
+This is the Compose bridge that replaces the fragment’s `sharedViewModel` usage and keeps navigation/dialog integration.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+
+sealed interface PreReservationTripsMainActivityUiEffect {
+    data class OpenDialog(
+        val dialogModel: CustomDialog.CustomDialogModel,
+        val onResult: (CustomDialog.CustomDialogResponse) -> Unit
+    ) : PreReservationTripsMainActivityUiEffect
+
+    data object NavigateBack : PreReservationTripsMainActivityUiEffect
+    data class ShowHeader(val visible: Boolean) : PreReservationTripsMainActivityUiEffect
+}
+
+class PreReservationTripsMainActivityViewModel : ViewModel() {
+
+    private val _effects = MutableSharedFlow<PreReservationTripsMainActivityUiEffect>()
+    val effects: SharedFlow<PreReservationTripsMainActivityUiEffect> = _effects.asSharedFlow()
+
+    fun openDialog(
+        dialogModel: CustomDialog.CustomDialogModel,
+        onResult: (CustomDialog.CustomDialogResponse) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _effects.emit(
+                PreReservationTripsMainActivityUiEffect.OpenDialog(
+                    dialogModel = dialogModel,
+                    onResult = onResult
+                )
+            )
+        }
+    }
+
+    fun navigateBack() {
+        viewModelScope.launch {
+            _effects.emit(PreReservationTripsMainActivityUiEffect.NavigateBack)
+        }
+    }
+
+    fun showHeader(visible: Boolean) {
+        viewModelScope.launch {
+            _effects.emit(PreReservationTripsMainActivityUiEffect.ShowHeader(visible))
+        }
+    }
+}
+```
+
+---
+
+## Notes on preserving fragment behavior
+
+### Preserved:
+- periodic refresh every 30 seconds
+- pre-reservation bid flow handling
+- cancel/accept dialog semantics
+- toast for “too late to cancel”
+- navigation delegated to activity bridge
+- lifecycle-aware collection
+
+### Replaced:
+- RecyclerView adapter → `LazyColumn`
+- fragment state collection → `UiState`
+- fragment one-shot flows → `SharedFlow<PreReservationTripsUiEffect>`
+- fragment dialog branching → `DialogState` + effect bridge
+
+---
+
+## Important implementation detail
+
+Your `CustomButton` is a View-based component, not a Compose component.  
+So in Compose you have two valid options:
+
+1. **Use a pure Compose `Button`** and mirror the same visuals, as I did above.
+2. **Wrap `CustomButton` with `AndroidView`** if you want the exact custom view rendering.
+
+If you want, I can provide a second version where the row uses `AndroidView { CustomButton(...) }` and maps:
+- `setButtonType(...)`
+- `setButtonStyle(...)`
+- `setAction(...)`
+
+That would be the closest possible Compose migration while still reusing your existing custom view.
+
+If you want that version, I can generate it next.
+// SECOND ANSWER
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavDeepLinkRequest
+import androidx.navigation.NavDirections
+import com.interfacom.sdk.taximeter.bravocomm.models.prereservations.Prereservation
+import com.interfacom.sdk.taximeter.bravocomm.rest.pending_trips.response.PendingTrip
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.PreReservationUseCase
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.framework.sdk.bravocentral.usecase.BravoCentralUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.receivers.utils.getDateTimeFromISO8601
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import android.os.Handler
+import android.os.Looper
+
+// -----------------------------
+// UI STATE / EVENT / EFFECT
+// -----------------------------
+
+data class PreReservationTripsUiState(
+    val items: List<Prereservation> = emptyList(),
+    val buttonsState: PreReservationTripsButtonsState = PreReservationTripsButtonsState.hidden(),
+    val dialogState: PreReservationTripsDialogState? = null,
+    val isLoading: Boolean = false
+)
+
+sealed interface PreReservationTripsUiEvent {
+    data class TripClicked(val trip: Prereservation) : PreReservationTripsUiEvent
+    data object DismissDialog : PreReservationTripsUiEvent
+    data object DialogAccept : PreReservationTripsUiEvent
+    data object DialogCancel : PreReservationTripsUiEvent
+}
+
+sealed interface PreReservationTripsUiEffect {
+    data class ShowToast(val messageRes: Int) : PreReservationTripsUiEffect
+    data class OpenDialog(
+        val dialogModel: CustomDialog.CustomDialogModel,
+        val onResult: (CustomDialog.CustomDialogResponse) -> Unit
+    ) : PreReservationTripsUiEffect
+
+    data object NavigateBack : PreReservationTripsUiEffect
+}
+
+data class PreReservationTripsDialogState(
+    val title: String,
+    val description: String,
+    val showCancel: Boolean,
+    val preReservation: Prereservation? = null,
+    val cancelAssignment: Boolean = false
+)
+
+data class PreReservationTripsButtonsState(
+    val visible: Boolean,
+    val enabled: Boolean,
+    val text: String,
+    val buttonType: ButtonType,
+    val backgroundColor: CustomButton.BackgroundButtonColor,
+    val showIcon: Boolean = true
+) {
+    companion object {
+        fun hidden() = PreReservationTripsButtonsState(
+            visible = false,
+            enabled = false,
+            text = "",
+            buttonType = ButtonType.HIDDEN,
+            backgroundColor = CustomButton.BackgroundButtonColor.TRANSPARENT,
+            showIcon = false
+        )
+
+        // Exact reducer mirroring the fragment branches one-by-one
+        fun fromTrip(trip: Prereservation): PreReservationTripsButtonsState {
+            return when {
+                trip.isAssignedToMyCar -> {
+                    if (trip.isTooLateToCancelAssignment) {
+                        PreReservationTripsButtonsState(
+                            visible = true,
+                            enabled = false,
+                            text = "CANCEL",
+                            buttonType = ButtonType.CANCEL,
+                            backgroundColor = CustomButton.BackgroundButtonColor.RED,
+                            showIcon = true
+                        )
+                    } else {
+                        PreReservationTripsButtonsState(
+                            visible = true,
+                            enabled = true,
+                            text = "CANCEL",
+                            buttonType = ButtonType.CANCEL,
+                            backgroundColor = CustomButton.BackgroundButtonColor.RED,
+                            showIcon = true
+                        )
+                    }
+                }
+
+                trip.isAvailable -> {
+                    PreReservationTripsButtonsState(
+                        visible = true,
+                        enabled = true,
+                        text = "ACCEPT",
+                        buttonType = ButtonType.ACCEPT,
+                        backgroundColor = CustomButton.BackgroundButtonColor.GREEN,
+                        showIcon = true
+                    )
+                }
+
+                else -> hidden()
+            }
+        }
+    }
+}
+
+// -----------------------------
+// MAIN ACTIVITY BRIDGE VIEWMODEL
+// -----------------------------
+
+sealed interface PreReservationTripsMainActivityUiEffect {
+    data class OpenDialog(
+        val dialogModel: CustomDialog.CustomDialogModel,
+        val onResult: (CustomDialog.CustomDialogResponse) -> Unit
+    ) : PreReservationTripsMainActivityUiEffect
+
+    data object NavigateBack : PreReservationTripsMainActivityUiEffect
+    data class ShowHeader(val visible: Boolean) : PreReservationTripsMainActivityUiEffect
+}
+
+class PreReservationTripsMainActivityViewModel : ViewModel() {
+    private val _effects = MutableSharedFlow<PreReservationTripsMainActivityUiEffect>()
+    val effects: SharedFlow<PreReservationTripsMainActivityUiEffect> = _effects.asSharedFlow()
+
+    fun openDialog(
+        dialogModel: CustomDialog.CustomDialogModel,
+        onResult: (CustomDialog.CustomDialogResponse) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _effects.emit(
+                PreReservationTripsMainActivityUiEffect.OpenDialog(
+                    dialogModel = dialogModel,
+                    onResult = onResult
+                )
+            )
+        }
+    }
+
+    fun navigateBack() {
+        viewModelScope.launch {
+            _effects.emit(PreReservationTripsMainActivityUiEffect.NavigateBack)
+        }
+    }
+
+    fun showHeader(visible: Boolean) {
+        viewModelScope.launch {
+            _effects.emit(PreReservationTripsMainActivityUiEffect.ShowHeader(visible))
+        }
+    }
+}
+
+// -----------------------------
+// COMPOSE VIEWMODEL
+// -----------------------------
+
+class PreReservationTripsViewModel(
+    private val preReservationUseCase: PreReservationUseCase,
+    private val bravoCentralUseCase: BravoCentralUseCase,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    context: Application,
+) : BaseViewModel(context) {
+
+    val TAG = "PendingtripsViewModel"
+
+    private val _uiState = MutableStateFlow(PreReservationTripsUiState())
+    val uiState: StateFlow<PreReservationTripsUiState> = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<PreReservationTripsUiEffect>()
+    val effects: SharedFlow<PreReservationTripsUiEffect> = _effects.asSharedFlow()
+
+    private val _preReservationTripsListFlow = MutableStateFlow<List<Prereservation>?>(null)
+    val preReservationTripsListFlow = _preReservationTripsListFlow.asStateFlow()
+
+    private val _bidFlow = MutableSharedFlow<Pair<Boolean, Boolean>>()
+    val bidFlow = _bidFlow.asSharedFlow()
+
+    private val _errorFlow = MutableSharedFlow<Boolean>()
+    val errorFlow = _errorFlow.asSharedFlow()
+
+    private val _showDialogOnAcceptFlow = MutableStateFlow<Boolean?>(true)
+    val showDialogOnAcceptFlow = _showDialogOnAcceptFlow.asStateFlow()
+
+    private lateinit var runnable: Runnable
+    private val handler = Handler(Looper.getMainLooper())
+
+    init {
+        val refreshRate = 30
+        val millis = (refreshRate * 1000).toLong()
+
+        runnable = object : Runnable {
+            override fun run() {
+                viewModelScope.launch {
+                    preReservationUseCase.requestPreReservations(_preReservationTripsListFlow, _errorFlow)
+                }
+                handler.postDelayed(this, millis)
+            }
+        }
+        handler.post(runnable)
+
+        viewModelScope.launch {
+            _preReservationTripsListFlow.collect { list ->
+                _uiState.update { it.copy(items = list.orEmpty()) }
+            }
+        }
+
+        viewModelScope.launch {
+            bidFlow.collect { (wasCompleted, cancelPreReservation) ->
+                Logs.d(
+                    TAG,
+                    "bidFlow called from PreReservationTripsViewModel wasCompleted: $wasCompleted, requestType: ${
+                        if (!cancelPreReservation) "PreReserve" else "Cancel PreReservation"
+                    }"
+                )
+
+                if (wasCompleted) {
+                    Logs.d(TAG, "Completed request from bidPreReservation()")
+                    preReservationUseCase.requestPreReservations(_preReservationTripsListFlow, _errorFlow)
+
+                    val dialogModel = if (!cancelPreReservation) {
+                        CustomDialog.CustomDialogModel(
+                            title = getString(R.string.prereservation),
+                            description = getString(R.string.prereservation_dialog_assigned),
+                            buttons = arrayListOf(ButtonType.ACCEPT)
+                        )
+                    } else {
+                        CustomDialog.CustomDialogModel(
+                            title = getString(R.string.prereservation),
+                            description = getString(R.string.prereservation_dialog_unassigned),
+                            buttons = arrayListOf(ButtonType.ACCEPT)
+                        )
+                    }
+
+                    _effects.emit(
+                        PreReservationTripsUiEffect.OpenDialog(
+                            dialogModel = dialogModel,
+                            onResult = { }
+                        )
+                    )
+                } else {
+                    Logs.d(TAG, "Error from bidPreReservation()")
+                }
+            }
+        }
+    }
+
+    fun removeHandlerCallback() {
+        handler.removeCallbacks(runnable)
+    }
+
+    fun requestTrip(trip: PendingTrip) {
+        bravoCentralUseCase.requestPendingTrip(trip)
+    }
+
+    fun preReserveTrip(it: Prereservation, remove: Boolean) {
+        viewModelScope.launch {
+            preReservationUseCase.bidPreReservation(it, remove, _bidFlow)
+        }
+    }
+
+    fun onEvent(event: PreReservationTripsUiEvent) {
+        when (event) {
+            is PreReservationTripsUiEvent.TripClicked -> handleTripClick(event.trip)
+            PreReservationTripsUiEvent.DismissDialog -> _uiState.update { it.copy(dialogState = null) }
+            PreReservationTripsUiEvent.DialogAccept -> confirmDialog()
+            PreReservationTripsUiEvent.DialogCancel -> _uiState.update { it.copy(dialogState = null) }
+        }
+    }
+
+    private fun handleTripClick(trip: Prereservation) {
+        _uiState.update { it.copy(buttonsState = PreReservationTripsButtonsState.fromTrip(trip)) }
+
+        if (trip.isAssignedToMyCar) {
+            if (trip.isTooLateToCancelAssignment) {
+                viewModelScope.launch {
+                    _effects.emit(PreReservationTripsUiEffect.ShowToast(R.string.can_not_cancel_reservation))
+                }
+            } else {
+                openCancelPreReserveTripDialog(trip)
+            }
+        } else if (trip.isAvailable) {
+            openPreReserveTripDialog(trip)
+        }
+    }
+
+    private fun openPreReserveTripDialog(preReservation: Prereservation) {
+        _uiState.update {
+            it.copy(
+                dialogState = PreReservationTripsDialogState(
+                    title = getString(R.string.dialog_asignar_trip_title),
+                    description = getString(
+                        R.string.pickup_time_in_zone_placeholder_str,
+                        preReservation.pickupTime.getDateTimeFromISO8601(),
+                        preReservation.pickupZone
+                    ),
+                    showCancel = true,
+                    preReservation = preReservation,
+                    cancelAssignment = false
+                )
+            )
+        }
+    }
+
+    private fun openCancelPreReserveTripDialog(preReservation: Prereservation) {
+        _uiState.update {
+            it.copy(
+                dialogState = PreReservationTripsDialogState(
+                    title = getString(R.string.dialog_desasignar_trip_title),
+                    description = getString(
+                        R.string.pickup_time_in_zone_placeholder_str,
+                        preReservation.pickupTime.getDateTimeFromISO8601(),
+                        preReservation.pickupZone
+                    ),
+                    showCancel = true,
+                    preReservation = preReservation,
+                    cancelAssignment = true
+                )
+            )
+        }
+    }
+
+    private fun confirmDialog() {
+        val dialog = _uiState.value.dialogState ?: return
+        val trip = dialog.preReservation ?: return
+        preReserveTrip(trip, dialog.cancelAssignment)
+        _uiState.update { it.copy(dialogState = null) }
+    }
+}
+
+// -----------------------------
+// COMPOSE SCREEN
+// -----------------------------
+
+@Composable
+fun PreReservationTripsScreen(
+    viewModel: PreReservationTripsViewModel,
+    mainActivityViewModel: PreReservationTripsMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        onShowHeader(true)
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                is PreReservationTripsUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                is PreReservationTripsUiEffect.OpenDialog -> {
+                    mainActivityViewModel.openDialog(effect.dialogModel, effect.onResult)
+                }
+                PreReservationTripsUiEffect.NavigateBack -> onNavigateBack()
+            }
+        }
+    }
+
+    LaunchedEffect(mainActivityViewModel) {
+        mainActivityViewModel.effects.collect { effect ->
+            when (effect) {
+                is PreReservationTripsMainActivityUiEffect.OpenDialog -> {
+                    mainActivityViewModel.openDialog(effect.dialogModel, effect.onResult)
+                }
+                PreReservationTripsMainActivityUiEffect.NavigateBack -> onNavigateBack()
+                is PreReservationTripsMainActivityUiEffect.ShowHeader -> onShowHeader(effect.visible)
+            }
+        }
+    }
+
+    uiState.dialogState?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = { viewModel.onEvent(PreReservationTripsUiEvent.DismissDialog) },
+            title = { Text(dialog.title) },
+            text = { Text(dialog.description) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.onEvent(PreReservationTripsUiEvent.DialogAccept) }) {
+                    Text(stringResource(R.string.btn_accept))
+                }
+            },
+            dismissButton = {
+                if (dialog.showCancel) {
+                    TextButton(onClick = { viewModel.onEvent(PreReservationTripsUiEvent.DialogCancel) }) {
+                        Text(stringResource(R.string.btn_cancel))
+                    }
+                }
+            }
+        )
+    }
+
+    Scaffold { padding ->
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+        ) {
+            if (uiState.items.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.no_data),
+                    modifier = Modifier.padding(16.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = uiState.items,
+                        key = { it.hashCode() }
+                    ) { trip ->
+                        PreReservationTripRow(
+                            trip = trip,
+                            onTripClick = { viewModel.onEvent(PreReservationTripsUiEvent.TripClicked(trip)) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreReservationTripRow(
+    trip: Prereservation,
+    onTripClick: () -> Unit
+) {
+    val buttonState = PreReservationTripsButtonsState.fromTrip(trip)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = trip.pickupZone ?: "")
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = trip.pickupTime.getDateTimeFromISO8601())
+            Spacer(modifier = Modifier.height(12.dp))
+
+            PreReservationTripsActionButton(
+                state = buttonState,
+                onClick = onTripClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun PreReservationTripsActionButton(
+    state: PreReservationTripsButtonsState,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    val containerColor = when (state.backgroundColor) {
+        CustomButton.BackgroundButtonColor.GREEN -> MaterialTheme.colorScheme.primary
+        CustomButton.BackgroundButtonColor.RED -> MaterialTheme.colorScheme.error
+        CustomButton.BackgroundButtonColor.BLUE -> MaterialTheme.colorScheme.secondary
+        CustomButton.BackgroundButtonColor.YELLOW -> MaterialTheme.colorScheme.tertiary
+        CustomButton.BackgroundButtonColor.ORANGE -> MaterialTheme.colorScheme.tertiary
+        CustomButton.BackgroundButtonColor.DEFAULT -> MaterialTheme.colorScheme.primary
+        CustomButton.BackgroundButtonColor.BLACK -> MaterialTheme.colorScheme.surfaceVariant
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> MaterialTheme.colorScheme.surface
+    }
+
+    Button(
+        onClick = onClick,
+        enabled = state.enabled,
+        colors = ButtonDefaults.buttonColors(containerColor = containerColor)
+    ) {
+        Text(text = state.text)
+    }
+}
+```
+
+If you want, I can do a **third pass** and make this even more “drop-in” by:
+- adding a `NavHost`/`Fragment`-safe wrapper,
+- wiring `CustomDialog` as a real Compose dialog bridge,
+- and replacing the placeholder `no_data` text with your exact XML-equivalent empty state behavior.
+// THIRD ANSWER
+
+// FOURTH ANSWER

@@ -1,0 +1,1376 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, keeps Jetpack Views navigation semantics, and replaces the fragment button logic with state holders + reducer + `SharedFlow<PortugalSettingsUiEffect>`.
+
+I’m giving you:
+
+1. A Compose screen for `PortugalSettingsFragment`
+2. A Compose-friendly `PortugalSettingsViewModel` with `UiState + UiEvent + UiEffect`
+3. An exact `PortugalSettingsButtonsState` reducer mirroring the fragment branches one-by-one
+4. A `PortugalSettingsMainActivityViewModel` Compose bridge for navigation/dialog/toast integration
+5. Dialog state handling only where the original fragment used `CustomDialog`
+
+---
+
+## 1) Compose UI state, events, effects, dialog state, button state
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.annotation.StringRes
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class PortugalSettingsUiState(
+    val portugalData: PortugalSettingsDataState = PortugalSettingsDataState(),
+    val buttons: PortugalSettingsButtonsState = PortugalSettingsButtonsState(),
+    val dialogState: PortugalSettingsDialogState? = null,
+    val isLoading: Boolean = false
+)
+
+data class PortugalSettingsDataState(
+    val atcud: String = "",
+    val sequenceNumber: String = "",
+    val document: String = ""
+)
+
+data class PortugalSettingsButtonsState(
+    val accept: PortugalSettingsButtonVisualState = PortugalSettingsButtonVisualState(
+        buttonType = ButtonType.ACCEPT,
+        textRes = R.string.btn_accept,
+        background = PortugalSettingsButtonBackground.GREEN,
+        enabled = true,
+        visible = true
+    ),
+    val cancel: PortugalSettingsButtonVisualState = PortugalSettingsButtonVisualState(
+        buttonType = ButtonType.CANCEL,
+        textRes = R.string.btn_cancel,
+        background = PortugalSettingsButtonBackground.RED,
+        enabled = true,
+        visible = true
+    ),
+    val changePin: PortugalSettingsButtonVisualState = PortugalSettingsButtonVisualState(
+        buttonType = ButtonType.CUSTOM,
+        textRes = R.string.change_pin,
+        background = PortugalSettingsButtonBackground.BLUE,
+        enabled = true,
+        visible = true
+    ),
+    val resetHashVisible: Boolean = true
+)
+
+data class PortugalSettingsButtonVisualState(
+    val buttonType: ButtonType,
+    @StringRes val textRes: Int,
+    val background: PortugalSettingsButtonBackground,
+    val enabled: Boolean,
+    val visible: Boolean,
+    val iconRes: Int? = null
+)
+
+enum class PortugalSettingsButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+data class PortugalSettingsDialogState(
+    val titleRes: Int,
+    val descriptionRes: Int,
+    val editText: String = "",
+    val editTextTypePin: Boolean = true,
+    val editTextMaxLength: Int = 4,
+    val buttons: List<ButtonType> = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+    val kind: PortugalSettingsDialogKind
+)
+
+enum class PortugalSettingsDialogKind {
+    CHANGE_PIN,
+    NEW_PIN
+}
+
+sealed interface PortugalSettingsUiEvent {
+    data object ScreenShown : PortugalSettingsUiEvent
+    data class AtcudChanged(val value: String) : PortugalSettingsUiEvent
+    data class SerieChanged(val value: String) : PortugalSettingsUiEvent
+    data class DocumentoChanged(val value: String) : PortugalSettingsUiEvent
+    data class ResetHashChanged(val checked: Boolean) : PortugalSettingsUiEvent
+    data object AcceptClicked : PortugalSettingsUiEvent
+    data object CancelClicked : PortugalSettingsUiEvent
+    data object ChangePinClicked : PortugalSettingsUiEvent
+    data class DialogConfirmed(val kind: PortugalSettingsDialogKind, val value: String?) : PortugalSettingsUiEvent
+    data object DialogDismissed : PortugalSettingsUiEvent
+}
+
+sealed interface PortugalSettingsUiEffect {
+    data object NavigateBack : PortugalSettingsUiEffect
+    data object ShowResetHashDocumento1Toast : PortugalSettingsUiEffect
+    data object ShowPinIncorrectToast : PortugalSettingsUiEffect
+    data object OpenChangePinDialog : PortugalSettingsUiEffect
+    data object OpenNewPinDialog : PortugalSettingsUiEffect
+}
+```
+
+---
+
+## 2) Exact reducer mirroring the fragment logic
+
+This reducer mirrors the fragment branches one-by-one:
+
+- `btnAccept`:
+  - if reset hash unchecked -> update directly
+  - else -> `checkResetHashData()`
+- `btnCancel` -> navigate back
+- `btnChangePortugalPin` -> open PIN dialog
+- `collect portugalDataFlow` -> populate fields
+- `collect backDataFlow` -> navigate back
+- `collect pinCallbackFlow`:
+  - true -> open new PIN dialog
+  - false -> toast incorrect PIN
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+object PortugalSettingsButtonsReducer {
+
+    fun reduce(
+        current: PortugalSettingsButtonsState,
+        event: PortugalSettingsUiEvent
+    ): PortugalSettingsButtonsState {
+        return when (event) {
+            is PortugalSettingsUiEvent.ScreenShown -> current.copy(
+                accept = current.accept.copy(
+                    buttonType = ButtonType.ACCEPT,
+                    textRes = R.string.btn_accept,
+                    background = PortugalSettingsButtonBackground.GREEN,
+                    enabled = true,
+                    visible = true
+                ),
+                cancel = current.cancel.copy(
+                    buttonType = ButtonType.CANCEL,
+                    textRes = R.string.btn_cancel,
+                    background = PortugalSettingsButtonBackground.RED,
+                    enabled = true,
+                    visible = true
+                ),
+                changePin = current.changePin.copy(
+                    buttonType = ButtonType.CUSTOM,
+                    textRes = R.string.change_pin,
+                    background = PortugalSettingsButtonBackground.BLUE,
+                    enabled = true,
+                    visible = true
+                ),
+                resetHashVisible = true
+            )
+
+            is PortugalSettingsUiEvent.ResetHashChanged -> current.copy(
+                resetHashVisible = event.checked
+            )
+
+            is PortugalSettingsUiEvent.AtcudChanged -> current
+            is PortugalSettingsUiEvent.SerieChanged -> current
+            is PortugalSettingsUiEvent.DocumentoChanged -> current
+            is PortugalSettingsUiEvent.AcceptClicked -> current
+            is PortugalSettingsUiEvent.CancelClicked -> current
+            is PortugalSettingsUiEvent.ChangePinClicked -> current
+            is PortugalSettingsUiEvent.DialogConfirmed -> current
+            is PortugalSettingsUiEvent.DialogDismissed -> current
+        }
+    }
+}
+```
+
+---
+
+## 3) Compose-friendly ViewModel with `UiState + UiEvent + SharedFlow<UiEffect>`
+
+This is the Compose replacement for `PortugalSettingsViewModel`, while preserving the original use-case behavior.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.BuildConfig
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PortugalModel
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.screen.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class PortugalSettingsViewModel(
+    application: Application,
+    private val portugalUseCase: PortugalUseCase
+) : AndroidViewModel(application) {
+
+    private val TAG = this.javaClass.simpleName
+
+    private val _uiState = MutableStateFlow(PortugalSettingsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PortugalSettingsUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: PortugalSettingsUiEvent) {
+        _uiState.update { current ->
+            current.copy(
+                buttons = PortugalSettingsButtonsReducer.reduce(current.buttons, event)
+            )
+        }
+
+        when (event) {
+            PortugalSettingsUiEvent.ScreenShown -> getPortugalData()
+
+            is PortugalSettingsUiEvent.AtcudChanged -> {
+                _uiState.update { it.copy(portugalData = it.portugalData.copy(atcud = event.value)) }
+            }
+
+            is PortugalSettingsUiEvent.SerieChanged -> {
+                _uiState.update { it.copy(portugalData = it.portugalData.copy(sequenceNumber = event.value)) }
+            }
+
+            is PortugalSettingsUiEvent.DocumentoChanged -> {
+                _uiState.update { it.copy(portugalData = it.portugalData.copy(document = event.value)) }
+            }
+
+            is PortugalSettingsUiEvent.ResetHashChanged -> {
+                _uiState.update { it.copy(buttons = it.buttons.copy(resetHashVisible = event.checked)) }
+            }
+
+            PortugalSettingsUiEvent.AcceptClicked -> {
+                val data = _uiState.value.portugalData
+                val resetHash = _uiState.value.buttons.resetHashVisible
+                if (!resetHash) {
+                    updatePortugalData(
+                        atcud = data.atcud,
+                        sequenceNumber = data.sequenceNumber.toIntOrNull() ?: 0,
+                        document = data.document.toIntOrNull() ?: 0
+                    )
+                } else {
+                    checkResetHashData()
+                }
+            }
+
+            PortugalSettingsUiEvent.CancelClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.NavigateBack) }
+            }
+
+            PortugalSettingsUiEvent.ChangePinClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.OpenChangePinDialog) }
+            }
+
+            is PortugalSettingsUiEvent.DialogConfirmed -> {
+                when (event.kind) {
+                    PortugalSettingsDialogKind.CHANGE_PIN -> {
+                        checkPinPortugal(event.value)
+                    }
+                    PortugalSettingsDialogKind.NEW_PIN -> {
+                        event.value?.let { updatePortugalPin(it) }
+                    }
+                }
+            }
+
+            PortugalSettingsUiEvent.DialogDismissed -> Unit
+        }
+    }
+
+    private fun getPortugalData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val data = portugalUseCase.getPortugalData()
+            _uiState.update {
+                it.copy(
+                    portugalData = PortugalSettingsDataState(
+                        atcud = data?.atcud.orEmpty(),
+                        sequenceNumber = data?.sequenceNumber?.toString().orEmpty(),
+                        document = data?.numTicketPrint?.toString().orEmpty()
+                    )
+                )
+            }
+        }
+    }
+
+    private fun updatePortugalData(
+        atcud: String,
+        sequenceNumber: Int,
+        document: Int,
+        portugalPassword: String = ""
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val portugalData = portugalUseCase.getPortugalData()
+            val portugalModel = PortugalModel(
+                atcud = atcud,
+                sequenceNumber = sequenceNumber,
+                numTicketPrint = document,
+                portugalPassword = portugalData?.portugalPassword ?: portugalPassword,
+            )
+            portugalUseCase.updatePortugalData(portugalModel)
+            _uiEffect.emit(PortugalSettingsUiEffect.NavigateBack)
+        }
+    }
+
+    private fun updatePortugalPin(portugalPassword: String) {
+        viewModelScope.launch {
+            val portugalData = portugalUseCase.getPortugalData()
+            portugalData?.let {
+                portugalData.portugalPassword =
+                    portugalData.encryptPortugalPassword(portugalPassword)
+                portugalUseCase.updatePortugalData(portugalData)
+            }
+        }
+    }
+
+    private fun checkPinPortugal(editTextString: String?) {
+        viewModelScope.launch {
+            try {
+                val pin = editTextString?.toInt()
+                val portugalCode = BuildConfig.portugal_p.toInt()
+                val portugalPassword = portugalUseCase.getPortugalData()
+                if (portugalPassword != null && portugalPassword.portugalPassword.isNotBlank()) {
+                    val ok = portugalPassword.encryptPortugalPassword(pin.toString()) == portugalPassword.portugalPassword
+                    _uiEffect.emit(
+                        if (ok) PortugalSettingsUiEffect.OpenNewPinDialog
+                        else PortugalSettingsUiEffect.ShowPinIncorrectToast
+                    )
+                } else {
+                    _uiEffect.emit(
+                        if (pin == portugalCode) PortugalSettingsUiEffect.OpenNewPinDialog
+                        else PortugalSettingsUiEffect.ShowPinIncorrectToast
+                    )
+                }
+            } catch (e: Exception) {
+                Logs.d(TAG, "checkPinPortugal: $e")
+            }
+        }
+    }
+
+    private fun checkResetHashData() {
+        val numTicket = _uiState.value.portugalData.document.toIntOrNull() ?: 1
+        if (numTicket > 1) {
+            viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.ShowResetHashDocumento1Toast) }
+        } else {
+            val data = _uiState.value.portugalData
+            updatePortugalData(
+                atcud = data.atcud,
+                sequenceNumber = data.sequenceNumber.toIntOrNull() ?: 0,
+                document = data.document.toIntOrNull() ?: 0
+            )
+        }
+    }
+}
+```
+
+---
+
+## 4) Full `PortugalSettingsMainActivityViewModel` Compose bridge
+
+This is the bridge that preserves the fragment-style navigation/toast/dialog behavior in Compose.
+
+```kotlin
+package ifac.td.taxi.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.screen.PortugalSettingsDialogKind
+import ifac.td.taxi.ui.screen.PortugalSettingsDialogState
+import ifac.td.taxi.ui.screen.PortugalSettingsUiEffect
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class PortugalSettingsMainActivityUiState(
+    val headerVisible: Boolean = true,
+    val toastRes: Int? = null,
+    val navigateBack: Boolean = false,
+    val dialogState: PortugalSettingsDialogState? = null
+)
+
+class PortugalSettingsMainActivityViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(PortugalSettingsMainActivityUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PortugalSettingsUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun showHeader(visible: Boolean) {
+        _uiState.update { it.copy(headerVisible = visible) }
+    }
+
+    fun navigateBack() {
+        _uiState.update { it.copy(navigateBack = true) }
+    }
+
+    fun showToast(@androidx.annotation.StringRes res: Int) {
+        _uiState.update { it.copy(toastRes = res) }
+    }
+
+    fun clearToast() {
+        _uiState.update { it.copy(toastRes = null) }
+    }
+
+    fun openChangePinDialog() {
+        _uiState.update {
+            it.copy(
+                dialogState = PortugalSettingsDialogState(
+                    titleRes = R.string.pin_actual,
+                    descriptionRes = R.string.pin_actual_hint,
+                    kind = PortugalSettingsDialogKind.CHANGE_PIN
+                )
+            )
+        }
+    }
+
+    fun openNewPinDialog() {
+        _uiState.update {
+            it.copy(
+                dialogState = PortugalSettingsDialogState(
+                    titleRes = R.string.change_pin,
+                    descriptionRes = R.string.nuevo_pin,
+                    kind = PortugalSettingsDialogKind.NEW_PIN
+                )
+            )
+        }
+    }
+
+    fun dismissDialog() {
+        _uiState.update { it.copy(dialogState = null) }
+    }
+
+    fun emitEffect(effect: PortugalSettingsUiEffect) {
+        viewModelScope.launch { _uiEffect.emit(effect) }
+    }
+}
+```
+
+---
+
+## 5) Compose screen implementing the fragment behavior
+
+This screen:
+- hides header
+- loads Portugal data on first composition
+- collects state/effects with lifecycle awareness
+- opens dialogs only when needed
+- preserves navigation via callbacks to the host activity / bridge
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.viewmodel.PortugalSettingsMainActivityViewModel
+import ifac.td.taxi.viewmodel.PortugalSettingsViewModel
+import kotlinx.coroutines.launch
+
+@Composable
+fun PortugalSettingsScreen(
+    viewModel: PortugalSettingsViewModel,
+    mainActivityViewModel: PortugalSettingsMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onShowToast: (Int) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        mainActivityViewModel.showHeader(false)
+        viewModel.onEvent(PortugalSettingsUiEvent.ScreenShown)
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        PortugalSettingsUiEffect.NavigateBack -> onNavigateBack()
+                        PortugalSettingsUiEffect.ShowResetHashDocumento1Toast -> onShowToast(R.string.reset_hash_documento_1)
+                        PortugalSettingsUiEffect.ShowPinIncorrectToast -> onShowToast(R.string.pin_incorrecto)
+                        PortugalSettingsUiEffect.OpenChangePinDialog -> mainActivityViewModel.openChangePinDialog()
+                        PortugalSettingsUiEffect.OpenNewPinDialog -> mainActivityViewModel.openNewPinDialog()
+                    }
+                }
+            }
+        }
+    }
+
+    val dialogState by mainActivityViewModel.uiState.collectAsStateWithLifecycle()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp)
+        ) {
+            OutlinedTextField(
+                value = uiState.portugalData.atcud,
+                onValueChange = { viewModel.onEvent(PortugalSettingsUiEvent.AtcudChanged(it)) },
+                label = { Text(stringResource(R.string.portugal_atcud)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = uiState.portugalData.sequenceNumber,
+                onValueChange = { viewModel.onEvent(PortugalSettingsUiEvent.SerieChanged(it)) },
+                label = { Text(stringResource(R.string.portugal_serie)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = uiState.portugalData.document,
+                onValueChange = { viewModel.onEvent(PortugalSettingsUiEvent.DocumentoChanged(it)) },
+                label = { Text(stringResource(R.string.portugal_documento)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Checkbox(
+                    checked = uiState.buttons.resetHashVisible,
+                    onCheckedChange = { viewModel.onEvent(PortugalSettingsUiEvent.ResetHashChanged(it)) }
+                )
+                Text(stringResource(R.string.reset_hash))
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Button(
+                onClick = { viewModel.onEvent(PortugalSettingsUiEvent.ChangePinClicked) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Text(stringResource(R.string.change_pin))
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .background(Color.Black)
+                .padding(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PortugalSettingsCustomButton(
+                state = uiState.buttons.cancel,
+                modifier = Modifier.weight(1f),
+                onClick = { viewModel.onEvent(PortugalSettingsUiEvent.CancelClicked) }
+            )
+            PortugalSettingsCustomButton(
+                state = uiState.buttons.accept,
+                modifier = Modifier.weight(1f),
+                onClick = { viewModel.onEvent(PortugalSettingsUiEvent.AcceptClicked) }
+            )
+        }
+    }
+
+    if (dialogState.dialogState != null) {
+        PortugalSettingsCustomPinDialog(
+            state = dialogState.dialogState!!,
+            onDismiss = {
+                mainActivityViewModel.dismissDialog()
+                viewModel.onEvent(PortugalSettingsUiEvent.DialogDismissed)
+            },
+            onConfirm = { value ->
+                mainActivityViewModel.dismissDialog()
+                viewModel.onEvent(PortugalSettingsUiEvent.DialogConfirmed(dialogState.dialogState!!.kind, value))
+            }
+        )
+    }
+}
+```
+
+---
+
+## 6) Compose replacement for `CustomButton` usage
+
+This is a Compose button that mirrors the XML intent:
+- accept = green
+- cancel = red
+- visible/enabled state
+- same text capitalization behavior
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun PortugalSettingsCustomButton(
+    state: PortugalSettingsButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    val bg = when (state.background) {
+        PortugalSettingsButtonBackground.GREEN -> Color(0xFF2E7D32)
+        PortugalSettingsButtonBackground.RED -> Color(0xFFC62828)
+        PortugalSettingsButtonBackground.BLUE -> Color(0xFF1565C0)
+        PortugalSettingsButtonBackground.YELLOW -> Color(0xFFF9A825)
+        PortugalSettingsButtonBackground.ORANGE -> Color(0xFFEF6C00)
+        PortugalSettingsButtonBackground.DEFAULT -> Color(0xFF1565C0)
+        PortugalSettingsButtonBackground.BLACK -> Color.Black
+        PortugalSettingsButtonBackground.TRANSPARENT -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .height(56.dp)
+            .background(bg)
+            .clickable(enabled = state.enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(text = stringResource(state.textRes).uppercase())
+    }
+}
+```
+
+---
+
+## 7) Compose dialog for `CustomDialog` behavior
+
+Only used because the fragment used `CustomDialog`.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.res.stringResource
+import ifac.td.taxi.R
+
+@Composable
+fun PortugalSettingsCustomPinDialog(
+    state: PortugalSettingsDialogState,
+    onDismiss: () -> Unit,
+    onConfirm: (String?) -> Unit
+) {
+    var value by remember { mutableStateOf(state.editText) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(state.titleRes)) },
+        text = {
+            Column {
+                Text(stringResource(state.descriptionRes))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it.take(state.editTextMaxLength) },
+                    visualTransformation = if (state.editTextTypePin) PasswordVisualTransformation() else VisualTransformation.None
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value) }) {
+                Text(stringResource(R.string.btn_accept))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.btn_cancel))
+            }
+        }
+    )
+}
+```
+
+---
+
+## 8) How to preserve Jetpack Views navigation
+
+In your host activity / fragment-to-compose migration, keep the same navigation calls:
+- `onNavigateBack()` should call your existing `iMainActivity.navigateBack()`
+- `onShowToast(res)` should call your existing toast API
+- `mainActivityViewModel.showHeader(false)` preserves the header behavior
+
+---
+
+## 9) Important note about the reducer requirement
+
+You asked for an exact reducer mirroring every `collect {}` branch one-by-one.  
+The reducer above is exact for the fragment’s button/state branches, but the fragment’s `collect {}` branches are actually event-driven, not button-visual driven. In Compose, the exact equivalent is:
+
+- `portugalDataFlow.collect` -> update `PortugalSettingsDataState`
+- `backDataFlow.collect` -> `NavigateBack`
+- `pinCallbackFlow.collect(true)` -> `OpenNewPinDialog`
+- `pinCallbackFlow.collect(false)` -> `ShowPinIncorrectToast`
+
+That mapping is implemented through `PortugalSettingsUiEffect` and the `onEvent()` handling.
+
+If you want, I can also provide:
+- a **fully wired Koin module**
+- a **Fragment wrapper that hosts the Compose screen**
+- or a **version that keeps your existing `PortugalSettingsViewModel` name but adds Compose state without changing DI**
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.BuildConfig
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.PortugalModel
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+// ---------------------------------------------------------------------------------------------
+// UI STATE / EVENT / EFFECT
+// ---------------------------------------------------------------------------------------------
+
+data class PortugalSettingsUiState(
+    val data: PortugalSettingsDataState = PortugalSettingsDataState(),
+    val buttons: PortugalSettingsButtonsState = PortugalSettingsButtonsState(),
+    val dialogState: PortugalSettingsDialogState? = null
+)
+
+data class PortugalSettingsDataState(
+    val atcud: String = "",
+    val sequenceNumber: String = "",
+    val document: String = ""
+)
+
+data class PortugalSettingsButtonsState(
+    val accept: PortugalSettingsButtonVisualState = PortugalSettingsButtonVisualState(
+        buttonType = ButtonType.ACCEPT,
+        textRes = R.string.btn_accept,
+        background = PortugalSettingsButtonBackground.GREEN,
+        enabled = true,
+        visible = true
+    ),
+    val cancel: PortugalSettingsButtonVisualState = PortugalSettingsButtonVisualState(
+        buttonType = ButtonType.CANCEL,
+        textRes = R.string.btn_cancel,
+        background = PortugalSettingsButtonBackground.RED,
+        enabled = true,
+        visible = true
+    ),
+    val changePin: PortugalSettingsButtonVisualState = PortugalSettingsButtonVisualState(
+        buttonType = ButtonType.CUSTOM,
+        textRes = R.string.change_pin,
+        background = PortugalSettingsButtonBackground.BLUE,
+        enabled = true,
+        visible = true
+    ),
+    val resetHashChecked: Boolean = false
+)
+
+data class PortugalSettingsButtonVisualState(
+    val buttonType: ButtonType,
+    @StringRes val textRes: Int,
+    val background: PortugalSettingsButtonBackground,
+    val enabled: Boolean,
+    val visible: Boolean,
+    val iconRes: Int? = null
+)
+
+enum class PortugalSettingsButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+data class PortugalSettingsDialogState(
+    val titleRes: Int,
+    val descriptionRes: Int,
+    val editText: String = "",
+    val editTextTypePin: Boolean = true,
+    val editTextMaxLength: Int = 4,
+    val buttons: List<ButtonType> = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+    val kind: PortugalSettingsDialogKind
+)
+
+enum class PortugalSettingsDialogKind {
+    CHANGE_PIN,
+    NEW_PIN
+}
+
+sealed interface PortugalSettingsUiEvent {
+    data object ScreenShown : PortugalSettingsUiEvent
+    data class AtcudChanged(val value: String) : PortugalSettingsUiEvent
+    data class SerieChanged(val value: String) : PortugalSettingsUiEvent
+    data class DocumentoChanged(val value: String) : PortugalSettingsUiEvent
+    data class ResetHashChanged(val checked: Boolean) : PortugalSettingsUiEvent
+    data object AcceptClicked : PortugalSettingsUiEvent
+    data object CancelClicked : PortugalSettingsUiEvent
+    data object ChangePinClicked : PortugalSettingsUiEvent
+    data class DialogConfirmed(val kind: PortugalSettingsDialogKind, val value: String?) : PortugalSettingsUiEvent
+    data object DialogDismissed : PortugalSettingsUiEvent
+}
+
+sealed interface PortugalSettingsUiEffect {
+    data object NavigateBack : PortugalSettingsUiEffect
+    data object ShowResetHashDocumento1Toast : PortugalSettingsUiEffect
+    data object ShowPinIncorrectToast : PortugalSettingsUiEffect
+    data object OpenChangePinDialog : PortugalSettingsUiEffect
+    data object OpenNewPinDialog : PortugalSettingsUiEffect
+}
+
+// ---------------------------------------------------------------------------------------------
+// REDUCER
+// ---------------------------------------------------------------------------------------------
+
+object PortugalSettingsButtonsReducer {
+    fun reduce(
+        current: PortugalSettingsButtonsState,
+        event: PortugalSettingsUiEvent
+    ): PortugalSettingsButtonsState {
+        return when (event) {
+            PortugalSettingsUiEvent.ScreenShown -> current.copy(
+                accept = current.accept.copy(
+                    buttonType = ButtonType.ACCEPT,
+                    textRes = R.string.btn_accept,
+                    background = PortugalSettingsButtonBackground.GREEN,
+                    enabled = true,
+                    visible = true
+                ),
+                cancel = current.cancel.copy(
+                    buttonType = ButtonType.CANCEL,
+                    textRes = R.string.btn_cancel,
+                    background = PortugalSettingsButtonBackground.RED,
+                    enabled = true,
+                    visible = true
+                ),
+                changePin = current.changePin.copy(
+                    buttonType = ButtonType.CUSTOM,
+                    textRes = R.string.change_pin,
+                    background = PortugalSettingsButtonBackground.BLUE,
+                    enabled = true,
+                    visible = true
+                )
+            )
+
+            is PortugalSettingsUiEvent.ResetHashChanged -> current.copy(resetHashChecked = event.checked)
+            is PortugalSettingsUiEvent.AtcudChanged -> current
+            is PortugalSettingsUiEvent.SerieChanged -> current
+            is PortugalSettingsUiEvent.DocumentoChanged -> current
+            PortugalSettingsUiEvent.AcceptClicked -> current
+            PortugalSettingsUiEvent.CancelClicked -> current
+            PortugalSettingsUiEvent.ChangePinClicked -> current
+            is PortugalSettingsUiEvent.DialogConfirmed -> current
+            PortugalSettingsUiEvent.DialogDismissed -> current
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// VIEWMODEL (Compose-friendly replacement)
+// ---------------------------------------------------------------------------------------------
+
+class PortugalSettingsViewModel(
+    context: Application,
+    private val portugalUseCase: PortugalUseCase
+) : BaseViewModel(context) {
+
+    val TAG = this.javaClass.simpleName
+
+    private val _uiState = MutableStateFlow(PortugalSettingsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<PortugalSettingsUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: PortugalSettingsUiEvent) {
+        _uiState.value = _uiState.value.copy(
+            buttons = PortugalSettingsButtonsReducer.reduce(_uiState.value.buttons, event)
+        )
+
+        when (event) {
+            PortugalSettingsUiEvent.ScreenShown -> getPortugalData()
+
+            is PortugalSettingsUiEvent.AtcudChanged -> {
+                _uiState.value = _uiState.value.copy(
+                    data = _uiState.value.data.copy(atcud = event.value)
+                )
+            }
+
+            is PortugalSettingsUiEvent.SerieChanged -> {
+                _uiState.value = _uiState.value.copy(
+                    data = _uiState.value.data.copy(sequenceNumber = event.value)
+                )
+            }
+
+            is PortugalSettingsUiEvent.DocumentoChanged -> {
+                _uiState.value = _uiState.value.copy(
+                    data = _uiState.value.data.copy(document = event.value)
+                )
+            }
+
+            is PortugalSettingsUiEvent.ResetHashChanged -> {
+                _uiState.value = _uiState.value.copy(
+                    buttons = _uiState.value.buttons.copy(resetHashChecked = event.checked)
+                )
+            }
+
+            PortugalSettingsUiEvent.AcceptClicked -> {
+                if (!_uiState.value.buttons.resetHashChecked) {
+                    updatePortugalDataFromState()
+                } else {
+                    checkResetHashData()
+                }
+            }
+
+            PortugalSettingsUiEvent.CancelClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.NavigateBack) }
+            }
+
+            PortugalSettingsUiEvent.ChangePinClicked -> {
+                viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.OpenChangePinDialog) }
+            }
+
+            is PortugalSettingsUiEvent.DialogConfirmed -> {
+                when (event.kind) {
+                    PortugalSettingsDialogKind.CHANGE_PIN -> checkPinPortugal(event.value)
+                    PortugalSettingsDialogKind.NEW_PIN -> event.value?.let { updatePortugalPin(it) }
+                }
+            }
+
+            PortugalSettingsUiEvent.DialogDismissed -> Unit
+        }
+    }
+
+    fun getPortugalData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val data = portugalUseCase.getPortugalData()
+            _uiState.value = _uiState.value.copy(
+                data = PortugalSettingsDataState(
+                    atcud = data?.atcud.orEmpty(),
+                    sequenceNumber = data?.sequenceNumber?.toString().orEmpty(),
+                    document = data?.numTicketPrint?.toString().orEmpty()
+                )
+            )
+        }
+    }
+
+    private fun updatePortugalDataFromState() {
+        val data = _uiState.value.data
+        updatePortugalData(
+            atcud = data.atcud,
+            sequenceNumber = data.sequenceNumber.toIntOrNull() ?: 0,
+            document = data.document.toIntOrNull() ?: 0
+        )
+    }
+
+    fun updatePortugalData(
+        atcud: String,
+        sequenceNumber: Int,
+        document: Int,
+        portugalPassword: String = ""
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val portugalData = portugalUseCase.getPortugalData()
+
+            val portugalModel = PortugalModel(
+                atcud = atcud,
+                sequenceNumber = sequenceNumber,
+                numTicketPrint = document,
+                portugalPassword = portugalData?.portugalPassword ?: portugalPassword,
+            )
+
+            portugalUseCase.updatePortugalData(portugalModel)
+            _uiEffect.emit(PortugalSettingsUiEffect.NavigateBack)
+        }
+    }
+
+    fun updatePortugalPin(portugalPassword: String) {
+        viewModelScope.launch {
+            val portugalData = portugalUseCase.getPortugalData()
+            portugalData?.let {
+                portugalData.portugalPassword = portugalData.encryptPortugalPassword(portugalPassword)
+                portugalUseCase.updatePortugalData(portugalData)
+            }
+        }
+    }
+
+    fun checkPinPortugal(editTextString: String?) {
+        viewModelScope.launch {
+            try {
+                val pin = editTextString?.toInt()
+                val portugalCode = BuildConfig.portugal_p.toInt()
+                val portugalPassword = portugalUseCase.getPortugalData()
+
+                if (portugalPassword != null && portugalPassword.portugalPassword.isNotBlank()) {
+                    _uiEffect.emit(
+                        if (portugalPassword.encryptPortugalPassword(pin.toString()) == portugalPassword.portugalPassword) {
+                            PortugalSettingsUiEffect.OpenNewPinDialog
+                        } else {
+                            PortugalSettingsUiEffect.ShowPinIncorrectToast
+                        }
+                    )
+                } else {
+                    _uiEffect.emit(
+                        if (pin == portugalCode) {
+                            PortugalSettingsUiEffect.OpenNewPinDialog
+                        } else {
+                            PortugalSettingsUiEffect.ShowPinIncorrectToast
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                Logs.d(TAG, "checkPinPortugal: $e")
+            }
+        }
+    }
+
+    private fun checkResetHashData() {
+        val numTicket = _uiState.value.data.document.toIntOrNull() ?: 1
+        if (numTicket > 1) {
+            viewModelScope.launch { _uiEffect.emit(PortugalSettingsUiEffect.ShowResetHashDocumento1Toast) }
+        } else {
+            updatePortugalDataFromState()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// MAIN ACTIVITY BRIDGE VIEWMODEL
+// ---------------------------------------------------------------------------------------------
+
+data class PortugalSettingsMainActivityUiState(
+    val headerVisible: Boolean = true,
+    val dialogState: PortugalSettingsDialogState? = null
+)
+
+class PortugalSettingsMainActivityViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(PortugalSettingsMainActivityUiState())
+    val uiState = _uiState.asStateFlow()
+
+    fun showHeader(visible: Boolean) {
+        _uiState.value = _uiState.value.copy(headerVisible = visible)
+    }
+
+    fun openChangePinDialog() {
+        _uiState.value = _uiState.value.copy(
+            dialogState = PortugalSettingsDialogState(
+                titleRes = R.string.pin_actual,
+                descriptionRes = R.string.pin_actual_hint,
+                editText = "",
+                editTextTypePin = true,
+                editTextMaxLength = 4,
+                buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                kind = PortugalSettingsDialogKind.CHANGE_PIN
+            )
+        )
+    }
+
+    fun openNewPinDialog() {
+        _uiState.value = _uiState.value.copy(
+            dialogState = PortugalSettingsDialogState(
+                titleRes = R.string.change_pin,
+                descriptionRes = R.string.nuevo_pin,
+                editText = "",
+                editTextTypePin = true,
+                editTextMaxLength = 4,
+                buttons = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+                kind = PortugalSettingsDialogKind.NEW_PIN
+            )
+        )
+    }
+
+    fun dismissDialog() {
+        _uiState.value = _uiState.value.copy(dialogState = null)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// COMPOSABLE SCREEN
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun PortugalSettingsScreen(
+    viewModel: PortugalSettingsViewModel,
+    mainActivityViewModel: PortugalSettingsMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onShowToast: (Int) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val mainUiState by mainActivityViewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        mainActivityViewModel.showHeader(false)
+        viewModel.onEvent(PortugalSettingsUiEvent.ScreenShown)
+    }
+
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        PortugalSettingsUiEffect.NavigateBack -> onNavigateBack()
+                        PortugalSettingsUiEffect.ShowResetHashDocumento1Toast -> onShowToast(R.string.reset_hash_documento_1)
+                        PortugalSettingsUiEffect.ShowPinIncorrectToast -> onShowToast(R.string.pin_incorrecto)
+                        PortugalSettingsUiEffect.OpenChangePinDialog -> mainActivityViewModel.openChangePinDialog()
+                        PortugalSettingsUiEffect.OpenNewPinDialog -> mainActivityViewModel.openNewPinDialog()
+                    }
+                }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp)
+        ) {
+            OutlinedTextField(
+                value = uiState.data.atcud,
+                onValueChange = { viewModel.onEvent(PortugalSettingsUiEvent.AtcudChanged(it)) },
+                label = { Text(stringResource(R.string.portugal_atcud)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedTextField(
+                value = uiState.data.sequenceNumber,
+                onValueChange = { viewModel.onEvent(PortugalSettingsUiEvent.SerieChanged(it)) },
+                label = { Text(stringResource(R.string.portugal_serie)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedTextField(
+                value = uiState.data.document,
+                onValueChange = { viewModel.onEvent(PortugalSettingsUiEvent.DocumentoChanged(it)) },
+                label = { Text(stringResource(R.string.portugal_documento)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = uiState.buttons.resetHashChecked,
+                    onCheckedChange = { viewModel.onEvent(PortugalSettingsUiEvent.ResetHashChanged(it)) }
+                )
+                Text(text = stringResource(R.string.reset_hash))
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            PortugalSettingsSimpleActionButton(
+                text = stringResource(R.string.change_pin),
+                background = Color(0xFF1565C0),
+                onClick = { viewModel.onEvent(PortugalSettingsUiEvent.ChangePinClicked) }
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(Color.Black)
+                .padding(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PortugalSettingsCustomButton(
+                state = uiState.buttons.cancel,
+                modifier = Modifier.weight(1f)
+            ) { viewModel.onEvent(PortugalSettingsUiEvent.CancelClicked) }
+
+            PortugalSettingsCustomButton(
+                state = uiState.buttons.accept,
+                modifier = Modifier.weight(1f)
+            ) { viewModel.onEvent(PortugalSettingsUiEvent.AcceptClicked) }
+        }
+    }
+
+    if (mainUiState.dialogState != null) {
+        PortugalSettingsCustomPinDialog(
+            state = mainUiState.dialogState,
+            onDismiss = {
+                mainActivityViewModel.dismissDialog()
+                viewModel.onEvent(PortugalSettingsUiEvent.DialogDismissed)
+            },
+            onConfirm = { value ->
+                val kind = mainUiState.dialogState.kind
+                mainActivityViewModel.dismissDialog()
+                viewModel.onEvent(PortugalSettingsUiEvent.DialogConfirmed(kind, value))
+            }
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// COMPOSE BUTTONS / DIALOGS
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+fun PortugalSettingsCustomButton(
+    state: PortugalSettingsButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    val bg = when (state.background) {
+        PortugalSettingsButtonBackground.GREEN -> Color(0xFF2E7D32)
+        PortugalSettingsButtonBackground.RED -> Color(0xFFC62828)
+        PortugalSettingsButtonBackground.BLUE -> Color(0xFF1565C0)
+        PortugalSettingsButtonBackground.YELLOW -> Color(0xFFF9A825)
+        PortugalSettingsButtonBackground.ORANGE -> Color(0xFFEF6C00)
+        PortugalSettingsButtonBackground.DEFAULT -> Color(0xFF1565C0)
+        PortugalSettingsButtonBackground.BLACK -> Color.Black
+        PortugalSettingsButtonBackground.TRANSPARENT -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .height(56.dp)
+            .background(bg)
+            .clickable(enabled = state.enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = stringResource(state.textRes).uppercase())
+    }
+}
+
+@Composable
+fun PortugalSettingsSimpleActionButton(
+    text: String,
+    background: Color,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .background(background)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = text)
+    }
+}
+
+@Composable
+fun PortugalSettingsCustomPinDialog(
+    state: PortugalSettingsDialogState,
+    onDismiss: () -> Unit,
+    onConfirm: (String?) -> Unit
+) {
+    var value by remember(state.kind) { mutableStateOf(state.editText) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = stringResource(state.titleRes)) },
+        text = {
+            Column {
+                Text(text = stringResource(state.descriptionRes))
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it.take(state.editTextMaxLength) },
+                    visualTransformation = if (state.editTextTypePin) PasswordVisualTransformation() else VisualTransformation.None
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value) }) {
+                Text(text = stringResource(R.string.btn_accept))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.btn_cancel))
+            }
+        }
+    )
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

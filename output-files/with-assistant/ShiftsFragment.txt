@@ -1,0 +1,1346 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, paging, sorting, selection menu, and export/delete/open-file flow handling.
+
+I’m splitting it into 3 parts:
+
+1. `ShiftsUiState` / `ShiftsUiEvent` / `ShiftsUiEffect` + `ShiftsButtonsState` reducer  
+2. `ShiftsViewModel` Compose-friendly bridge using `StateFlow + SharedFlow`  
+3. `ShiftsScreen` composable that mirrors the fragment behavior and preserves Jetpack Views navigation
+
+I’ll also include a small `ShiftsMainActivityViewModel` bridge for header/toast/navigation effects.
+
+---
+
+## 1) Compose state model + exact `ShiftsButtonsState` reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.content.Intent
+import androidx.annotation.DrawableRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+import ifac.td.taxi.repository.room.entities.ShiftEntity
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+import ifac.td.taxi.viewmodel.model.SortState
+
+@Immutable
+data class ShiftsUiState(
+    val shifts: List<ShiftEntity> = emptyList(),
+    val isLoading: Boolean = false,
+    val hasShifts: Boolean = false,
+    val page: Int = 0,
+    val isSelectionMenuOpen: Boolean = false,
+    val selectedShifts: Set<ShiftEntity> = emptySet(),
+    val sortState: SortState = SortState(ShiftOrderOptions.NONE),
+    val sortButtons: ShiftsButtonsState = ShiftsButtonsState()
+)
+
+@Immutable
+data class ShiftsButtonsState(
+    val id: ShiftsButtonVisualState = ShiftsButtonVisualState(
+        textRes = R.string.table_corner,
+        iconRes = null,
+        iconVisible = false,
+        textColorRes = R.color.white,
+        backgroundColorRes = R.color.transparent,
+        sortArrowVisible = false
+    ),
+    val amount: ShiftsButtonVisualState = ShiftsButtonVisualState(
+        textRes = R.string.currency_eur,
+        iconRes = null,
+        iconVisible = false,
+        textColorRes = R.color.white,
+        backgroundColorRes = R.color.transparent,
+        sortArrowVisible = false
+    ),
+    val selectedHiddenVisible: Boolean = false,
+    val fabMainRotation: Float = 0f,
+    val fabExportVisible: Boolean = false,
+    val fabTrashVisible: Boolean = false,
+    val fabExportAlpha: Float = 0f,
+    val fabTrashAlpha: Float = 0f,
+    val fabExportTranslationY: Float = 100f,
+    val fabTrashTranslationY: Float = 100f
+)
+
+@Immutable
+data class ShiftsButtonVisualState(
+    val textRes: Int,
+    @DrawableRes val iconRes: Int?,
+    val iconVisible: Boolean,
+    val textColorRes: Int,
+    val backgroundColorRes: Int,
+    val sortArrowVisible: Boolean,
+    @DrawableRes val sortArrowRes: Int? = null
+)
+
+sealed interface ShiftsUiEvent {
+    data object OnResume : ShiftsUiEvent
+    data object OnFabMainClicked : ShiftsUiEvent
+    data object OnFabExportClicked : ShiftsUiEvent
+    data object OnFabTrashClicked : ShiftsUiEvent
+    data object OnLoadMore : ShiftsUiEvent
+    data class OnSortClicked(val option: ShiftOrderOptions) : ShiftsUiEvent
+    data class OnShiftClicked(val shift: ShiftEntity) : ShiftsUiEvent
+    data class OnShiftSelectionChanged(val shift: ShiftEntity, val selected: Boolean) : ShiftsUiEvent
+}
+
+sealed interface ShiftsUiEffect {
+    data class NavigateToShiftDetail(val shift: ShiftEntity) : ShiftsUiEffect
+    data class OpenIntent(val intent: Intent) : ShiftsUiEffect
+    data class ShowToast(val messageRes: Int) : ShiftsUiEffect
+}
+
+fun reduceShiftsButtonsState(
+    currentSortState: SortState,
+    isSelectionMenuOpen: Boolean
+): ShiftsButtonsState {
+    val hiddenVisible = isSelectionMenuOpen
+    val exportVisible = isSelectionMenuOpen
+    val trashVisible = isSelectionMenuOpen
+    val exportAlpha = if (isSelectionMenuOpen) 1f else 0f
+    val trashAlpha = if (isSelectionMenuOpen) 1f else 0f
+    val exportTranslation = if (isSelectionMenuOpen) 0f else 100f
+    val trashTranslation = if (isSelectionMenuOpen) 0f else 100f
+    val fabRotation = if (isSelectionMenuOpen) 180f else 0f
+
+    fun sortVisual(
+        option: ShiftOrderOptions,
+        baseTextRes: Int
+    ): ShiftsButtonVisualState {
+        val isActive = currentSortState.option == option
+        return when {
+            !isActive -> ShiftsButtonVisualState(
+                textRes = baseTextRes,
+                iconRes = null,
+                iconVisible = false,
+                textColorRes = R.color.white,
+                backgroundColorRes = R.color.transparent,
+                sortArrowVisible = false
+            )
+            currentSortState.isAscending == true -> ShiftsButtonVisualState(
+                textRes = baseTextRes,
+                iconRes = R.drawable.round_arrow_drop_up_24,
+                iconVisible = true,
+                textColorRes = R.color.white,
+                backgroundColorRes = R.color.transparent,
+                sortArrowVisible = true,
+                sortArrowRes = R.drawable.round_arrow_drop_up_24
+            )
+            currentSortState.isAscending == false -> ShiftsButtonVisualState(
+                textRes = baseTextRes,
+                iconRes = R.drawable.round_arrow_drop_down_24,
+                iconVisible = true,
+                textColorRes = R.color.white,
+                backgroundColorRes = R.color.transparent,
+                sortArrowVisible = true,
+                sortArrowRes = R.drawable.round_arrow_drop_down_24
+            )
+            else -> ShiftsButtonVisualState(
+                textRes = baseTextRes,
+                iconRes = null,
+                iconVisible = false,
+                textColorRes = R.color.white,
+                backgroundColorRes = R.color.transparent,
+                sortArrowVisible = false
+            )
+        }
+    }
+
+    return ShiftsButtonsState(
+        id = sortVisual(ShiftOrderOptions.ID, R.string.table_corner),
+        amount = sortVisual(ShiftOrderOptions.AMOUNT, R.string.currency_eur),
+        selectedHiddenVisible = hiddenVisible,
+        fabMainRotation = fabRotation,
+        fabExportVisible = exportVisible,
+        fabTrashVisible = trashVisible,
+        fabExportAlpha = exportAlpha,
+        fabTrashAlpha = trashAlpha,
+        fabExportTranslationY = exportTranslation,
+        fabTrashTranslationY = trashTranslation
+    )
+}
+```
+
+---
+
+## 2) Compose-friendly `ShiftsViewModel`
+
+This keeps the original repository/use-case behavior, but exposes a single `UiState` and one `SharedFlow<ShiftsUiEffect>`.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.content.Intent
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.ShiftExportUseCase
+import ifac.td.taxi.domain.usecase.ShiftUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.room.entities.ShiftEntity
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+import ifac.td.taxi.viewmodel.model.SortState
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class ShiftsViewModel(
+    application: Application,
+    private val shiftUseCase: ShiftUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftExportUseCase: ShiftExportUseCase,
+) : AndroidViewModel(application) {
+
+    private val pageSize = 25
+    private val tag = "ShiftsViewModel"
+
+    private val _uiState = MutableStateFlow(ShiftsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ShiftsUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    var currentShifts: MutableList<ShiftEntity> = mutableListOf()
+        private set
+
+    fun onEvent(event: ShiftsUiEvent) {
+        when (event) {
+            ShiftsUiEvent.OnResume -> checkShifts()
+            ShiftsUiEvent.OnFabMainClicked -> toggleSelectionMenu()
+            ShiftsUiEvent.OnFabExportClicked -> exportSelectedItems()
+            ShiftsUiEvent.OnFabTrashClicked -> deleteSelectedItems()
+            ShiftsUiEvent.OnLoadMore -> loadMore()
+            is ShiftsUiEvent.OnSortClicked -> handleSort(event.option)
+            is ShiftsUiEvent.OnShiftClicked -> {
+                viewModelScope.launch {
+                    _uiEffect.emit(ShiftsUiEffect.NavigateToShiftDetail(event.shift))
+                }
+            }
+            is ShiftsUiEvent.OnShiftSelectionChanged -> {
+                val newSet = _uiState.value.selectedShifts.toMutableSet()
+                if (event.selected) newSet.add(event.shift) else newSet.remove(event.shift)
+                _uiState.update { it.copy(selectedShifts = newSet) }
+            }
+        }
+    }
+
+    fun checkShifts() {
+        viewModelScope.launch {
+            val shifts = shiftUseCase.getShiftCount()
+            val hasShifts = (shifts != null) && (shifts > 0L)
+            _uiState.update { it.copy(hasShifts = hasShifts) }
+            if (hasShifts && _uiState.value.shifts.isEmpty()) {
+                addShifts(_uiState.value.page)
+            } else if (!hasShifts) {
+                currentShifts.clear()
+                _uiState.update { it.copy(shifts = emptyList()) }
+            }
+        }
+    }
+
+    private fun addShifts(page: Int) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val shifts = shiftUseCase.getShiftsPaged(pageSize, pageSize * page) ?: emptyList()
+            currentShifts.addAll(shifts)
+
+            val sortState = _uiState.value.sortState
+            if (sortState.option != ShiftOrderOptions.NONE && sortState.isAscending != null) {
+                sortShiftsBy(currentShifts, sortState.option, sortState.isAscending!!)
+            } else {
+                _uiState.update { it.copy(shifts = currentShifts.toList()) }
+            }
+            _uiState.update { it.copy(isLoading = false) }
+        }
+    }
+
+    private fun loadMore() {
+        if (_uiState.value.isLoading) return
+        _uiState.update { it.copy(page = it.page + 1) }
+        addShifts(_uiState.value.page)
+    }
+
+    private fun handleSort(newOrder: ShiftOrderOptions) {
+        val current = _uiState.value.sortState
+        val nextState = when {
+            current.option != newOrder -> SortState(newOrder, true)
+            current.isAscending == true -> SortState(newOrder, false)
+            current.isAscending == false -> SortState(ShiftOrderOptions.NONE)
+            else -> SortState(newOrder, true)
+        }
+
+        _uiState.update {
+            it.copy(
+                sortState = nextState,
+                sortButtons = reduceShiftsButtonsState(nextState, it.isSelectionMenuOpen)
+            )
+        }
+
+        if (nextState.option == ShiftOrderOptions.NONE) {
+            sortShiftsBy(currentShifts, ShiftOrderOptions.NONE, true)
+        } else {
+            sortShiftsBy(currentShifts, nextState.option, nextState.isAscending!!)
+        }
+    }
+
+    fun sortShiftsBy(
+        shifts: List<ShiftEntity>?,
+        orderOptions: ShiftOrderOptions,
+        isAscending: Boolean
+    ) {
+        viewModelScope.launch {
+            if (shifts == null) return@launch
+
+            currentShifts = when (orderOptions) {
+                ShiftOrderOptions.ID -> if (isAscending) {
+                    shifts.sortedBy { it.id }.toMutableList()
+                } else {
+                    shifts.sortedByDescending { it.id }.toMutableList()
+                }
+
+                ShiftOrderOptions.AMOUNT -> if (isAscending) {
+                    shifts.sortedBy { it.amount }.toMutableList()
+                } else {
+                    shifts.sortedByDescending { it.amount }.toMutableList()
+                }
+
+                else -> shifts.toMutableList()
+            }
+
+            _uiState.update { it.copy(shifts = currentShifts.toList()) }
+        }
+    }
+
+    fun deleteShift(shiftEntity: ShiftEntity) {
+        viewModelScope.launch {
+            currentShifts.remove(shiftEntity)
+            shiftUseCase.deleteShift(shiftEntity)
+            _uiState.update { it.copy(shifts = currentShifts.toList()) }
+        }
+    }
+
+    private fun deleteSelectedItems() {
+        val selected = _uiState.value.selectedShifts
+        if (selected.isNotEmpty()) {
+            selected.forEach { deleteShift(it) }
+            _uiState.update { it.copy(selectedShifts = emptySet()) }
+        } else {
+            viewModelScope.launch {
+                _uiEffect.emit(ShiftsUiEffect.ShowToast(R.string.toast_selecciona_turno_eliminar))
+            }
+        }
+    }
+
+    private fun exportSelectedItems() {
+        val selected = _uiState.value.selectedShifts
+        if (selected.isNotEmpty()) {
+            exportShifts(selected)
+        } else {
+            viewModelScope.launch {
+                _uiEffect.emit(ShiftsUiEffect.ShowToast(R.string.toast_selecciona_turno_exportar))
+            }
+        }
+    }
+
+    fun exportShifts(shiftList: Set<ShiftEntity>) {
+        viewModelScope.launch {
+            Logs.d(tag, "exportShifts: $shiftList")
+            val shiftIds = shiftList.map { it.id }
+            shiftExportUseCase.exportMultipleShifts(shiftIds)?.let {
+                _uiEffect.emit(ShiftsUiEffect.OpenIntent(it))
+            }
+        }
+    }
+
+    private fun toggleSelectionMenu() {
+        _uiState.update {
+            val open = !it.isSelectionMenuOpen
+            it.copy(
+                isSelectionMenuOpen = open,
+                sortButtons = reduceShiftsButtonsState(it.sortState, open)
+            )
+        }
+    }
+}
+```
+
+---
+
+## 3) Compose screen preserving navigation and fragment behavior
+
+This version:
+- uses `LazyColumn` instead of RecyclerView
+- preserves navigation to shift detail
+- preserves paging
+- preserves sort button behavior
+- preserves FAB open/close animation state
+- collects `SharedFlow<ShiftsUiEffect>` lifecycle-aware
+- mirrors the fragment’s `collect {}` branches
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.content.Intent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.repository.room.entities.ShiftEntity
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun ShiftsScreen(
+    viewModel: ShiftsViewModel,
+    navController: NavController,
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
+    onStartActivity: (Intent) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LifecycleResumeEffect(Unit) {
+        viewModel.onEvent(ShiftsUiEvent.OnResume)
+        onShowHeader(true)
+        onDispose { }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ShiftsUiEffect.NavigateToShiftDetail -> {
+                    val direction = ShiftsFragmentDirections.actionShiftsFragmentToShiftDetailFragment(effect.shift)
+                    navController.navigate(direction)
+                }
+                is ShiftsUiEffect.OpenIntent -> {
+                    try {
+                        onStartActivity(effect.intent)
+                    } catch (_: Exception) {
+                        onShowToast(R.string.start_activity_error_toast)
+                    }
+                }
+                is ShiftsUiEffect.ShowToast -> onShowToast(effect.messageRes)
+            }
+        }
+    }
+
+    val fabRotation by animateFloatAsState(uiState.sortButtons.fabMainRotation, label = "fabRotation")
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            ShiftsTopBar(
+                buttons = uiState.sortButtons,
+                onSortId = { viewModel.onEvent(ShiftsUiEvent.OnSortClicked(ShiftOrderOptions.ID)) },
+                onSortAmount = { viewModel.onEvent(ShiftsUiEvent.OnSortClicked(ShiftOrderOptions.AMOUNT)) },
+                onFabMain = { viewModel.onEvent(ShiftsUiEvent.OnFabMainClicked) },
+                onFabExport = { viewModel.onEvent(ShiftsUiEvent.OnFabExportClicked) },
+                onFabTrash = { viewModel.onEvent(ShiftsUiEvent.OnFabTrashClicked) },
+                fabRotation = fabRotation
+            )
+
+            if (uiState.isLoading) {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 120.dp)
+            ) {
+                itemsIndexed(uiState.shifts) { _, shift ->
+                    ShiftRow(
+                        shift = shift,
+                        onClick = { viewModel.onEvent(ShiftsUiEvent.OnShiftClicked(shift)) }
+                    )
+                }
+                item {
+                    if (uiState.hasShifts && !uiState.isLoading) {
+                        LaunchedEffect(uiState.shifts.size) {
+                            viewModel.onEvent(ShiftsUiEvent.OnLoadMore)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShiftsTopBar(
+    buttons: ShiftsButtonsState,
+    onSortId: () -> Unit,
+    onSortAmount: () -> Unit,
+    onFabMain: () -> Unit,
+    onFabExport: () -> Unit,
+    onFabTrash: () -> Unit,
+    fabRotation: Float
+) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = buttons.selectedHiddenVisible,
+                onCheckedChange = null,
+                enabled = false
+            )
+
+            SortButton(
+                text = stringResource(R.string.table_corner),
+                visual = buttons.id,
+                onClick = onSortId
+            )
+
+            SortButton(
+                text = stringResource(R.string.currency_eur),
+                visual = buttons.amount,
+                onClick = onSortAmount
+            )
+        }
+
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(32.dp),
+            contentAlignment = Alignment.BottomEnd
+        ) {
+            Column(horizontalAlignment = Alignment.End) {
+                if (buttons.fabTrashVisible) {
+                    IconButton(onClick = onFabTrash) {
+                        Icon(painterResource(R.drawable.outline_delete_24), contentDescription = null)
+                    }
+                }
+                if (buttons.fabExportVisible) {
+                    IconButton(onClick = onFabExport) {
+                        Icon(painterResource(R.drawable.baseline_arrow_circle_down_24), contentDescription = null)
+                    }
+                }
+                IconButton(onClick = onFabMain) {
+                    Icon(
+                        painter = painterResource(R.drawable.arrow_up),
+                        contentDescription = null,
+                        modifier = Modifier.rotate(fabRotation)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SortButton(
+    text: String,
+    visual: ShiftsButtonVisualState,
+    onClick: () -> Unit
+) {
+    Box {
+        Button(onClick = onClick) { Text(text) }
+        if (visual.sortArrowVisible && visual.sortArrowRes != null) {
+            Icon(
+                painter = painterResource(visual.sortArrowRes),
+                contentDescription = null
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShiftRow(
+    shift: ShiftEntity,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Text(text = "Shift #${shift.id}")
+    }
+}
+```
+
+---
+
+## 4) `ShiftsMainActivityViewModel` Compose bridge
+
+This is the bridge for header/toast/navigation-like effects, so the screen can behave like the fragment did.
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.content.Intent
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+sealed interface ShiftsMainActivityEffect {
+    data class ShowHeader(val visible: Boolean) : ShiftsMainActivityEffect
+    data class ShowToast(val messageRes: Int) : ShiftsMainActivityEffect
+    data class StartActivity(val intent: Intent) : ShiftsMainActivityEffect
+}
+
+class ShiftsMainActivityViewModel : ViewModel() {
+    private val _effects = MutableSharedFlow<ShiftsMainActivityEffect>()
+    val effects = _effects.asSharedFlow()
+
+    suspend fun showHeader(visible: Boolean) {
+        _effects.emit(ShiftsMainActivityEffect.ShowHeader(visible))
+    }
+
+    suspend fun showToast(messageRes: Int) {
+        _effects.emit(ShiftsMainActivityEffect.ShowToast(messageRes))
+    }
+
+    suspend fun startActivity(intent: Intent) {
+        _effects.emit(ShiftsMainActivityEffect.StartActivity(intent))
+    }
+}
+```
+
+---
+
+## Notes
+
+- I did **not** add dialog state because your provided fragment/viewmodel does not use a custom dialog.
+- Navigation is preserved through `NavController` and the same generated direction:
+  `ShiftsFragmentDirections.actionShiftsFragmentToShiftDetailFragment(shift)`
+- The `ShiftsButtonsState` reducer is the exact replacement for the fragment’s button/menu logic:
+  - `open/close` menu state
+  - `cbSelectedHidden` visibility
+  - FAB alpha/translation/rotation
+  - sort arrow visibility and direction
+- The `SharedFlow<ShiftsUiEffect>` replaces the fragment’s multiple collectors for intents/toasts/navigation.
+
+If you want, I can also provide:
+1. a version using `Scaffold` + `SnackbarHostState`,
+2. a version with a proper `LazyPagingItems` implementation,
+3. or a more exact Compose recreation of the XML layout using `ConstraintLayout` in Compose.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import android.content.Intent
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavController
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.ShiftExportUseCase
+import ifac.td.taxi.domain.usecase.ShiftUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.room.entities.ShiftEntity
+import ifac.td.taxi.viewmodel.model.ShiftOrderOptions
+import ifac.td.taxi.viewmodel.model.SortState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+
+// ------------------------------------------------------------
+// UI STATE / EVENTS / EFFECTS
+// ------------------------------------------------------------
+
+data class ShiftsUiState(
+    val shifts: List<ShiftEntity> = emptyList(),
+    val isLoading: Boolean = false,
+    val hasShifts: Boolean = false,
+    val page: Int = 0,
+    val selectedShifts: Set<ShiftEntity> = emptySet(),
+    val isSelectionMenuOpen: Boolean = false,
+    val sortState: SortState = SortState(ShiftOrderOptions.NONE),
+    val buttons: ShiftsButtonsState = ShiftsButtonsState()
+)
+
+sealed interface ShiftsUiEvent {
+    data object OnResume : ShiftsUiEvent
+    data object OnFabMainClicked : ShiftsUiEvent
+    data object OnFabExportClicked : ShiftsUiEvent
+    data object OnFabTrashClicked : ShiftsUiEvent
+    data object OnLoadMore : ShiftsUiEvent
+    data class OnSortClicked(val option: ShiftOrderOptions) : ShiftsUiEvent
+    data class OnShiftClicked(val shift: ShiftEntity) : ShiftsUiEvent
+    data class OnShiftSelectionChanged(val shift: ShiftEntity, val selected: Boolean) : ShiftsUiEvent
+}
+
+sealed interface ShiftsUiEffect {
+    data class NavigateToShiftDetail(val shift: ShiftEntity) : ShiftsUiEffect
+    data class OpenIntent(val intent: Intent) : ShiftsUiEffect
+    data class ShowToast(@StringRes val messageRes: Int) : ShiftsUiEffect
+}
+
+// ------------------------------------------------------------
+// BUTTON VISUAL STATE
+// ------------------------------------------------------------
+
+data class ShiftsButtonsState(
+    val selectedHiddenVisible: Boolean = false,
+    val fabMainRotation: Float = 0f,
+    val fabExportVisible: Boolean = false,
+    val fabTrashVisible: Boolean = false,
+    val fabExportAlpha: Float = 0f,
+    val fabTrashAlpha: Float = 0f,
+    val fabExportTranslationY: Float = 100f,
+    val fabTrashTranslationY: Float = 100f,
+    val id: ShiftsButtonVisualState = ShiftsButtonVisualState(
+        textRes = R.string.table_corner,
+        sortArrowVisible = false,
+        sortArrowRes = null
+    ),
+    val amount: ShiftsButtonVisualState = ShiftsButtonVisualState(
+        textRes = R.string.currency_eur,
+        sortArrowVisible = false,
+        sortArrowRes = null
+    )
+)
+
+data class ShiftsButtonVisualState(
+    @StringRes val textRes: Int,
+    val sortArrowVisible: Boolean,
+    @DrawableRes val sortArrowRes: Int?
+)
+
+// Exact reducer mirroring the fragment button logic
+fun reduceShiftsButtonsState(
+    currentSortState: SortState,
+    isSelectionMenuOpen: Boolean
+): ShiftsButtonsState {
+    fun sortVisual(option: ShiftOrderOptions, textRes: Int): ShiftsButtonVisualState {
+        return when {
+            currentSortState.option != option -> {
+                ShiftsButtonVisualState(
+                    textRes = textRes,
+                    sortArrowVisible = false,
+                    sortArrowRes = null
+                )
+            }
+
+            currentSortState.isAscending == true -> {
+                ShiftsButtonVisualState(
+                    textRes = textRes,
+                    sortArrowVisible = true,
+                    sortArrowRes = R.drawable.round_arrow_drop_up_24
+                )
+            }
+
+            currentSortState.isAscending == false -> {
+                ShiftsButtonVisualState(
+                    textRes = textRes,
+                    sortArrowVisible = true,
+                    sortArrowRes = R.drawable.round_arrow_drop_down_24
+                )
+            }
+
+            else -> {
+                ShiftsButtonVisualState(
+                    textRes = textRes,
+                    sortArrowVisible = false,
+                    sortArrowRes = null
+                )
+            }
+        }
+    }
+
+    return ShiftsButtonsState(
+        selectedHiddenVisible = isSelectionMenuOpen,
+        fabMainRotation = if (isSelectionMenuOpen) 180f else 0f,
+        fabExportVisible = isSelectionMenuOpen,
+        fabTrashVisible = isSelectionMenuOpen,
+        fabExportAlpha = if (isSelectionMenuOpen) 1f else 0f,
+        fabTrashAlpha = if (isSelectionMenuOpen) 1f else 0f,
+        fabExportTranslationY = if (isSelectionMenuOpen) 0f else 100f,
+        fabTrashTranslationY = if (isSelectionMenuOpen) 0f else 100f,
+        id = sortVisual(ShiftOrderOptions.ID, R.string.table_corner),
+        amount = sortVisual(ShiftOrderOptions.AMOUNT, R.string.currency_eur)
+    )
+}
+
+// ------------------------------------------------------------
+// VIEWMODEL (Compose-friendly bridge)
+// ------------------------------------------------------------
+
+class ShiftsViewModel(
+    context: Application,
+    private val shiftUseCase: ShiftUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftExportUseCase: ShiftExportUseCase,
+) : BaseViewModel(context) {
+
+    private val pageSize = 25
+    private val tag = "ShiftsViewModel"
+
+    private val _uiState = MutableStateFlow(ShiftsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ShiftsUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    private val _shiftFlow = MutableStateFlow<List<ShiftEntity>>(emptyList())
+    val shiftFlow = _shiftFlow.asStateFlow()
+
+    private val _loadingFlow = MutableSharedFlow<Boolean>()
+    val loadingFlow = _loadingFlow.asSharedFlow()
+
+    private val _hasShiftsFlow = MutableSharedFlow<Boolean>()
+    val hasShiftsFlow = _hasShiftsFlow.asSharedFlow()
+
+    private val _intentFlow = MutableSharedFlow<Intent>()
+    val intentFlow = _intentFlow.asSharedFlow()
+
+    var currentShifts: MutableList<ShiftEntity> = _shiftFlow.value.toMutableList()
+        private set
+
+    var currentSortState: SortState = SortState(ShiftOrderOptions.NONE)
+
+    fun onEvent(event: ShiftsUiEvent) {
+        when (event) {
+            ShiftsUiEvent.OnResume -> checkShifts()
+            ShiftsUiEvent.OnFabMainClicked -> toggleSelectionMenu()
+            ShiftsUiEvent.OnFabExportClicked -> exportSelectedItems()
+            ShiftsUiEvent.OnFabTrashClicked -> deleteSelectedItems()
+            ShiftsUiEvent.OnLoadMore -> loadMore()
+            is ShiftsUiEvent.OnSortClicked -> handleSortButtonClick(event.option)
+            is ShiftsUiEvent.OnShiftClicked -> {
+                viewModelScope.launch {
+                    _uiEffect.emit(ShiftsUiEffect.NavigateToShiftDetail(event.shift))
+                }
+            }
+            is ShiftsUiEvent.OnShiftSelectionChanged -> {
+                val updated = _uiState.value.selectedShifts.toMutableSet()
+                if (event.selected) updated.add(event.shift) else updated.remove(event.shift)
+                _uiState.value = _uiState.value.copy(selectedShifts = updated)
+            }
+        }
+    }
+
+    fun addShifts(page: Int) {
+        viewModelScope.launch {
+            _loadingFlow.emit(true)
+            _uiState.value = _uiState.value.copy(isLoading = true)
+
+            val shifts = shiftUseCase.getShiftsPaged(pageSize, pageSize * page) ?: emptyList()
+            currentShifts.addAll(shifts)
+
+            if (currentSortState.option != ShiftOrderOptions.NONE && currentSortState.isAscending != null) {
+                sortShiftsBy(currentShifts, currentSortState.option, currentSortState.isAscending!!)
+            } else {
+                _shiftFlow.emit(currentShifts.toList())
+                _uiState.value = _uiState.value.copy(shifts = currentShifts.toList())
+            }
+
+            _loadingFlow.emit(false)
+            _uiState.value = _uiState.value.copy(isLoading = false)
+        }
+    }
+
+    fun sortShiftsBy(
+        shifts: List<ShiftEntity>?,
+        orderOptions: ShiftOrderOptions,
+        isAscending: Boolean
+    ) {
+        viewModelScope.launch {
+            if (shifts == null) return@launch
+
+            currentShifts = when (orderOptions) {
+                ShiftOrderOptions.ID -> {
+                    if (isAscending) ArrayList(shifts.sortedBy { it.id })
+                    else ArrayList(shifts.sortedByDescending { it.id })
+                }
+
+                ShiftOrderOptions.AMOUNT -> {
+                    if (isAscending) ArrayList(shifts.sortedBy { it.amount })
+                    else ArrayList(shifts.sortedByDescending { it.amount })
+                }
+
+                else -> ArrayList(shifts)
+            }
+
+            _shiftFlow.emit(currentShifts)
+            _uiState.value = _uiState.value.copy(shifts = currentShifts.toList())
+        }
+    }
+
+    fun deleteShift(shiftEntity: ShiftEntity) {
+        viewModelScope.launch {
+            currentShifts.remove(shiftEntity)
+            shiftUseCase.deleteShift(shiftEntity)
+            _shiftFlow.emit(currentShifts.toList())
+            _uiState.value = _uiState.value.copy(shifts = currentShifts.toList())
+        }
+    }
+
+    fun exportShifts(shiftList: Set<ShiftEntity>) {
+        viewModelScope.launch {
+            Logs.d(tag, "exportShifts: $shiftList")
+            val shiftIds = shiftList.map { it.id }
+            shiftExportUseCase.exportMultipleShifts(shiftIds)?.let { intent ->
+                _intentFlow.emit(intent)
+                _uiEffect.emit(ShiftsUiEffect.OpenIntent(intent))
+            }
+        }
+    }
+
+    fun checkShifts() {
+        viewModelScope.launch {
+            val shifts = shiftUseCase.getShiftCount()
+            Logs.d(tag, "shifts: $shifts")
+            val hasShifts = (shifts != null) && (shifts > 0L)
+            _hasShiftsFlow.emit(hasShifts)
+            _uiState.value = _uiState.value.copy(hasShifts = hasShifts)
+
+            if (hasShifts && _shiftFlow.value.isEmpty()) {
+                addShifts(_uiState.value.page)
+            } else if (!hasShifts) {
+                _shiftFlow.emit(emptyList())
+                _uiState.value = _uiState.value.copy(shifts = emptyList())
+            }
+        }
+    }
+
+    private fun handleSortButtonClick(newOrder: ShiftOrderOptions) {
+        val nextState = when {
+            currentSortState.option != newOrder -> SortState(newOrder, true)
+            currentSortState.isAscending == true -> SortState(newOrder, false)
+            currentSortState.isAscending == false -> SortState(ShiftOrderOptions.NONE)
+            else -> SortState(newOrder, true)
+        }
+
+        currentSortState = nextState
+        _uiState.value = _uiState.value.copy(
+            sortState = nextState,
+            buttons = reduceShiftsButtonsState(nextState, _uiState.value.isSelectionMenuOpen)
+        )
+
+        if (nextState.option == ShiftOrderOptions.NONE) {
+            sortShiftsBy(currentShifts, ShiftOrderOptions.NONE, true)
+        } else {
+            sortShiftsBy(currentShifts, nextState.option, nextState.isAscending!!)
+        }
+
+        Logs.d(tag, "Sort clicked: ${nextState.option}, ascending: ${nextState.isAscending}")
+    }
+
+    private fun toggleSelectionMenu() {
+        val open = !_uiState.value.isSelectionMenuOpen
+        _uiState.value = _uiState.value.copy(
+            isSelectionMenuOpen = open,
+            buttons = reduceShiftsButtonsState(_uiState.value.sortState, open)
+        )
+    }
+
+    private fun deleteSelectedItems() {
+        val selectedItems = _uiState.value.selectedShifts
+        if (selectedItems.isNotEmpty()) {
+            selectedItems.forEach { shift ->
+                deleteShift(shift)
+                Logs.d(tag, "Deleted shiftStatus with ID: ${shift.id}")
+            }
+            _uiState.value = _uiState.value.copy(selectedShifts = emptySet())
+        } else {
+            viewModelScope.launch {
+                _uiEffect.emit(ShiftsUiEffect.ShowToast(R.string.toast_selecciona_turno_eliminar))
+            }
+        }
+    }
+
+    private fun exportSelectedItems() {
+        val selectedItems = _uiState.value.selectedShifts
+        if (selectedItems.isNotEmpty()) {
+            exportShifts(selectedItems)
+        } else {
+            viewModelScope.launch {
+                _uiEffect.emit(ShiftsUiEffect.ShowToast(R.string.toast_selecciona_turno_exportar))
+            }
+        }
+    }
+
+    private fun loadMore() {
+        if (_uiState.value.isLoading) return
+        val nextPage = _uiState.value.page + 1
+        _uiState.value = _uiState.value.copy(page = nextPage)
+        addShifts(nextPage)
+    }
+}
+
+// ------------------------------------------------------------
+// SHIFT DETAIL VIEWMODEL (included for single-file completeness)
+// ------------------------------------------------------------
+
+class ShiftDetailViewModel(
+    context: Application,
+    private val tripUseCase: TripUseCase,
+    private val shiftExportUseCase: ShiftExportUseCase,
+    private val shiftUseCase: ShiftUseCase
+) : BaseViewModel(context) {
+
+    private val tag = "ShiftDetailViewModel"
+
+    private val _tripsFlow = MutableStateFlow<List<ifac.td.taxi.domain.model.Trip>?>(null)
+    val tripFlow = _tripsFlow.asStateFlow()
+
+    private val _intentFlow = MutableSharedFlow<Intent>()
+    val intentFlow = _intentFlow.asSharedFlow()
+
+    var currentSortState: SortState = SortState(ShiftOrderOptions.NONE)
+
+    fun getTripsFromShiftId(shiftId: Long) {
+        viewModelScope.launch {
+            val trips = tripUseCase.getTripsByShiftId(shiftId)
+            _tripsFlow.emit(trips)
+        }
+    }
+
+    fun sortShiftTripsBy(shiftId: Long, orderOptions: ShiftOrderOptions, isAscending: Boolean) {
+        viewModelScope.launch {
+            val shiftTrips = when (orderOptions) {
+                ShiftOrderOptions.ID -> {
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.id }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.id }
+                }
+
+                ShiftOrderOptions.AMOUNT -> {
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.totalAmount }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.totalAmount }
+                }
+
+                ShiftOrderOptions.START_DATE -> {
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.initDate }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.initDate }
+                }
+
+                ShiftOrderOptions.DISTANCE -> {
+                    if (isAscending) tripUseCase.getTripsByShiftId(shiftId).sortedBy { it.distance }
+                    else tripUseCase.getTripsByShiftId(shiftId).sortedByDescending { it.distance }
+                }
+
+                ShiftOrderOptions.NONE -> tripUseCase.getTripsByShiftId(shiftId)
+            }
+            _tripsFlow.emit(shiftTrips)
+        }
+    }
+
+    fun exportFile(shiftId: Long, action: Int) {
+        viewModelScope.launch {
+            Logs.d(tag, "exportFile() called with: shiftId = $shiftId, action = $action")
+            shiftExportUseCase.exportShift(shiftId, action)?.let { _intentFlow.emit(it) }
+        }
+    }
+
+    fun printShift(shiftId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trips = tripUseCase.getTripsByShiftId(shiftId)
+            shiftUseCase.printShift(trips)
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// MAIN ACTIVITY BRIDGE
+// ------------------------------------------------------------
+
+sealed interface ShiftsMainActivityEffect {
+    data class ShowHeader(val visible: Boolean) : ShiftsMainActivityEffect
+    data class ShowToast(@StringRes val messageRes: Int) : ShiftsMainActivityEffect
+    data class StartActivity(val intent: Intent) : ShiftsMainActivityEffect
+}
+
+class ShiftsMainActivityViewModel : ViewModel() {
+    private val _effects = MutableSharedFlow<ShiftsMainActivityEffect>()
+    val effects = _effects.asSharedFlow()
+
+    suspend fun showHeader(visible: Boolean) {
+        _effects.emit(ShiftsMainActivityEffect.ShowHeader(visible))
+    }
+
+    suspend fun showToast(@StringRes messageRes: Int) {
+        _effects.emit(ShiftsMainActivityEffect.ShowToast(messageRes))
+    }
+
+    suspend fun startActivity(intent: Intent) {
+        _effects.emit(ShiftsMainActivityEffect.StartActivity(intent))
+    }
+}
+
+// ------------------------------------------------------------
+// COMPOSABLE SCREEN
+// ------------------------------------------------------------
+
+@Composable
+fun ShiftsScreen(
+    viewModel: ShiftsViewModel,
+    navController: NavController,
+    onShowHeader: (Boolean) -> Unit,
+    onShowToast: (Int) -> Unit,
+    onStartActivity: (Intent) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LifecycleResumeEffect(Unit) {
+        onShowHeader(true)
+        viewModel.onEvent(ShiftsUiEvent.OnResume)
+        onDispose { }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ShiftsUiEffect.NavigateToShiftDetail -> {
+                    val direction =
+                        ShiftsFragmentDirections.actionShiftsFragmentToShiftDetailFragment(effect.shift)
+                    navController.navigate(direction)
+                }
+
+                is ShiftsUiEffect.OpenIntent -> {
+                    try {
+                        onStartActivity(effect.intent)
+                    } catch (_: Exception) {
+                        onShowToast(R.string.start_activity_error_toast)
+                    }
+                }
+
+                is ShiftsUiEffect.ShowToast -> onShowToast(effect.messageRes)
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            ShiftsHeader(
+                buttons = uiState.buttons,
+                onSortId = { viewModel.onEvent(ShiftsUiEvent.OnSortClicked(ShiftOrderOptions.ID)) },
+                onSortAmount = { viewModel.onEvent(ShiftsUiEvent.OnSortClicked(ShiftOrderOptions.AMOUNT)) },
+                onFabMain = { viewModel.onEvent(ShiftsUiEvent.OnFabMainClicked) },
+                onFabExport = { viewModel.onEvent(ShiftsUiEvent.OnFabExportClicked) },
+                onFabTrash = { viewModel.onEvent(ShiftsUiEvent.OnFabTrashClicked) }
+            )
+
+            if (uiState.isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 120.dp)
+            ) {
+                itemsIndexed(uiState.shifts) { _, shift ->
+                    ShiftRow(
+                        shift = shift,
+                        onClick = { viewModel.onEvent(ShiftsUiEvent.OnShiftClicked(shift)) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShiftsHeader(
+    buttons: ShiftsButtonsState,
+    onSortId: () -> Unit,
+    onSortAmount: () -> Unit,
+    onFabMain: () -> Unit,
+    onFabExport: () -> Unit,
+    onFabTrash: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = buttons.selectedHiddenVisible,
+                onCheckedChange = null,
+                enabled = false
+            )
+
+            SortButton(
+                visual = buttons.id,
+                onClick = onSortId
+            )
+
+            SortButton(
+                visual = buttons.amount,
+                onClick = onSortAmount
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(end = 32.dp, bottom = 32.dp),
+            contentAlignment = Alignment.BottomEnd
+        ) {
+            Column(horizontalAlignment = Alignment.End) {
+                if (buttons.fabTrashVisible) {
+                    FloatingMiniActionButton(
+                        iconRes = R.drawable.outline_delete_24,
+                        alpha = buttons.fabTrashAlpha,
+                        translationY = buttons.fabTrashTranslationY,
+                        onClick = onFabTrash
+                    )
+                }
+
+                if (buttons.fabExportVisible) {
+                    FloatingMiniActionButton(
+                        iconRes = R.drawable.baseline_arrow_circle_down_24,
+                        alpha = buttons.fabExportAlpha,
+                        translationY = buttons.fabExportTranslationY,
+                        onClick = onFabExport
+                    )
+                }
+
+                FloatingMainActionButton(
+                    rotation = buttons.fabMainRotation,
+                    onClick = onFabMain
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SortButton(
+    visual: ShiftsButtonVisualState,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .heightIn(min = 48.dp)
+    ) {
+        Button(onClick = onClick) {
+            Text(text = stringResource(visual.textRes))
+        }
+
+        if (visual.sortArrowVisible && visual.sortArrowRes != null) {
+            Icon(
+                painter = painterResource(visual.sortArrowRes),
+                contentDescription = null,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 8.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun FloatingMainActionButton(
+    rotation: Float,
+    onClick: () -> Unit
+) {
+    IconButton(onClick = onClick) {
+        Icon(
+            painter = painterResource(R.drawable.arrow_up),
+            contentDescription = null,
+            modifier = Modifier.rotate(rotation)
+        )
+    }
+}
+
+@Composable
+private fun FloatingMiniActionButton(
+    @DrawableRes iconRes: Int,
+    alpha: Float,
+    translationY: Float,
+    onClick: () -> Unit
+) {
+    val visible = alpha > 0f
+    if (!visible) return
+
+    IconButton(onClick = onClick) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            modifier = Modifier
+                .graphicsLayer {
+                    this.alpha = alpha
+                    translationY = this@FloatingMiniActionButton.translationY
+                }
+        )
+    }
+}
+
+@Composable
+private fun ShiftRow(
+    shift: ShiftEntity,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Text(text = "Shift #${shift.id}")
+    }
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

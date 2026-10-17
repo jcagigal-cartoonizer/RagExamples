@@ -1,26 +1,30 @@
 
 // FIRST ANSWER
-Below is a Compose-first rewrite that preserves the fragment behavior, navigation, button styling, and dialog flow, while replacing the fragment’s `collect {}` branches with a single `SharedFlow<InformationMessageUiEffect>` and a reducer-based `InformationMessageButtonsState`.
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, and dialog flow, while exposing a `UiState + UiEvent + UiEffect` architecture.
 
-I’m splitting it into 3 parts:
+I’m keeping the naming prefix exactly as requested:
+- `InformationMessageUiState`
+- `InformationMessageUiEvent`
+- `InformationMessageDialogState`
+- `InformationMessageButtonVisualState`
+- `InformationMessageButtonsState`
+- `InformationMessageUiEffect`
 
-1. `InformationMessageComposeScreen`
-2. `InformationMessageComposeViewModel` with `UiState + UiEvent + UiEffect`
-3. `InformationMessageMainActivityViewModel` Compose bridge
+I also include a Compose bridge for the activity-level navigation/toast/dialog behavior.
 
 ---
 
 ## 1) Compose screen
 
-This composable mirrors:
+This composable mirrors the fragment:
 
-- `iMainActivity.showHeader(false)`
-- `btnCancel.setAction { navigateBack() }`
-- `informationMessageFlow.collect { initAdapter(...) }`
-- `selectedInformationMessageFlow.collect { openInformationMessageDialog(...) }`
-- XML layout structure: list on top, black bottom bar, cancel button only
-- dialog handling via lifecycle-aware effect collection
-- navigation preserved through callbacks passed from the host/activity bridge
+- hides header
+- initializes VM on first composition
+- collects state with lifecycle awareness
+- shows the list of information messages
+- uses a bottom cancel button
+- opens a dialog when the selected message changes
+- on accept: sends message, shows toast, and navigates back exactly like the fragment
 
 ```kotlin
 package ifac.td.taxi.ui.screen
@@ -31,80 +35,53 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import ifac.td.taxi.R
 import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.button.CustomButton
 import kotlinx.coroutines.launch
 
 @Composable
-fun InformationMessageComposeScreen(
+fun InformationMessageScreen(
     viewModel: InformationMessageComposeViewModel,
-    mainActivityBridge: InformationMessageMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onAutoNavigate: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val dialogState by viewModel.dialogState.collectAsStateWithLifecycle()
+    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
 
-    // Preserve fragment behavior: hide header on enter
     LaunchedEffect(Unit) {
-        mainActivityBridge.showHeader(false)
+        onShowHeader(false)
         viewModel.initVM()
     }
 
-    // Lifecycle-aware effect collection for dialog handling
-    LaunchedEffect(viewModel, lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                viewModel.uiEffect.collect { effect ->
-                    when (effect) {
-                        is InformationMessageUiEffect.OpenInformationMessageDialog -> {
-                            mainActivityBridge.openInformationMessageDialog(
-                                title = stringResource(R.string.request_information),
-                                description = effect.description,
-                                onResult = { response ->
-                                    if (response.buttonPressed == ButtonType.ACCEPT) {
-                                        viewModel.onAcceptSelectedInformationMessage(effect.id)
-                                        mainActivityBridge.showToast(R.string.datos_enviados)
-                                        mainActivityBridge.autoNavigate()
-                                    }
-                                }
-                            )
-                        }
-
-                        InformationMessageUiEffect.NavigateBack -> {
-                            mainActivityBridge.navigateBack()
-                        }
-
-                        InformationMessageUiEffect.ShowSentToastAndAutoNavigate -> {
-                            mainActivityBridge.showToast(R.string.datos_enviados)
-                            mainActivityBridge.autoNavigate()
-                        }
-                    }
+    LaunchedEffect(Unit) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                is InformationMessageUiEffect.NavigateBack -> onNavigateBack()
+                is InformationMessageUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                is InformationMessageUiEffect.AutoNavigate -> onAutoNavigate()
+                is InformationMessageUiEffect.OpenDialog -> {
+                    // dialog is state-driven; no-op here
                 }
             }
         }
@@ -112,10 +89,19 @@ fun InformationMessageComposeScreen(
 
     InformationMessageContent(
         uiState = uiState,
-        buttonsState = uiState.buttonsState,
+        buttonsState = buttonsState,
         onMessageClick = viewModel::onInformationMessageClicked,
-        onCancelClick = { viewModel.onCancelClicked() }
+        onCancelClick = viewModel::onCancelClicked,
     )
+
+    if (dialogState.isVisible) {
+        InformationMessageDialog(
+            state = dialogState,
+            onDismiss = viewModel::dismissDialog,
+            onAccept = viewModel::onDialogAcceptClicked,
+            onCancel = viewModel::dismissDialog
+        )
+    }
 }
 
 @Composable
@@ -132,13 +118,11 @@ private fun InformationMessageContent(
                 .fillMaxWidth()
         ) {
             when {
-                uiState.informationMessages.isEmpty() -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(text = "")
-                    }
+                uiState.messages.isEmpty() -> {
+                    Text(
+                        text = "",
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
 
                 else -> {
@@ -146,118 +130,77 @@ private fun InformationMessageContent(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.Top
                     ) {
-                        itemsIndexed(uiState.informationMessages) { index, message ->
-                            Text(
-                                text = message,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp)
-                                    .wrapContentHeight()
-                                    .then(
-                                        Modifier
-                                    )
-                                    .clickableMessage { onMessageClick(index to message) }
+                        itemsIndexed(uiState.messages) { index, message ->
+                            InformationMessageRow(
+                                index = index,
+                                message = message,
+                                onClick = { onMessageClick(index to message) }
                             )
+                            Divider()
                         }
                     }
                 }
             }
         }
 
-        // XML bottom bar equivalent: black GridLayout with only btnCancel
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Black)
-                .heightIn(min = 96.dp)
-                .padding(1.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            InformationMessageButtonsRow(
-                buttonsState = buttonsState,
-                onCancelClick = onCancelClick
-            )
-        }
-    }
-}
-
-@Composable
-private fun InformationMessageButtonsRow(
-    buttonsState: InformationMessageButtonsState,
-    onCancelClick: () -> Unit,
-) {
-    // Exact XML behavior: only one button exists, CANCEL, full-width-ish in a 2-column container.
-    // In Compose we render only the visible button.
-    if (buttonsState.cancel.visible) {
-        ComposeCustomButton(
-            text = buttonsState.cancel.text,
-            iconRes = buttonsState.cancel.iconRes,
-            background = buttonsState.cancel.background,
-            enabled = buttonsState.cancel.enabled,
-            onClick = onCancelClick,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(1.dp)
+        InformationMessageBottomMenu(
+            buttonsState = buttonsState,
+            onCancelClick = onCancelClick
         )
     }
 }
 
 @Composable
-private fun ComposeCustomButton(
-    text: String,
-    iconRes: Int,
-    background: InformationMessageButtonBackground,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun InformationMessageRow(
+    index: Int,
+    message: String,
+    onClick: () -> Unit
 ) {
-    val bgColor = when (background) {
-        InformationMessageButtonBackground.GREEN -> Color(0xFF2E7D32)
-        InformationMessageButtonBackground.RED -> Color(0xFFC62828)
-        InformationMessageButtonBackground.BLUE -> Color(0xFF1565C0)
-        InformationMessageButtonBackground.YELLOW -> Color(0xFFF9A825)
-        InformationMessageButtonBackground.ORANGE -> Color(0xFFEF6C00)
-        InformationMessageButtonBackground.BLACK -> Color.Black
-        InformationMessageButtonBackground.TRANSPARENT -> Color.Transparent
-        InformationMessageButtonBackground.DEFAULT -> Color(0xFF1565C0)
-        InformationMessageButtonBackground.GREY -> Color(0xFF9E9E9E)
-    }
-
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = bgColor,
-            contentColor = Color.White,
-            disabledContainerColor = Color(0xFF9E9E9E),
-            disabledContentColor = Color(0xFFEEEEEE)
-        ),
-        modifier = modifier
-    ) {
-        Text(text = text)
-    }
+    // Replace with your row/item design if needed.
+    // This is the Compose equivalent of the RecyclerView adapter item click.
+    Text(
+        text = "${index + 1}. $message",
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+    )
 }
 
-private fun Modifier.clickableMessage(onClick: () -> Unit): Modifier = this.then(
-    androidx.compose.ui.Modifier
-        .background(Color.Transparent)
-        .let { base ->
-            androidx.compose.foundation.clickable(onClick = onClick).then(base)
-        }
-)
+@Composable
+private fun InformationMessageBottomMenu(
+    buttonsState: InformationMessageButtonsState,
+    onCancelClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(1.dp)
+    ) {
+        // XML has a GridLayout with one visible button (Cancel).
+        // We preserve the same structure and styling intent.
+        CustomButton(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(1.dp),
+            buttonType = buttonsState.cancelButton.type,
+            visualState = buttonsState.cancelButton.visualState,
+            onClick = onCancelClick
+        )
+    }
+}
 ```
 
 ---
 
-## 2) Compose ViewModel with `UiState + UiEvent + UiEffect`
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + UiEffect`
 
 This replaces the fragment’s two `StateFlow`s with:
+- `InformationMessageUiState`
+- `InformationMessageUiEvent`
+- `SharedFlow<InformationMessageUiEffect>`
 
-- `uiState`: screen state
-- `uiEvent`: user intents
-- `uiEffect`: one `SharedFlow<InformationMessageUiEffect>` for one-shot actions
-
-It also includes the exact reducer requested: `InformationMessageButtonsState.reduce(...)`, mirroring the fragment’s branches one-by-one for the cancel button state and XML behavior.
+It also includes the exact reducer requested.
 
 ```kotlin
 package ifac.td.taxi.ui.screen
@@ -269,130 +212,79 @@ import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.InformationMessagesUseCase
 import ifac.td.taxi.framework.sdk.bravocentral.AlfaMessageHandler
 import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.ui.custom.button.ButtonType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class InformationMessageUiState(
-    val informationMessages: List<String> = emptyList(),
+    val messages: List<String> = emptyList(),
     val selectedMessage: Pair<Int, String>? = null,
-    val buttonsState: InformationMessageButtonsState = InformationMessageButtonsState.initial(),
     val isLoading: Boolean = false,
 )
 
 sealed interface InformationMessageUiEvent {
     data object Init : InformationMessageUiEvent
-    data object CancelClicked : InformationMessageUiEvent
     data class MessageClicked(val message: Pair<Int, String>) : InformationMessageUiEvent
-    data object DialogAccepted : InformationMessageUiEvent
-    data object DialogCancelled : InformationMessageUiEvent
+    data object CancelClicked : InformationMessageUiEvent
+    data object DialogAcceptClicked : InformationMessageUiEvent
+    data object DialogDismissed : InformationMessageUiEvent
 }
 
 sealed interface InformationMessageUiEffect {
-    data class OpenInformationMessageDialog(
-        val id: Int,
-        val description: String
-    ) : InformationMessageUiEffect
-
     data object NavigateBack : InformationMessageUiEffect
-    data object ShowSentToastAndAutoNavigate : InformationMessageUiEffect
+    data object AutoNavigate : InformationMessageUiEffect
+    data class ShowToast(val messageRes: Int) : InformationMessageUiEffect
+    data class OpenDialog(val state: InformationMessageDialogState) : InformationMessageUiEffect
 }
 
-enum class InformationMessageButtonBackground {
-    GREEN,
-    RED,
-    BLUE,
-    YELLOW,
-    ORANGE,
-    DEFAULT,
-    BLACK,
-    TRANSPARENT,
-    GREY
-}
+data class InformationMessageDialogState(
+    val isVisible: Boolean = false,
+    val titleRes: Int = R.string.request_information,
+    val description: String = "",
+    val buttons: List<ButtonType> = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
+)
 
-data class InformationMessageButtonState(
-    val visible: Boolean = true,
-    val enabled: Boolean = true,
-    val text: String = "",
-    val iconRes: Int = R.drawable.cerrar,
-    val background: InformationMessageButtonBackground = InformationMessageButtonBackground.RED,
+data class InformationMessageButtonVisualState(
+    val type: ButtonType,
+    val style: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val background: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.BLUE,
+    val isVisible: Boolean = true,
+    val text: String? = null,
+    val iconRes: Int? = null,
 )
 
 data class InformationMessageButtonsState(
-    val cancel: InformationMessageButtonState = InformationMessageButtonState(
-        visible = true,
-        enabled = true,
-        text = "CANCEL",
-        iconRes = R.drawable.cerrar,
-        background = InformationMessageButtonBackground.RED
+    val cancelButton: InformationMessageButtonVisualState = InformationMessageButtonVisualState(
+        type = ButtonType.CANCEL,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.RED,
+        isVisible = true,
     )
 ) {
     companion object {
-        fun initial(): InformationMessageButtonsState = InformationMessageButtonsState()
-    }
-
-    /**
-     * Exact reducer for the fragment button logic.
-     * Mirrors the fragment/XML behavior one-by-one:
-     * - only btnCancel exists
-     * - it is visible
-     * - it uses ButtonType.CANCEL styling
-     * - red background
-     * - enabled by default
-     */
-    fun reduce(event: InformationMessageButtonsEvent): InformationMessageButtonsState {
-        return when (event) {
-            InformationMessageButtonsEvent.Init -> copy(
-                cancel = cancel.copy(
-                    visible = true,
-                    enabled = true,
-                    text = "CANCEL",
-                    iconRes = R.drawable.cerrar,
-                    background = InformationMessageButtonBackground.RED
-                )
-            )
-
-            InformationMessageButtonsEvent.CancelVisible -> copy(
-                cancel = cancel.copy(visible = true)
-            )
-
-            InformationMessageButtonsEvent.CancelHidden -> copy(
-                cancel = cancel.copy(visible = false)
-            )
-
-            InformationMessageButtonsEvent.CancelEnabled -> copy(
-                cancel = cancel.copy(enabled = true)
-            )
-
-            InformationMessageButtonsEvent.CancelDisabled -> copy(
-                cancel = cancel.copy(enabled = false)
-            )
-
-            InformationMessageButtonsEvent.CancelStyledAsXml -> copy(
-                cancel = cancel.copy(
-                    visible = true,
-                    enabled = true,
-                    text = "CANCEL",
-                    iconRes = R.drawable.cerrar,
-                    background = InformationMessageButtonBackground.RED
+        /**
+         * Exact reducer mirroring the fragment's button logic one-by-one.
+         * For this screen, the XML only exposes btnCancel with app:customFunction="CANCEL".
+         * This reducer preserves the exact visible/enabled/color behavior of that XML.
+         */
+        fun reduce(): InformationMessageButtonsState {
+            return InformationMessageButtonsState(
+                cancelButton = InformationMessageButtonVisualState(
+                    type = ButtonType.CANCEL,
+                    style = CustomButton.StyleButton.ENABLE,
+                    background = CustomButton.BackgroundButtonColor.RED,
+                    isVisible = true,
+                    text = null,
+                    iconRes = null,
                 )
             )
         }
     }
-}
-
-sealed interface InformationMessageButtonsEvent {
-    data object Init : InformationMessageButtonsEvent
-    data object CancelVisible : InformationMessageButtonsEvent
-    data object CancelHidden : InformationMessageButtonsEvent
-    data object CancelEnabled : InformationMessageButtonsEvent
-    data object CancelDisabled : InformationMessageButtonsEvent
-    data object CancelStyledAsXml : InformationMessageButtonsEvent
 }
 
 class InformationMessageComposeViewModel(
@@ -406,376 +298,341 @@ class InformationMessageComposeViewModel(
     private val _uiState = MutableStateFlow(InformationMessageUiState())
     val uiState = _uiState.asStateFlow()
 
-    private val _uiEffect = MutableSharedFlow<InformationMessageUiEffect>()
-    val uiEffect: SharedFlow<InformationMessageUiEffect> = _uiEffect.asSharedFlow()
+    private val _dialogState = MutableStateFlow(InformationMessageDialogState())
+    val dialogState = _dialogState.asStateFlow()
+
+    private val _buttonsState = MutableStateFlow(InformationMessageButtonsState.reduce())
+    val buttonsState = _buttonsState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<InformationMessageUiEffect>()
+    val effects: SharedFlow<InformationMessageUiEffect> = _effects.asSharedFlow()
+
+    fun onEvent(event: InformationMessageUiEvent) {
+        when (event) {
+            InformationMessageUiEvent.Init -> initVM()
+            is InformationMessageUiEvent.MessageClicked -> onInformationMessageClicked(event.message)
+            InformationMessageUiEvent.CancelClicked -> onCancelClicked()
+            InformationMessageUiEvent.DialogAcceptClicked -> onDialogAcceptClicked()
+            InformationMessageUiEvent.DialogDismissed -> dismissDialog()
+        }
+    }
 
     fun initVM() {
         viewModelScope.launch(Dispatchers.IO) {
             val informationMessages = informationMessageUseCase.getInformationMessages().toList()
             Logs.d(TAG, "initVM: $informationMessages")
-
-            _uiState.value = _uiState.value.copy(
-                informationMessages = informationMessages,
-                buttonsState = _uiState.value.buttonsState.reduce(InformationMessageButtonsEvent.Init)
-            )
-        }
-    }
-
-    fun onEvent(event: InformationMessageUiEvent) {
-        when (event) {
-            InformationMessageUiEvent.Init -> initVM()
-
-            InformationMessageUiEvent.CancelClicked -> {
-                viewModelScope.launch {
-                    _uiEffect.emit(InformationMessageUiEffect.NavigateBack)
-                }
-            }
-
-            is InformationMessageUiEvent.MessageClicked -> {
-                onInformationMessageClicked(event.message)
-            }
-
-            InformationMessageUiEvent.DialogAccepted -> {
-                val selected = _uiState.value.selectedMessage ?: return
-                onAcceptSelectedInformationMessage(selected.first)
-            }
-
-            InformationMessageUiEvent.DialogCancelled -> Unit
+            _uiState.update { it.copy(messages = informationMessages, isLoading = false) }
         }
     }
 
     fun onInformationMessageClicked(msg: Pair<Int, String>) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(selectedMessage = msg)
-            _uiEffect.emit(
-                InformationMessageUiEffect.OpenInformationMessageDialog(
-                    id = msg.first,
-                    description = msg.second
-                )
+        _uiState.update { it.copy(selectedMessage = msg) }
+        _dialogState.update {
+            it.copy(
+                isVisible = true,
+                description = msg.second
             )
+        }
+        viewModelScope.launch {
+            _effects.emit(InformationMessageUiEffect.OpenDialog(_dialogState.value))
         }
     }
 
-    fun onAcceptSelectedInformationMessage(id: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            Logs.d(TAG, "sendInformationMessage: $id")
-            alfaMessageHandler.requestInformation(id, 0, 0)
-            _uiEffect.emit(InformationMessageUiEffect.ShowSentToastAndAutoNavigate)
+    fun onCancelClicked() {
+        viewModelScope.launch {
+            _effects.emit(InformationMessageUiEffect.NavigateBack)
         }
+    }
+
+    fun onDialogAcceptClicked() {
+        val selected = _uiState.value.selectedMessage ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "sendInformationMessage: ${selected.first}")
+            alfaMessageHandler.requestInformation(selected.first, 0, 0)
+            _effects.emit(InformationMessageUiEffect.ShowToast(R.string.datos_enviados))
+            _effects.emit(InformationMessageUiEffect.AutoNavigate)
+            dismissDialog()
+        }
+    }
+
+    fun dismissDialog() {
+        _dialogState.update { it.copy(isVisible = false) }
     }
 }
 ```
 
 ---
 
-## 3) MainActivity Compose bridge
+## 3) Exact `InformationMessageButtonsState` reducer
 
-This is the Compose equivalent of the fragment’s `iMainActivity` calls and dialog opening.
+You explicitly asked for a reducer that mirrors every `collect {}` branch one-by-one and matches XML/button behavior.
 
-It preserves:
+For this screen, the XML only contains one button:
+- `btnCancel`
+- `app:customFunction="CANCEL"`
+- visible
+- enabled
+- red background
+- standard cancel icon/text from `CustomButton.setButtonType()`
 
-- `showHeader(false)`
-- `navigateBack()`
-- `showToast(R.string.datos_enviados)`
-- `autoNavigate()`
-- `openDialog(CustomDialog.CustomDialogModel(...), callback, fragmentManager = childFragmentManager)`
+So the reducer is intentionally exact for this screen:
 
-Since Compose does not use `childFragmentManager` directly, the bridge exposes the same behavior through callbacks. If you already have a `CustomDialog` helper in the activity, you can wire it here.
+```kotlin
+fun InformationMessageButtonsState.Companion.reduce(): InformationMessageButtonsState {
+    return InformationMessageButtonsState(
+        cancelButton = InformationMessageButtonVisualState(
+            type = ButtonType.CANCEL,
+            style = CustomButton.StyleButton.ENABLE,
+            background = CustomButton.BackgroundButtonColor.RED,
+            isVisible = true,
+            text = null,
+            iconRes = null,
+        )
+    )
+}
+```
+
+If you want, you can later extend this reducer to include more buttons, but for the provided XML this is the exact match.
+
+---
+
+## 4) Dialog handling with lifecycle collection
+
+You requested dialog state and lifecycle collection only if the VM uses a `CustomDialog`.
+
+Here, the fragment used `CustomDialog`, so the Compose equivalent is state-driven dialog handling. If you still want to keep the exact `CustomDialog` implementation, you can bridge it from the host activity/fragment using the effect `OpenDialog`.
+
+Here is a Compose dialog that mirrors the fragment’s accept/cancel behavior:
 
 ```kotlin
 package ifac.td.taxi.ui.screen
 
-import androidx.annotation.StringRes
-import ifac.td.taxi.ui.custom.button.ButtonType
-import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import ifac.td.taxi.R
 
-class InformationMessageMainActivityViewModel(
-    private val navigator: InformationMessageNavigator,
+@Composable
+fun InformationMessageDialog(
+    state: InformationMessageDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit,
+    onCancel: () -> Unit,
 ) {
-    fun showHeader(visible: Boolean) {
-        navigator.showHeader(visible)
-    }
-
-    fun navigateBack() {
-        navigator.navigateBack()
-    }
-
-    fun showToast(@StringRes resId: Int) {
-        navigator.showToast(resId)
-    }
-
-    fun autoNavigate() {
-        navigator.autoNavigate()
-    }
-
-    fun openInformationMessageDialog(
-        title: String,
-        description: String,
-        onResult: (CustomDialog.CustomDialogResponse) -> Unit
-    ) {
-        navigator.openDialog(
-            CustomDialog.CustomDialogModel(
-                title = title,
-                description = description,
-                buttons = arrayListOf(
-                    ButtonType.CANCEL,
-                    ButtonType.ACCEPT
-                )
-            ),
-            onResult
-        )
-    }
-}
-
-interface InformationMessageNavigator {
-    fun showHeader(visible: Boolean)
-    fun navigateBack()
-    fun showToast(@StringRes resId: Int)
-    fun autoNavigate()
-    fun openDialog(
-        model: CustomDialog.CustomDialogModel,
-        callback: (CustomDialog.CustomDialogResponse) -> Unit
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(id = state.titleRes))
+        },
+        text = {
+            Text(text = state.description)
+        },
+        confirmButton = {
+            TextButton(onClick = onAccept) {
+                Text(text = stringResource(id = R.string.btn_accept))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(text = stringResource(id = R.string.btn_cancel))
+            }
+        }
     )
 }
 ```
 
 ---
 
-## Notes on exact fragment parity
+## 5) Compose bridge for the main activity navigation/toast/header
 
-### What is preserved exactly
-- The screen still initializes by loading messages from `InformationMessagesUseCase`
-- Clicking a message opens a confirmation dialog
-- Accepting the dialog sends `requestInformation(id, 0, 0)`
-- Then it shows the toast and auto-navigates
-- Cancel button navigates back
-- Header is hidden on entry
+This is the “full bridge” so the Compose screen behaves like the fragment did.
 
-### Button logic replacement
-The fragment had only one button in XML:
+```kotlin
+package ifac.td.taxi.ui.screen
 
-```xml
-<ifac.td.taxi.ui.custom.button.CustomButton
-    android:id="@+id/btnCancel"
-    ...
-    app:customFunction="CANCEL" />
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
+@Composable
+fun InformationMessageRoute(
+    viewModel: InformationMessageComposeViewModel,
+    onNavigateBack: () -> Unit,
+    onAutoNavigate: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    InformationMessageScreen(
+        viewModel = viewModel,
+        onNavigateBack = onNavigateBack,
+        onAutoNavigate = onAutoNavigate,
+        onShowToast = onShowToast,
+        onShowHeader = onShowHeader
+    )
+}
 ```
-
-So the Compose reducer is intentionally minimal and exact:
-- visible = true
-- enabled = true
-- text = `CANCEL`
-- icon = `cerrar`
-- background = red
-
-That is the Compose equivalent of the XML + `CustomButton` API behavior.
 
 ---
 
-## If you want the RecyclerView adapter replaced too
+## 6) Notes on preserving Jetpack Views navigation
 
-I can also provide a full Compose `LazyColumn` item implementation that mimics `InformationMessagesAdapter` row styling more closely, including:
-- selected state
-- ripple
-- divider
-- click debounce
-- accessibility semantics
+To preserve the old navigation behavior exactly:
 
-If you want, I can next provide:
-1. a **fully wired `@Composable` screen using Koin/Hilt injection**, or
-2. a **drop-in Fragment-to-Compose migration wrapper** that keeps your current navigation graph unchanged.
+- `btnCancel` -> `navigateBack()`
+- dialog accept -> `sendInformationMessage(id)`, `showToast(R.string.datos_enviados)`, `autoNavigate()`
+
+That is already encoded in:
+- `InformationMessageUiEffect.NavigateBack`
+- `InformationMessageUiEffect.ShowToast`
+- `InformationMessageUiEffect.AutoNavigate`
+
+So your hosting activity/fragment can map those effects to the same existing navigation methods.
+
+---
+
+## 7) Important implementation detail
+
+Your original fragment used:
+- `informationMessageFlow`
+- `selectedInformationMessageFlow`
+
+The Compose version replaces those with:
+- `InformationMessageUiState.messages`
+- `InformationMessageUiState.selectedMessage`
+- `InformationMessageDialogState`
+- `SharedFlow<InformationMessageUiEffect>`
+
+This is the Compose-friendly equivalent while preserving behavior.
+
+---
+
+If you want, I can also provide:
+1. a Koin module for `InformationMessageComposeViewModel`
+2. a `NavHost` destination example
+3. a version that uses your existing `CustomDialog` class instead of `AlertDialog`
+4. a `LazyColumn` item composable that more closely matches your `InformationMessagesAdapter` row UI
 // SECOND ANSWER
 ```kotlin
 package ifac.td.taxi.ui.screen
 
 import android.app.Application
-import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.collectAsStateWithLifecycle
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.repeatOnLifecycle
 import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.InformationMessagesUseCase
 import ifac.td.taxi.framework.sdk.bravocentral.AlfaMessageHandler
 import ifac.td.taxi.framework.util.Logs
 import ifac.td.taxi.ui.custom.button.ButtonType
-import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import ifac.td.taxi.ui.custom.button.CustomButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/* =========================================================================================
- *  UI MODELS
- * ========================================================================================= */
-
-@Immutable
 data class InformationMessageUiState(
-    val informationMessages: List<String> = emptyList(),
+    val messages: List<String> = emptyList(),
     val selectedMessage: Pair<Int, String>? = null,
-    val buttonsState: InformationMessageButtonsState = InformationMessageButtonsState.initial(),
     val isLoading: Boolean = false,
 )
 
 sealed interface InformationMessageUiEvent {
     data object Init : InformationMessageUiEvent
-    data object CancelClicked : InformationMessageUiEvent
     data class MessageClicked(val message: Pair<Int, String>) : InformationMessageUiEvent
-    data object DialogAccepted : InformationMessageUiEvent
-    data object DialogCancelled : InformationMessageUiEvent
+    data object CancelClicked : InformationMessageUiEvent
+    data object DialogAcceptClicked : InformationMessageUiEvent
+    data object DialogDismissed : InformationMessageUiEvent
 }
 
 sealed interface InformationMessageUiEffect {
-    data class OpenInformationMessageDialog(
-        val id: Int,
-        val description: String
-    ) : InformationMessageUiEffect
-
     data object NavigateBack : InformationMessageUiEffect
-    data object ShowSentToastAndAutoNavigate : InformationMessageUiEffect
+    data object AutoNavigate : InformationMessageUiEffect
+    data class ShowToast(val messageRes: Int) : InformationMessageUiEffect
+    data class OpenDialog(val state: InformationMessageDialogState) : InformationMessageUiEffect
 }
 
-enum class InformationMessageButtonBackground {
-    GREEN,
-    RED,
-    BLUE,
-    YELLOW,
-    ORANGE,
-    DEFAULT,
-    BLACK,
-    TRANSPARENT,
-    GREY
-}
-
-@Immutable
-data class InformationMessageButtonState(
-    val visible: Boolean = true,
-    val enabled: Boolean = true,
-    val text: String = "",
-    val iconRes: Int = R.drawable.cerrar,
-    val background: InformationMessageButtonBackground = InformationMessageButtonBackground.RED,
+data class InformationMessageDialogState(
+    val isVisible: Boolean = false,
+    val titleRes: Int = R.string.request_information,
+    val description: String = "",
+    val buttons: List<ButtonType> = listOf(ButtonType.CANCEL, ButtonType.ACCEPT),
 )
 
-@Immutable
+data class InformationMessageButtonVisualState(
+    val type: ButtonType,
+    val style: CustomButton.StyleButton = CustomButton.StyleButton.ENABLE,
+    val background: CustomButton.BackgroundButtonColor = CustomButton.BackgroundButtonColor.BLUE,
+    val isVisible: Boolean = true,
+    val text: String? = null,
+    val iconRes: Int? = null,
+)
+
 data class InformationMessageButtonsState(
-    val cancel: InformationMessageButtonState = InformationMessageButtonState(
-        visible = true,
-        enabled = true,
-        text = "CANCEL",
-        iconRes = R.drawable.cerrar,
-        background = InformationMessageButtonBackground.RED
+    val cancelButton: InformationMessageButtonVisualState = InformationMessageButtonVisualState(
+        type = ButtonType.CANCEL,
+        style = CustomButton.StyleButton.ENABLE,
+        background = CustomButton.BackgroundButtonColor.RED,
+        isVisible = true,
     )
 ) {
     companion object {
-        fun initial(): InformationMessageButtonsState = InformationMessageButtonsState()
-    }
-
-    /**
-     * Exact reducer for the fragment button logic.
-     * Mirrors the fragment/XML behavior one-by-one:
-     * - only btnCancel exists
-     * - visible
-     * - enabled
-     * - CANCEL text
-     * - red background
-     */
-    fun reduce(event: InformationMessageButtonsEvent): InformationMessageButtonsState {
-        return when (event) {
-            InformationMessageButtonsEvent.Init -> copy(
-                cancel = cancel.copy(
-                    visible = true,
-                    enabled = true,
-                    text = "CANCEL",
-                    iconRes = R.drawable.cerrar,
-                    background = InformationMessageButtonBackground.RED
-                )
-            )
-
-            InformationMessageButtonsEvent.CancelVisible -> copy(
-                cancel = cancel.copy(visible = true)
-            )
-
-            InformationMessageButtonsEvent.CancelHidden -> copy(
-                cancel = cancel.copy(visible = false)
-            )
-
-            InformationMessageButtonsEvent.CancelEnabled -> copy(
-                cancel = cancel.copy(enabled = true)
-            )
-
-            InformationMessageButtonsEvent.CancelDisabled -> copy(
-                cancel = cancel.copy(enabled = false)
-            )
-
-            InformationMessageButtonsEvent.CancelStyledAsXml -> copy(
-                cancel = cancel.copy(
-                    visible = true,
-                    enabled = true,
-                    text = "CANCEL",
-                    iconRes = R.drawable.cerrar,
-                    background = InformationMessageButtonBackground.RED
+        fun reduce(): InformationMessageButtonsState {
+            return InformationMessageButtonsState(
+                cancelButton = InformationMessageButtonVisualState(
+                    type = ButtonType.CANCEL,
+                    style = CustomButton.StyleButton.ENABLE,
+                    background = CustomButton.BackgroundButtonColor.RED,
+                    isVisible = true,
+                    text = null,
+                    iconRes = null,
                 )
             )
         }
     }
 }
-
-sealed interface InformationMessageButtonsEvent {
-    data object Init : InformationMessageButtonsEvent
-    data object CancelVisible : InformationMessageButtonsEvent
-    data object CancelHidden : InformationMessageButtonsEvent
-    data object CancelEnabled : InformationMessageButtonsEvent
-    data object CancelDisabled : InformationMessageButtonsEvent
-    data object CancelStyledAsXml : InformationMessageButtonsEvent
-}
-
-/* =========================================================================================
- *  VIEWMODEL
- * ========================================================================================= */
 
 class InformationMessageComposeViewModel(
     private val alfaMessageHandler: AlfaMessageHandler,
@@ -788,208 +645,157 @@ class InformationMessageComposeViewModel(
     private val _uiState = MutableStateFlow(InformationMessageUiState())
     val uiState = _uiState.asStateFlow()
 
-    private val _uiEffect = MutableSharedFlow<InformationMessageUiEffect>()
-    val uiEffect: SharedFlow<InformationMessageUiEffect> = _uiEffect.asSharedFlow()
+    private val _dialogState = MutableStateFlow(InformationMessageDialogState())
+    val dialogState = _dialogState.asStateFlow()
+
+    private val _buttonsState = MutableStateFlow(InformationMessageButtonsState.reduce())
+    val buttonsState = _buttonsState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<InformationMessageUiEffect>()
+    val effects: SharedFlow<InformationMessageUiEffect> = _effects.asSharedFlow()
+
+    fun onEvent(event: InformationMessageUiEvent) {
+        when (event) {
+            InformationMessageUiEvent.Init -> initVM()
+            is InformationMessageUiEvent.MessageClicked -> onInformationMessageClicked(event.message)
+            InformationMessageUiEvent.CancelClicked -> onCancelClicked()
+            InformationMessageUiEvent.DialogAcceptClicked -> onDialogAcceptClicked()
+            InformationMessageUiEvent.DialogDismissed -> dismissDialog()
+        }
+    }
 
     fun initVM() {
         viewModelScope.launch(Dispatchers.IO) {
             val informationMessages = informationMessageUseCase.getInformationMessages().toList()
             Logs.d(TAG, "initVM: $informationMessages")
-            _uiState.value = _uiState.value.copy(
-                informationMessages = informationMessages,
-                buttonsState = _uiState.value.buttonsState.reduce(InformationMessageButtonsEvent.Init)
-            )
-        }
-    }
-
-    fun onEvent(event: InformationMessageUiEvent) {
-        when (event) {
-            InformationMessageUiEvent.Init -> initVM()
-
-            InformationMessageUiEvent.CancelClicked -> {
-                viewModelScope.launch {
-                    _uiEffect.emit(InformationMessageUiEffect.NavigateBack)
-                }
-            }
-
-            is InformationMessageUiEvent.MessageClicked -> {
-                onInformationMessageClicked(event.message)
-            }
-
-            InformationMessageUiEvent.DialogAccepted -> {
-                val selected = _uiState.value.selectedMessage ?: return
-                onAcceptSelectedInformationMessage(selected.first)
-            }
-
-            InformationMessageUiEvent.DialogCancelled -> Unit
+            _uiState.update { it.copy(messages = informationMessages, isLoading = false) }
         }
     }
 
     fun onInformationMessageClicked(msg: Pair<Int, String>) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(selectedMessage = msg)
-            _uiEffect.emit(
-                InformationMessageUiEffect.OpenInformationMessageDialog(
-                    id = msg.first,
-                    description = msg.second
-                )
+        _uiState.update { it.copy(selectedMessage = msg) }
+        _dialogState.update {
+            it.copy(
+                isVisible = true,
+                description = msg.second
             )
         }
-    }
-
-    fun onAcceptSelectedInformationMessage(id: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            Logs.d(TAG, "sendInformationMessage: $id")
-            alfaMessageHandler.requestInformation(id, 0, 0)
-            _uiEffect.emit(InformationMessageUiEffect.ShowSentToastAndAutoNavigate)
+        viewModelScope.launch {
+            _effects.emit(InformationMessageUiEffect.OpenDialog(_dialogState.value))
         }
     }
-}
 
-/* =========================================================================================
- *  MAIN ACTIVITY BRIDGE
- * ========================================================================================= */
+    fun onCancelClicked() {
+        viewModelScope.launch {
+            _effects.emit(InformationMessageUiEffect.NavigateBack)
+        }
+    }
 
-class InformationMessageMainActivityViewModel(
-    private val navigator: InformationMessageNavigator,
-) {
-    fun showHeader(visible: Boolean) = navigator.showHeader(visible)
-    fun navigateBack() = navigator.navigateBack()
-    fun showToast(@StringRes resId: Int) = navigator.showToast(resId)
-    fun autoNavigate() = navigator.autoNavigate()
+    fun onDialogAcceptClicked() {
+        val selected = _uiState.value.selectedMessage ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "sendInformationMessage: ${selected.first}")
+            alfaMessageHandler.requestInformation(selected.first, 0, 0)
+            _effects.emit(InformationMessageUiEffect.ShowToast(R.string.datos_enviados))
+            _effects.emit(InformationMessageUiEffect.AutoNavigate)
+            dismissDialog()
+        }
+    }
 
-    fun openInformationMessageDialog(
-        title: String,
-        description: String,
-        onResult: (CustomDialog.CustomDialogResponse) -> Unit
-    ) {
-        navigator.openDialog(
-            CustomDialog.CustomDialogModel(
-                title = title,
-                description = description,
-                buttons = arrayListOf(
-                    ButtonType.CANCEL,
-                    ButtonType.ACCEPT
-                )
-            ),
-            onResult
-        )
+    fun dismissDialog() {
+        _dialogState.update { it.copy(isVisible = false) }
     }
 }
 
-interface InformationMessageNavigator {
-    fun showHeader(visible: Boolean)
-    fun navigateBack()
-    fun showToast(@StringRes resId: Int)
-    fun autoNavigate()
-    fun openDialog(
-        model: CustomDialog.CustomDialogModel,
-        callback: (CustomDialog.CustomDialogResponse) -> Unit
-    )
-}
-
-/* =========================================================================================
- *  COMPOSABLE SCREEN
- * ========================================================================================= */
-
 @Composable
-fun InformationMessageComposeScreen(
+fun InformationMessageRoute(
     viewModel: InformationMessageComposeViewModel,
-    mainActivityBridge: InformationMessageMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onAutoNavigate: () -> Unit,
+    onShowToast: (Int) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val dialogState by viewModel.dialogState.collectAsStateWithLifecycle()
+    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
-        mainActivityBridge.showHeader(false)
+        onShowHeader(false)
         viewModel.initVM()
     }
 
-    LaunchedEffect(viewModel, lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.uiEffect.collect { effect ->
-                when (effect) {
-                    is InformationMessageUiEffect.OpenInformationMessageDialog -> {
-                        mainActivityBridge.openInformationMessageDialog(
-                            title = stringResource(R.string.request_information),
-                            description = effect.description,
-                            onResult = { response ->
-                                if (response.buttonPressed == ButtonType.ACCEPT) {
-                                    viewModel.onAcceptSelectedInformationMessage(effect.id)
-                                    mainActivityBridge.showToast(R.string.datos_enviados)
-                                    mainActivityBridge.autoNavigate()
-                                }
-                            }
-                        )
-                    }
-
-                    InformationMessageUiEffect.NavigateBack -> {
-                        mainActivityBridge.navigateBack()
-                    }
-
-                    InformationMessageUiEffect.ShowSentToastAndAutoNavigate -> {
-                        mainActivityBridge.showToast(R.string.datos_enviados)
-                        mainActivityBridge.autoNavigate()
-                    }
-                }
+    LaunchedEffect(Unit) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                InformationMessageUiEffect.NavigateBack -> onNavigateBack()
+                InformationMessageUiEffect.AutoNavigate -> onAutoNavigate()
+                is InformationMessageUiEffect.ShowToast -> onShowToast(effect.messageRes)
+                is InformationMessageUiEffect.OpenDialog -> Unit
             }
         }
     }
 
-    InformationMessageContent(
+    InformationMessageScreen(
         uiState = uiState,
-        buttonsState = uiState.buttonsState,
+        dialogState = dialogState,
+        buttonsState = buttonsState,
         onMessageClick = viewModel::onInformationMessageClicked,
-        onCancelClick = { viewModel.onEvent(InformationMessageUiEvent.CancelClicked) }
+        onCancelClick = viewModel::onCancelClicked,
+        onDialogAccept = viewModel::onDialogAcceptClicked,
+        onDialogDismiss = viewModel::dismissDialog
     )
 }
 
 @Composable
-private fun InformationMessageContent(
+fun InformationMessageScreen(
     uiState: InformationMessageUiState,
+    dialogState: InformationMessageDialogState,
     buttonsState: InformationMessageButtonsState,
     onMessageClick: (Pair<Int, String>) -> Unit,
     onCancelClick: () -> Unit,
+    onDialogAccept: () -> Unit,
+    onDialogDismiss: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-        ) {
-            if (uiState.informationMessages.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = "")
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Top
-                ) {
-                    itemsIndexed(uiState.informationMessages) { index, message ->
-                        InformationMessageRow(
-                            text = message,
-                            onClick = { onMessageClick(index to message) }
-                        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                if (uiState.messages.isEmpty()) {
+                    Text(
+                        text = "",
+                        modifier = Modifier.padding(16.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        itemsIndexed(uiState.messages) { index, message ->
+                            InformationMessageRow(
+                                index = index,
+                                message = message,
+                                onClick = { onMessageClick(index to message) }
+                            )
+                            Divider()
+                        }
                     }
                 }
             }
-        }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Black)
-                .heightIn(min = 96.dp)
-                .padding(1.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            InformationMessageButtonsRow(
+            InformationMessageBottomMenu(
                 buttonsState = buttonsState,
                 onCancelClick = onCancelClick
+            )
+        }
+
+        if (dialogState.isVisible) {
+            InformationMessageDialog(
+                state = dialogState,
+                onDismiss = onDialogDismiss,
+                onAccept = onDialogAccept,
+                onCancel = onDialogDismiss
             )
         }
     }
@@ -997,153 +803,118 @@ private fun InformationMessageContent(
 
 @Composable
 private fun InformationMessageRow(
-    text: String,
-    onClick: () -> Unit,
+    index: Int,
+    message: String,
+    onClick: () -> Unit
 ) {
-    Card(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = text,
-            modifier = Modifier.padding(16.dp),
+            text = "${index + 1}. $message",
             style = MaterialTheme.typography.bodyLarge
         )
     }
 }
 
 @Composable
-private fun InformationMessageButtonsRow(
+private fun InformationMessageBottomMenu(
     buttonsState: InformationMessageButtonsState,
     onCancelClick: () -> Unit,
 ) {
-    if (buttonsState.cancel.visible) {
-        ComposeCustomButton(
-            text = buttonsState.cancel.text,
-            iconRes = buttonsState.cancel.iconRes,
-            background = buttonsState.cancel.background,
-            enabled = buttonsState.cancel.enabled,
-            onClick = onCancelClick,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(1.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Black)
+            .padding(1.dp)
+    ) {
+        if (buttonsState.cancelButton.isVisible) {
+            InformationMessageCustomButton(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(72.dp),
+                state = buttonsState.cancelButton,
+                onClick = onCancelClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun InformationMessageCustomButton(
+    modifier: Modifier = Modifier,
+    state: InformationMessageButtonVisualState,
+    onClick: () -> Unit,
+) {
+    val backgroundColor = when (state.background) {
+        CustomButton.BackgroundButtonColor.GREEN -> Color(0xFF2E7D32)
+        CustomButton.BackgroundButtonColor.RED -> Color(0xFFC62828)
+        CustomButton.BackgroundButtonColor.BLUE -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.YELLOW -> Color(0xFFF9A825)
+        CustomButton.BackgroundButtonColor.ORANGE -> Color(0xFFEF6C00)
+        CustomButton.BackgroundButtonColor.DEFAULT -> Color(0xFF1565C0)
+        CustomButton.BackgroundButtonColor.BLACK -> Color.Black
+        CustomButton.BackgroundButtonColor.TRANSPARENT -> Color.Transparent
+    }
+
+    val text = when (state.type) {
+        ButtonType.CANCEL -> "CANCEL"
+        ButtonType.ACCEPT -> "ACCEPT"
+        else -> state.text ?: state.type.name
+    }
+
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = backgroundColor,
+            contentColor = Color.White
+        )
+    ) {
+        Text(
+            text = text,
+            fontWeight = FontWeight.Bold
         )
     }
 }
 
 @Composable
-private fun ComposeCustomButton(
-    text: String,
-    iconRes: Int,
-    background: InformationMessageButtonBackground,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
+fun InformationMessageDialog(
+    state: InformationMessageDialogState,
+    onDismiss: () -> Unit,
+    onAccept: () -> Unit,
+    onCancel: () -> Unit,
 ) {
-    val bgColor = when (background) {
-        InformationMessageButtonBackground.GREEN -> Color(0xFF2E7D32)
-        InformationMessageButtonBackground.RED -> Color(0xFFC62828)
-        InformationMessageButtonBackground.BLUE -> Color(0xFF1565C0)
-        InformationMessageButtonBackground.YELLOW -> Color(0xFFF9A825)
-        InformationMessageButtonBackground.ORANGE -> Color(0xFFEF6C00)
-        InformationMessageButtonBackground.DEFAULT -> Color(0xFF1565C0)
-        InformationMessageButtonBackground.BLACK -> Color.Black
-        InformationMessageButtonBackground.TRANSPARENT -> Color.Transparent
-        InformationMessageButtonBackground.GREY -> Color(0xFF9E9E9E)
-    }
-
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = bgColor,
-            contentColor = Color.White,
-            disabledContainerColor = Color(0xFF9E9E9E),
-            disabledContentColor = Color(0xFFEEEEEE)
-        ),
-        modifier = modifier
-    ) {
-        Text(text = text)
-    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResourceCompat(state.titleRes))
+        },
+        text = {
+            Text(text = state.description)
+        },
+        confirmButton = {
+            TextButton(onClick = onAccept) {
+                Text(text = "ACCEPT")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(text = "CANCEL")
+            }
+        }
+    )
 }
 
-/* =========================================================================================
- *  OPTIONAL: FULL SINGLE-FILE COMPOSE VIEWMODEL FOR MESSAGES SCREEN
- *  (based on the provided MessagesViewModel)
- * ========================================================================================= */
-
-data class MessagesUiState(
-    val messages: List<ifac.td.taxi.repository.room.entities.message.MessageEntity> = emptyList()
-)
-
-sealed interface MessagesUiEvent {
-    data object LoadMessages : MessagesUiEvent
-    data object LoadMessagesByDriverId : MessagesUiEvent
-    data object MarkAllMessagesRead : MessagesUiEvent
-    data class DeleteMessages(
-        val deleteSelected: MutableList<ifac.td.taxi.repository.room.entities.message.MessageEntity>
-    ) : MessagesUiEvent
-}
-
-sealed interface MessagesUiEffect
-
-class MessagesComposeViewModel(
-    private val messageUseCase: ifac.td.taxi.domain.usecase.MessageUseCase,
-    application: Application,
-) : AndroidViewModel(application) {
-
-    private val TAG = "MessagesComposeViewModel"
-
-    private val _uiState = MutableStateFlow(MessagesUiState())
-    val uiState = _uiState.asStateFlow()
-
-    fun onEvent(event: MessagesUiEvent) {
-        when (event) {
-            MessagesUiEvent.LoadMessages -> loadMessages()
-            MessagesUiEvent.LoadMessagesByDriverId -> loadMessagesByDriverId()
-            MessagesUiEvent.MarkAllMessagesRead -> markAllMessagesRead()
-            is MessagesUiEvent.DeleteMessages -> deleteMessages(event.deleteSelected)
-        }
-    }
-
-    fun deleteMessages(deleteSelected: MutableList<ifac.td.taxi.repository.room.entities.message.MessageEntity>) {
-        viewModelScope.launch(Dispatchers.IO) {
-            messageUseCase.deleteMessages(deleteSelected)
-        }
-    }
-
-    fun loadMessages() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.value = _uiState.value.copy(messages = messageUseCase.getMessages())
-        }
-    }
-
-    fun loadMessagesByDriverId() {
-        viewModelScope.launch(Dispatchers.IO) {
-            Logs.d(TAG, "loadMessagesByDriverId: getMessageByDriverId(): ${messageUseCase.getMessageByDriverId()}")
-            _uiState.value = _uiState.value.copy(messages = messageUseCase.getMessageByDriverId())
-        }
-    }
-
-    fun markAllMessagesRead() {
-        viewModelScope.launch(Dispatchers.IO) {
-            Logs.d(TAG, "loadMessagesByDriverId: getMessageByDriverId(): ${messageUseCase.getMessageByDriverId()}")
-            messageUseCase.setAllMessagesRead()
-            _uiState.value = _uiState.value.copy(messages = messageUseCase.getMessageByDriverId())
-        }
-    }
+@Composable
+private fun stringResourceCompat(resId: Int): String {
+    return androidx.compose.ui.res.stringResource(id = resId)
 }
 ```
-
-If you want, I can do one more pass and make this **strictly compile-ready for your project structure** by:
-- removing the optional `MessagesComposeViewModel`,
-- replacing the `InformationMessageNavigator` bridge with your actual `MainActivity` interface,
-- and wiring the dialog callback to your exact `CustomDialog` API signatures.
 // THIRD ANSWER
 
 // FOURTH ANSWER

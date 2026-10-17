@@ -1,95 +1,61 @@
 
 // FIRST ANSWER
-Below is a Compose-first rewrite that preserves the fragment behavior, navigation, button styling, and the shared-flow bridge pattern.
+Below is a Compose-first rewrite of **LoginUserFragment** with:
 
-I’m giving you:
+- a **Compose screen**
+- a **Compose-friendly ViewModel** using **UiState + UiEvent + SharedFlow<LoginUserUiEffect>**
+- a **full MainActivity bridge ViewModel**
+- **exact button reducer logic** mirroring the fragment’s `collect {}` branches one-by-one
+- **dialog state handling** for the configuration PIN dialog
+- **preserved Jetpack Views navigation behavior** via bridge callbacks
 
-1. A `LoginUserScreen` composable
-2. A Compose-friendly `LoginUserViewModel` with `UiState + UiEvent + UiEffect`
-3. An exact `LoginUserButtonsState` reducer that mirrors each fragment `collect {}` branch one-by-one
-4. A `LoginUserMainActivityViewModel` bridge for the shared flows used by the screen
-5. A Compose dialog state approach for the settings PIN dialog
-6. Navigation preserved through `NavController` routes matching the fragment action
+I’ll keep the names prefixed as requested:
+
+- `LoginUserUiState`
+- `LoginUserUiEvent`
+- `LoginUserUiEffect`
+- `LoginUserButtonVisualState`
+- `LoginUserButtonsState`
+- `LoginUserDialogState`
 
 ---
 
-## 1) Compose UI model
+## 1) Compose UI state / event / effect models
 
 ```kotlin
 package ifac.td.taxi.ui.screen.loginuser
 
-import androidx.compose.runtime.Immutable
+import androidx.annotation.StringRes
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
 
-@Immutable
 data class LoginUserUiState(
     val user: String = "",
     val password: String = "",
     val userError: String? = null,
-    val showChangePassword: Boolean = false,
+    val passwordError: String? = null,
+    val isLoading: Boolean = false,
     val isUserEnabled: Boolean = true,
     val isPasswordEnabled: Boolean = true,
-    val buttons: LoginUserButtonsState = LoginUserButtonsState(),
-    val progress: LoginUserProgressState = LoginUserProgressState(),
-    val showSettingsPasswordDialog: Boolean = false,
-    val settingsPasswordDialogTitle: String = "",
-    val settingsPasswordDialogDescription: String = "",
-    val settingsPasswordDialogPin: String = "",
+    val showChangePasswordText: Boolean = false,
+    val progressVisible: Boolean = false,
+    val progressValue: Int = 0,
+    val buttonsState: LoginUserButtonsState = LoginUserButtonsState(),
+    val dialogState: LoginUserDialogState = LoginUserDialogState.Hidden,
 )
-
-@Immutable
-data class LoginUserProgressState(
-    val visible: Boolean = false,
-    val progress: Int = 0
-)
-
-@Immutable
-data class LoginUserButtonsState(
-    val cancel: LoginUserButtonState = LoginUserButtonState(
-        visible = true,
-        style = CustomButtonStyle.ENABLE,
-        background = CustomButtonBackground.RED
-    ),
-    val changeUser: LoginUserButtonState = LoginUserButtonState(
-        visible = false,
-        style = CustomButtonStyle.ENABLE,
-        background = CustomButtonBackground.BLUE
-    ),
-    val accept: LoginUserButtonState = LoginUserButtonState(
-        visible = true,
-        style = CustomButtonStyle.ENABLE,
-        background = CustomButtonBackground.GREEN
-    )
-)
-
-@Immutable
-data class LoginUserButtonState(
-    val visible: Boolean,
-    val style: CustomButtonStyle,
-    val background: CustomButtonBackground
-)
-
-enum class CustomButtonStyle { ENABLE, DISABLE, LOADING }
-enum class CustomButtonBackground { GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT }
-```
-
----
-
-## 2) UiEvent / UiEffect
-
-```kotlin
-package ifac.td.taxi.ui.screen.loginuser
 
 sealed interface LoginUserUiEvent {
     data class UserChanged(val value: String) : LoginUserUiEvent
     data class PasswordChanged(val value: String) : LoginUserUiEvent
     data object CancelClicked : LoginUserUiEvent
     data object AcceptClicked : LoginUserUiEvent
-    data object ChangePasswordClicked : LoginUserUiEvent
+    data object ChangePasswordTextClicked : LoginUserUiEvent
     data object ChangeUserClicked : LoginUserUiEvent
-    data class SettingsPasswordDialogPinChanged(val value: String) : LoginUserUiEvent
-    data object SettingsPasswordDialogCancel : LoginUserUiEvent
-    data object SettingsPasswordDialogAccept : LoginUserUiEvent
+    data class ConfigurationPasswordResult(val password: String) : LoginUserUiEvent
     data object ScreenStarted : LoginUserUiEvent
+    data object CheckSavedData : LoginUserUiEvent
+    data object CheckHasSettingsPassword : LoginUserUiEvent
+    data object DialogDismissed : LoginUserUiEvent
 }
 
 sealed interface LoginUserUiEffect {
@@ -97,111 +63,163 @@ sealed interface LoginUserUiEffect {
     data object NavigateToChangePassword : LoginUserUiEffect
     data object StartBravoService : LoginUserUiEffect
     data class SaveCredentials(val user: String, val password: String) : LoginUserUiEffect
-    data object OpenSettingsPasswordDialog : LoginUserUiEffect
-    data class ShowToast(val messageRes: Int) : LoginUserUiEffect
+    data object DownloadBravoConfiguration : LoginUserUiEffect
+    data class ShowToast(@StringRes val messageRes: Int) : LoginUserUiEffect
+    data class ShowUserError(@StringRes val messageRes: Int) : LoginUserUiEffect
+    data class OpenConfigurationPasswordDialog(
+        val title: String,
+        val description: String,
+    ) : LoginUserUiEffect
 }
 ```
 
 ---
 
-## 3) Exact `LoginUserButtonsState` reducer
+## 2) Exact button state reducer
 
-This mirrors the fragment branches one-by-one:
-
-- `btnCancel` is always visible, enabled, red
-- `btnChangeUser` starts gone
-- `btnAccept` starts visible, enabled, green
-- when password dialog exists:
-  - `btnChangeUser` becomes visible
-  - `btnChangeUser` action becomes dialog opener
-  - edit texts disabled
-- when password dialog does not exist:
-  - `btnChangeUser` gone
-  - edit texts enabled
-- when correct password:
-  - edit texts enabled
-  - `btnChangeUser` disabled
-- when incorrect login:
-  - `btnAccept` enabled + green
-  - user error shown
+This mirrors the fragment’s `collect {}` branches one-by-one.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.loginuser
 
-object LoginUserButtonsReducer {
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
 
-    fun initial(): LoginUserButtonsState = LoginUserButtonsState(
-        cancel = LoginUserButtonState(
-            visible = true,
-            style = CustomButtonStyle.ENABLE,
-            background = CustomButtonBackground.RED
-        ),
-        changeUser = LoginUserButtonState(
-            visible = false,
-            style = CustomButtonStyle.ENABLE,
-            background = CustomButtonBackground.BLUE
-        ),
-        accept = LoginUserButtonState(
-            visible = true,
-            style = CustomButtonStyle.ENABLE,
-            background = CustomButtonBackground.GREEN
-        )
-    )
+data class LoginUserButtonVisualState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val background: LoginUserButtonBackground = LoginUserButtonBackground.Blue,
+)
 
-    fun onHasSettingsPassword(hasPassword: Boolean): LoginUserButtonsState {
-        return if (hasPassword) {
-            LoginUserButtonsState(
-                cancel = LoginUserButtonState(true, CustomButtonStyle.ENABLE, CustomButtonBackground.RED),
-                changeUser = LoginUserButtonState(true, CustomButtonStyle.ENABLE, CustomButtonBackground.BLUE),
-                accept = LoginUserButtonState(true, CustomButtonStyle.ENABLE, CustomButtonBackground.GREEN)
-            )
-        } else {
-            LoginUserButtonsState(
-                cancel = LoginUserButtonState(true, CustomButtonStyle.ENABLE, CustomButtonBackground.RED),
-                changeUser = LoginUserButtonState(false, CustomButtonStyle.ENABLE, CustomButtonBackground.BLUE),
-                accept = LoginUserButtonState(true, CustomButtonStyle.ENABLE, CustomButtonBackground.GREEN)
-            )
-        }
+enum class LoginUserButtonBackground {
+    Green, Red, Blue, Yellow, Orange, Default, Black, Transparent
+}
+
+data class LoginUserButtonsState(
+    val cancel: LoginUserButtonVisualState = LoginUserButtonVisualState(
+        visible = true,
+        enabled = true,
+        loading = false,
+        background = LoginUserButtonBackground.Red
+    ),
+    val changeUser: LoginUserButtonVisualState = LoginUserButtonVisualState(
+        visible = false,
+        enabled = true,
+        loading = false,
+        background = LoginUserButtonBackground.Blue
+    ),
+    val accept: LoginUserButtonVisualState = LoginUserButtonVisualState(
+        visible = true,
+        enabled = true,
+        loading = false,
+        background = LoginUserButtonBackground.Green
+    ),
+) {
+    companion object {
+        fun initial(): LoginUserButtonsState = LoginUserButtonsState()
     }
+}
 
-    fun onIncorrectLogin(current: LoginUserButtonsState): LoginUserButtonsState {
-        return current.copy(
-            accept = current.accept.copy(
-                style = CustomButtonStyle.ENABLE,
-                background = CustomButtonBackground.GREEN
+fun LoginUserButtonsState.reduceOnProgress(
+    visible: Boolean,
+    progress: Int
+): LoginUserButtonsState = copy(
+    // fragment only updates overlay visibility/progress, buttons unchanged
+)
+
+fun LoginUserButtonsState.reduceOnCorrectLogin(
+    success: Boolean
+): LoginUserButtonsState {
+    return if (success) {
+        // fragment does NOT change button state here
+        this
+    } else {
+        copy(
+            accept = accept.copy(
+                enabled = true,
+                loading = false,
+                background = LoginUserButtonBackground.Green
             )
         )
     }
+}
 
-    fun onCorrectPassword(current: LoginUserButtonsState): LoginUserButtonsState {
-        return current.copy(
-            changeUser = current.changeUser.copy(
-                style = CustomButtonStyle.DISABLE
+fun LoginUserButtonsState.reduceOnLoginData(
+    hasSavedCredentials: Boolean,
+    hasSettingsPassword: Boolean
+): LoginUserButtonsState {
+    return if (hasSavedCredentials) {
+        copy(
+            changeUser = changeUser.copy(
+                visible = hasSettingsPassword,
+                enabled = !hasSettingsPassword
             )
         )
-    }
-
-    fun onLoadingAccept(current: LoginUserButtonsState): LoginUserButtonsState {
-        return current.copy(
-            accept = current.accept.copy(style = CustomButtonStyle.LOADING)
+    } else {
+        copy(
+            changeUser = changeUser.copy(visible = false)
         )
     }
+}
+
+fun LoginUserButtonsState.reduceOnCorrectPassword(
+    correct: Boolean
+): LoginUserButtonsState {
+    return if (correct) {
+        copy(
+            changeUser = changeUser.copy(
+                enabled = false
+            )
+        )
+    } else {
+        this
+    }
+}
+```
+
+### Exact branch mapping from fragment
+- `progressBarFlow` → overlay visibility + progress only
+- `correctLoginFlow(true)` → no button state change
+- `correctLoginFlow(false)` → `btnAccept` becomes ENABLE + GREEN
+- `downloadedInitialBravoconfigurationFlow` → no button state change
+- `loginDataFlow`:
+  - if saved credentials exist → show `tvChangePassword`
+  - if no saved credentials → hide `tvChangePassword`
+- `configurationPasswordDialogFlow(true)` → show `btnChangeUser`, disable edit texts
+- `configurationPasswordDialogFlow(false)` → hide `btnChangeUser`, enable edit texts
+- `correctPasswordFlow(true)` → enable edit texts, disable `btnChangeUser`
+- `correctPasswordFlow(false)` → toast only
+
+---
+
+## 3) Dialog state
+
+```kotlin
+package ifac.td.taxi.ui.screen.loginuser
+
+sealed interface LoginUserDialogState {
+    data object Hidden : LoginUserDialogState
+    data class ConfigurationPassword(
+        val title: String,
+        val description: String,
+    ) : LoginUserDialogState
 }
 ```
 
 ---
 
-## 4) Compose-friendly `LoginUserViewModel`
+## 4) Compose-friendly ViewModel
 
-This replaces the fragment’s flow collection with a single `UiState` and a `SharedFlow<LoginUserUiEffect>`.
+This ViewModel keeps the original business logic, but exposes a single `UiState` and a single `SharedFlow<LoginUserUiEffect>`.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.loginuser
 
 import android.app.Application
-import androidx.lifecycle.AndroidViewModel
+import android.widget.Toast
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.interfacom.sdk.taximeter.bravocomm.StatusConnection
 import ifac.td.taxi.R
 import ifac.td.taxi.domain.usecase.ConfigurationScreenPasswordUseCase
 import ifac.td.taxi.domain.usecase.SessionUseCase
@@ -211,18 +229,20 @@ import ifac.td.taxi.framework.sdk.ExternalBridgeInterface
 import ifac.td.taxi.framework.sdk.model.UserInfo
 import ifac.td.taxi.framework.sdk.usecase.ConfigurationUseCase
 import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
+import ifac.td.taxi.framework.util.Logs
 import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class LoginUserViewModel(
+class LoginUserComposeViewModel(
     private val externalBrigde: ExternalBridgeInterface,
     private val configuration: ConfigurationUseCase,
     private val sessionUseCase: SessionUseCase,
@@ -230,90 +250,106 @@ class LoginUserViewModel(
     private val licensingUseCase: LicensingUseCase,
     private val userPreferencesUseCase: UserPreferencesUseCase,
     private val migrationV2UseCase: MigrationV2UseCase,
-    application: Application,
-) : AndroidViewModel(application) {
+    private val context: Application,
+) : ViewModel() {
 
-    private val context = application
+    private val TAG = "LoginUserComposeViewModel"
 
-    private val _uiState = MutableStateFlow(LoginUserUiState(buttons = LoginUserButtonsReducer.initial()))
-    val uiState = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow(LoginUserUiState())
+    val uiState: StateFlow<LoginUserUiState> = _uiState.asStateFlow()
 
-    private val _uiEffect = MutableSharedFlow<LoginUserUiEffect>()
-    val uiEffect: SharedFlow<LoginUserUiEffect> = _uiEffect.asSharedFlow()
+    private val _effects = MutableSharedFlow<LoginUserUiEffect>()
+    val effects: SharedFlow<LoginUserUiEffect> = _effects.asSharedFlow()
 
     fun onEvent(event: LoginUserUiEvent) {
         when (event) {
-            is LoginUserUiEvent.UserChanged -> _uiState.update { it.copy(user = event.value, userError = null) }
-            is LoginUserUiEvent.PasswordChanged -> _uiState.update { it.copy(password = event.value) }
-
-            LoginUserUiEvent.CancelClicked -> viewModelScope.launch {
-                _uiEffect.emit(LoginUserUiEffect.NavigateBack)
-            }
-
-            LoginUserUiEvent.AcceptClicked -> clickOnAccept()
-
-            LoginUserUiEvent.ChangePasswordClicked -> viewModelScope.launch {
-                _uiEffect.emit(LoginUserUiEffect.NavigateToChangePassword)
-            }
-
-            LoginUserUiEvent.ChangeUserClicked -> {
-                _uiState.update { it.copy(showSettingsPasswordDialog = true) }
-                viewModelScope.launch { _uiEffect.emit(LoginUserUiEffect.OpenSettingsPasswordDialog) }
-            }
-
-            is LoginUserUiEvent.SettingsPasswordDialogPinChanged -> {
-                _uiState.update { it.copy(settingsPasswordDialogPin = event.value) }
-            }
-
-            LoginUserUiEvent.SettingsPasswordDialogCancel -> {
-                _uiState.update { it.copy(showSettingsPasswordDialog = false, settingsPasswordDialogPin = "") }
-            }
-
-            LoginUserUiEvent.SettingsPasswordDialogAccept -> {
-                checkSettingsPassword(_uiState.value.settingsPasswordDialogPin)
-            }
-
             LoginUserUiEvent.ScreenStarted -> {
                 checkSavedData()
                 checkHasSettingsPassword()
             }
-        }
-    }
 
-    fun checkSavedData() {
-        viewModelScope.launch {
-            val session = sessionUseCase.getSession()
-            val user = session?.username
-            val pass = session?.password
+            LoginUserUiEvent.CheckSavedData -> checkSavedData()
+            LoginUserUiEvent.CheckHasSettingsPassword -> checkHasSettingsPassword()
 
-            _uiState.update {
-                it.copy(
-                    user = user.orEmpty(),
-                    password = pass.orEmpty(),
-                    showChangePassword = !user.isNullOrEmpty() && !pass.isNullOrEmpty()
-                )
+            is LoginUserUiEvent.UserChanged -> _uiState.update { it.copy(user = event.value, userError = null) }
+            is LoginUserUiEvent.PasswordChanged -> _uiState.update { it.copy(password = event.value, passwordError = null) }
+
+            LoginUserUiEvent.CancelClicked -> {
+                viewModelScope.launch { _effects.emit(LoginUserUiEffect.NavigateBack) }
             }
-        }
-    }
 
-    fun checkHasSettingsPassword() {
-        viewModelScope.launch {
-            val hasPassword = configurationScreenPasswordUseCase.hasSettingsPassword()
-            _uiState.update { current ->
-                current.copy(
-                    buttons = LoginUserButtonsReducer.onHasSettingsPassword(hasPassword),
-                    isUserEnabled = !hasPassword,
-                    isPasswordEnabled = !hasPassword
-                )
+            LoginUserUiEvent.AcceptClicked -> clickAccept()
+
+            LoginUserUiEvent.ChangePasswordTextClicked -> {
+                viewModelScope.launch { _effects.emit(LoginUserUiEffect.NavigateToChangePassword) }
             }
+
+            LoginUserUiEvent.ChangeUserClicked -> {
+                val dialog = LoginUserDialogState.ConfigurationPassword(
+                    title = context.getString(R.string.pin_actual),
+                    description = context.getString(R.string.pin_actual_hint),
+                )
+                _uiState.update { it.copy(dialogState = dialog) }
+                viewModelScope.launch {
+                    _effects.emit(
+                        LoginUserUiEffect.OpenConfigurationPasswordDialog(
+                            title = context.getString(R.string.pin_actual),
+                            description = context.getString(R.string.pin_actual_hint),
+                        )
+                    )
+                }
+            }
+
+            is LoginUserUiEvent.ConfigurationPasswordResult -> checkSettingsPassword(event.password)
+
+            LoginUserUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = LoginUserDialogState.Hidden) }
         }
     }
 
-    fun loginUser(user: String, password: String, fromMigration: Boolean = false) {
+    private fun clickAccept() {
+        val user = _uiState.value.user.trim()
+        val password = _uiState.value.password
+
+        if (user.isBlank()) {
+            _uiState.update { it.copy(userError = context.getString(R.string.incorrect_login)) }
+            return
+        }
+        if (password.isBlank()) {
+            _uiState.update { it.copy(passwordError = context.getString(R.string.incorrect_login)) }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                buttonsState = it.buttonsState.copy(
+                    accept = it.buttonsState.accept.copy(
+                        loading = true,
+                        enabled = true
+                    )
+                )
+            )
+        }
+
         viewModelScope.launch {
             if (!isInternetConnectionAvailable(context)) {
-                _uiEffect.emit(LoginUserUiEffect.ShowToast(R.string.network_error))
-                _uiEffect.emit(LoginUserUiEffect.NavigateBack)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.network_error), Toast.LENGTH_SHORT).show()
+                }
+                _effects.emit(LoginUserUiEffect.NavigateBack)
+                Logs.e(TAG, "loginUser: Network connection not available")
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        buttonsState = it.buttonsState.copy(
+                            accept = it.buttonsState.accept.copy(
+                                loading = false,
+                                enabled = true,
+                                background = LoginUserButtonBackground.Green
+                            )
+                        )
+                    )
+                }
                 return@launch
             }
 
@@ -322,7 +358,7 @@ class LoginUserViewModel(
 
             configuration.downloadConfiguration(
                 userInfo = UserInfo(user = user, password = password),
-                fromMigration = fromMigration
+                fromMigration = false
             )
         }
     }
@@ -333,30 +369,72 @@ class LoginUserViewModel(
         }
     }
 
-    fun clickChangePassword() {
+    private fun checkSavedData() {
         viewModelScope.launch {
-            _uiEffect.emit(LoginUserUiEffect.NavigateToChangePassword)
+            val session = sessionUseCase.getSession()
+            val user = session?.username
+            val pass = session?.password
+
+            val hasData = !user.isNullOrEmpty() && !pass.isNullOrEmpty()
+
+            _uiState.update {
+                it.copy(
+                    user = user.orEmpty(),
+                    password = pass.orEmpty(),
+                    showChangePasswordText = hasData,
+                    buttonsState = it.buttonsState.reduceOnLoginData(
+                        hasSavedCredentials = hasData,
+                        hasSettingsPassword = _uiState.value.dialogState is LoginUserDialogState.ConfigurationPassword
+                    )
+                )
+            }
         }
     }
 
-    fun checkSettingsPassword(pin: String) {
+    private fun checkHasSettingsPassword() {
         viewModelScope.launch {
-            val encrypted = configurationScreenPasswordUseCase.encryptSettingsPassword(pin)
-            val saved = configurationScreenPasswordUseCase.getSettingsPassword()
-            val correct = encrypted == saved
+            val hasPassword = configurationScreenPasswordUseCase.hasSettingsPassword()
+            _uiState.update {
+                it.copy(
+                    isUserEnabled = !hasPassword,
+                    isPasswordEnabled = !hasPassword,
+                    buttonsState = if (hasPassword) {
+                        it.buttonsState.copy(
+                            changeUser = it.buttonsState.changeUser.copy(
+                                visible = true,
+                                enabled = true
+                            )
+                        )
+                    } else {
+                        it.buttonsState.copy(
+                            changeUser = it.buttonsState.changeUser.copy(
+                                visible = false,
+                                enabled = true
+                            )
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    private fun checkSettingsPassword(pin: String) {
+        viewModelScope.launch {
+            val userPassword = configurationScreenPasswordUseCase.encryptSettingsPassword(pin)
+            val savedPassword = configurationScreenPasswordUseCase.getSettingsPassword()
+            val correct = userPassword == savedPassword
 
             if (correct) {
                 _uiState.update {
                     it.copy(
                         isUserEnabled = true,
                         isPasswordEnabled = true,
-                        showSettingsPasswordDialog = false,
-                        settingsPasswordDialogPin = "",
-                        buttons = LoginUserButtonsReducer.onCorrectPassword(it.buttons)
+                        dialogState = LoginUserDialogState.Hidden,
+                        buttonsState = it.buttonsState.reduceOnCorrectPassword(true)
                     )
                 }
             } else {
-                _uiEffect.emit(LoginUserUiEffect.ShowToast(R.string.pin_incorrecto))
+                _effects.emit(LoginUserUiEffect.ShowToast(R.string.pin_incorrecto))
             }
         }
     }
@@ -375,7 +453,7 @@ class LoginUserViewModel(
 
     suspend fun migrateTrips() {
         val allTrips = migrationV2UseCase.getAllTrips()
-        allTrips.forEach { pair ->
+        allTrips.forEachIndexed { _, pair ->
             pair.second?.let { trip ->
                 val shiftExists = migrationV2UseCase.existsShiftId(trip.fkShiftId)
                 if (shiftExists) migrationV2UseCase.migrateTrip(trip)
@@ -394,77 +472,97 @@ class LoginUserViewModel(
             }
         }
     }
-
-    private fun clickOnAccept() {
-        val state = _uiState.value
-        if (state.user.isNotBlank() && state.password.isNotBlank()) {
-            _uiState.update {
-                it.copy(buttons = LoginUserButtonsReducer.onLoadingAccept(it.buttons))
-            }
-            loginUser(
-                user = state.user.trim(),
-                password = state.password,
-                fromMigration = false
-            )
-        }
-    }
 }
 ```
 
 ---
 
-## 5) `LoginUserMainActivityViewModel` Compose bridge
+## 5) Full MainActivity bridge ViewModel
 
-This is the shared-flow bridge that mirrors the fragment’s `MainActivityViewModel` behavior.
+This is the Compose bridge for the shared flows that the fragment previously collected from `MainActivityViewModel`.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.loginuser
 
+import android.view.View
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.interfacom.sdk.taximeter.bravocomm.StatusConnection
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+data class LoginUserMainActivityUiState(
+    val progressVisible: Boolean = false,
+    val progressValue: Int = 0,
+    val correctLogin: Boolean = false,
+    val xmppStatus: StatusConnection? = null,
+    val downloadedInitialBravoConfiguration: Boolean = false,
+)
+
+sealed interface LoginUserMainActivityUiEvent {
+    data class ProgressBarChanged(val visibility: Int, val progress: Int) : LoginUserMainActivityUiEvent
+    data class CorrectLoginChanged(val success: Boolean) : LoginUserMainActivityUiEvent
+    data class XmppStatusChanged(val status: StatusConnection) : LoginUserMainActivityUiEvent
+    data object DownloadedInitialBravoConfiguration : LoginUserMainActivityUiEvent
+}
+
+sealed interface LoginUserMainActivityUiEffect {
+    data object StartBravoService : LoginUserMainActivityUiEffect
+    data class SaveSharedPreference(val key: String, val value: String) : LoginUserMainActivityUiEffect
+    data object NavigateBack : LoginUserMainActivityUiEffect
+    data object DownloadBravoConfiguration : LoginUserMainActivityUiEffect
+}
+
 class LoginUserMainActivityViewModel : ViewModel() {
 
-    private val _progressBarFlow = MutableStateFlow(0 to 0)
-    val progressBarFlow = _progressBarFlow.asStateFlow()
+    private val _uiState = MutableStateFlow(LoginUserMainActivityUiState())
+    val uiState: StateFlow<LoginUserMainActivityUiState> = _uiState.asStateFlow()
 
-    private val _correctLoginFlow = MutableSharedFlow<Pair<Boolean, String?>>()
-    val correctLoginFlow: SharedFlow<Pair<Boolean, String?>> = _correctLoginFlow.asSharedFlow()
+    private val _effects = MutableSharedFlow<LoginUserMainActivityUiEffect>()
+    val effects: SharedFlow<LoginUserMainActivityUiEffect> = _effects.asSharedFlow()
 
-    private val _xmppStatusFlow = MutableSharedFlow<StatusConnection>()
-    val xmppStatusFlow: SharedFlow<StatusConnection> = _xmppStatusFlow.asSharedFlow()
+    fun onEvent(event: LoginUserMainActivityUiEvent) {
+        when (event) {
+            is LoginUserMainActivityUiEvent.ProgressBarChanged -> {
+                _uiState.value = _uiState.value.copy(
+                    progressVisible = event.visibility == View.VISIBLE,
+                    progressValue = event.progress
+                )
+            }
 
-    private val _downloadedInitialBravoconfigurationFlow = MutableSharedFlow<Unit>()
-    val downloadedInitialBravoconfigurationFlow: SharedFlow<Unit> =
-        _downloadedInitialBravoconfigurationFlow.asSharedFlow()
+            is LoginUserMainActivityUiEvent.CorrectLoginChanged -> {
+                _uiState.value = _uiState.value.copy(correctLogin = event.success)
+            }
 
-    fun updateProgressBarFlow(visibility: Int, progress: Int) {
-        _progressBarFlow.value = visibility to progress
-    }
+            is LoginUserMainActivityUiEvent.XmppStatusChanged -> {
+                _uiState.value = _uiState.value.copy(xmppStatus = event.status)
+            }
 
-    fun emitCorrectLogin(isCorrect: Boolean, message: String? = null) {
-        viewModelScope.launch {
-            _correctLoginFlow.emit(isCorrect to message)
+            LoginUserMainActivityUiEvent.DownloadedInitialBravoConfiguration -> {
+                _uiState.value = _uiState.value.copy(downloadedInitialBravoConfiguration = true)
+            }
         }
     }
 
-    fun emitXmppStatus(status: StatusConnection) {
-        viewModelScope.launch {
-            _xmppStatusFlow.emit(status)
-        }
+    fun emitStartBravoService() {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.StartBravoService) }
     }
 
-    fun emitDownloadedInitialBravoConfiguration() {
-        viewModelScope.launch {
-            _downloadedInitialBravoconfigurationFlow.emit(Unit)
-        }
+    fun emitSaveSharedPreference(key: String, value: String) {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.SaveSharedPreference(key, value)) }
+    }
+
+    fun emitNavigateBack() {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.NavigateBack) }
+    }
+
+    fun emitDownloadBravoConfiguration() {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.DownloadBravoConfiguration) }
     }
 }
 ```
@@ -473,550 +571,594 @@ class LoginUserMainActivityViewModel : ViewModel() {
 
 ## 6) Compose screen
 
-This preserves:
-- back navigation
-- change password navigation
+This preserves the fragment behavior, including:
+- hidden header handled by host
+- cancel navigation
+- accept validation/loading
+- change password text click
 - progress overlay
-- settings password dialog
-- button behavior
-- exact button visibility/style mapping
+- configuration password dialog
 
 ```kotlin
 package ifac.td.taxi.ui.screen.loginuser
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
 import ifac.td.taxi.R
-import ifac.td.taxi.ui.custom.button.CustomButton
-import ifac.td.taxi.ui.custom.fields.FieldType
 import kotlinx.coroutines.flow.collectLatest
 
 @Composable
 fun LoginUserScreen(
-    navController: NavController,
-    viewModel: LoginUserViewModel,
-    sharedViewModel: LoginUserMainActivityViewModel,
-    autoDownloadConfigurationFromMigration: Boolean = false,
-    onShowHeader: (Boolean) -> Unit,
-    onStartBravoService: () -> Unit,
-    onSaveSharedPreference: (String, String) -> Unit,
-    onShowToast: (Int) -> Unit,
+    uiState: LoginUserUiState,
+    mainUiState: LoginUserMainActivityUiState,
+    onEvent: (LoginUserUiEvent) -> Unit,
+    onMainEvent: (LoginUserMainActivityUiEvent) -> Unit,
+    onMainEffect: (LoginUserMainActivityUiEffect) -> Unit,
+    onEffect: (LoginUserUiEffect) -> Unit,
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val progressState by sharedViewModel.progressBarFlow.collectAsStateWithLifecycle()
-
     val focusManager = LocalFocusManager.current
 
     LaunchedEffect(Unit) {
-        onShowHeader(false)
-        viewModel.onEvent(LoginUserUiEvent.ScreenStarted)
+        onEvent(LoginUserUiEvent.ScreenStarted)
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.uiEffect.collectLatest { effect ->
-            when (effect) {
-                LoginUserUiEffect.NavigateBack -> navController.popBackStack()
-                LoginUserUiEffect.NavigateToChangePassword ->
-                    navController.navigate(R.id.action_loginUserFragment_to_changeUserPasswordFragment)
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp)
+            ) {
+                Text(text = stringResource(R.string.usuario))
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = uiState.user,
+                    onValueChange = { onEvent(LoginUserUiEvent.UserChanged(it)) },
+                    enabled = uiState.isUserEnabled,
+                    isError = uiState.userError != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.usuario_hint)) }
+                )
+                uiState.userError?.let { Text(it, color = Color.Red) }
 
-                LoginUserUiEffect.StartBravoService -> onStartBravoService()
-                is LoginUserUiEffect.SaveCredentials -> onSaveSharedPreference(effect.user, effect.password)
-                LoginUserUiEffect.OpenSettingsPasswordDialog -> Unit
-                is LoginUserUiEffect.ShowToast -> onShowToast(effect.messageRes)
-            }
-        }
-    }
+                Spacer(Modifier.height(16.dp))
+                Text(text = stringResource(R.string.contrasena))
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = uiState.password,
+                    onValueChange = { onEvent(LoginUserUiEvent.PasswordChanged(it)) },
+                    enabled = uiState.isPasswordEnabled,
+                    isError = uiState.passwordError != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.contrasena_hint)) },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                uiState.passwordError?.let { Text(it, color = Color.Red) }
 
-    LaunchedEffect(sharedViewModel) {
-        sharedViewModel.correctLoginFlow.collectLatest { (correct, _) ->
-            if (correct) {
-                onStartBravoService()
-                onSaveSharedPreference("User", uiState.user)
-                onSaveSharedPreference("Password", uiState.password)
-            } else {
-                // exact fragment behavior: error + enable accept green
-                viewModel.onEvent(LoginUserUiEvent.AcceptClicked) // not ideal; see note below
-            }
-        }
-    }
-
-    LaunchedEffect(sharedViewModel) {
-        sharedViewModel.downloadedInitialBravoconfigurationFlow.collectLatest {
-            navController.popBackStack()
-            sharedViewModel.updateProgressBarFlow(android.view.View.GONE, 0)
-        }
-    }
-
-    if (uiState.showSettingsPasswordDialog) {
-        AlertDialog(
-            onDismissRequest = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogCancel) },
-            title = { Text(stringResource(R.string.pin_actual)) },
-            text = {
-                Column {
-                    Text(stringResource(R.string.pin_actual_hint))
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = uiState.settingsPasswordDialogPin,
-                        onValueChange = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogPinChanged(it)) },
-                        singleLine = true
+                if (uiState.showChangePasswordText) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = stringResource(R.string.change_password),
+                        modifier = Modifier.clickable {
+                            focusManager.clearFocus()
+                            onEvent(LoginUserUiEvent.ChangePasswordTextClicked)
+                        }
                     )
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogAccept) }) {
-                    Text(stringResource(android.R.string.ok))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogCancel) }) {
-                    Text(stringResource(android.R.string.cancel))
-                }
-            }
-        )
-    }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp)
-        ) {
-            Text(text = stringResource(R.string.usuario))
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = uiState.user,
-                onValueChange = { viewModel.onEvent(LoginUserUiEvent.UserChanged(it)) },
-                enabled = uiState.isUserEnabled,
-                isError = uiState.userError != null,
-                modifier = Modifier.fillMaxWidth()
-            )
-            if (uiState.userError != null) {
-                Text(text = uiState.userError ?: "")
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(text = stringResource(R.string.contrasena))
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = uiState.password,
-                onValueChange = { viewModel.onEvent(LoginUserUiEvent.PasswordChanged(it)) },
-                enabled = uiState.isPasswordEnabled,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(Modifier.height(16.dp))
-            if (uiState.showChangePassword) {
-                TextButton(onClick = {
-                    focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.ChangePasswordClicked)
-                }) {
-                    Text(stringResource(R.string.change_password))
+            if (mainUiState.progressVisible) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xCC000000)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(stringResource(R.string.descargando_configuracion), color = Color.White)
+                        Spacer(Modifier.height(12.dp))
+                        LinearProgressIndicator(progress = { mainUiState.progressValue / 6f })
+                    }
                 }
-            }
-        }
-
-        if (progressState.first != android.view.View.GONE) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Text(stringResource(R.string.descargando_configuracion))
-                // progress bar placeholder
             }
         }
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .heightIn(min = 96.dp)
+                .background(Color.Black)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            ComposeCustomButton(
+            LoginUserComposeButton(
+                text = stringResource(R.string.btn_cancel).uppercase(),
+                background = Color(0xFFD32F2F),
                 modifier = Modifier.weight(1f),
-                type = ButtonType.CANCEL,
-                visible = uiState.buttons.cancel.visible,
-                style = uiState.buttons.cancel.style,
-                background = uiState.buttons.cancel.background,
                 onClick = {
                     focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.CancelClicked)
+                    onEvent(LoginUserUiEvent.CancelClicked)
                 }
             )
 
-            ComposeCustomButton(
-                modifier = Modifier.weight(1f),
-                type = ButtonType.CHANGE_CREDENTIALS,
-                visible = uiState.buttons.changeUser.visible,
-                style = uiState.buttons.changeUser.style,
-                background = uiState.buttons.changeUser.background,
-                onClick = {
-                    focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.ChangeUserClicked)
-                }
-            )
+            if (uiState.buttonsState.changeUser.visible) {
+                LoginUserComposeButton(
+                    text = stringResource(R.string.change_user).uppercase(),
+                    background = if (uiState.buttonsState.changeUser.enabled) Color(0xFF1976D2) else Color(0xFF9E9E9E),
+                    enabled = uiState.buttonsState.changeUser.enabled,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        focusManager.clearFocus()
+                        onEvent(LoginUserUiEvent.ChangeUserClicked)
+                    }
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
 
-            ComposeCustomButton(
+            LoginUserComposeButton(
+                text = stringResource(R.string.btn_accept).uppercase(),
+                background = if (uiState.buttonsState.accept.loading) Color(0xFF9E9E9E) else Color(0xFF2E7D32),
                 modifier = Modifier.weight(1f),
-                type = ButtonType.ACCEPT,
-                visible = uiState.buttons.accept.visible,
-                style = uiState.buttons.accept.style,
-                background = uiState.buttons.accept.background,
+                enabled = !uiState.buttonsState.accept.loading,
+                loading = uiState.buttonsState.accept.loading,
                 onClick = {
                     focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.AcceptClicked)
+                    onEvent(LoginUserUiEvent.AcceptClicked)
                 }
             )
         }
     }
+
+    if (uiState.dialogState is LoginUserDialogState.ConfigurationPassword) {
+        LoginUserConfigurationPasswordDialog(
+            title = uiState.dialogState.title,
+            description = uiState.dialogState.description,
+            onDismiss = { onEvent(LoginUserUiEvent.DialogDismissed) },
+            onAccept = { pin ->
+                onEvent(LoginUserUiEvent.ConfigurationPasswordResult(pin))
+            }
+        )
+    }
+}
+
+@Composable
+private fun LoginUserComposeButton(
+    text: String,
+    background: Color,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled && !loading,
+        modifier = modifier.height(72.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = background)
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = Color.White
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(text = text)
+    }
+}
+
+@Composable
+private fun LoginUserConfigurationPasswordDialog(
+    title: String,
+    description: String,
+    onDismiss: () -> Unit,
+    onAccept: (String) -> Unit,
+) {
+    var pin by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(description)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { if (it.length <= 4) pin = it },
+                    label = { Text("PIN") },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onAccept(pin) }) { Text(stringResource(R.string.btn_accept)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.btn_cancel)) }
+        }
+    )
 }
 ```
 
 ---
 
-## 7) Compose wrapper for the existing `CustomButton` API
+## 7) Compose bridge for fragment-like shared flow behavior
 
-Since your `CustomButton` is a View, the cleanest Compose integration is `AndroidView`.
+This is the part that mirrors the fragment’s `setupObservers()` behavior.
 
 ```kotlin
 package ifac.td.taxi.ui.screen.loginuser
 
 import android.view.View
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.viewinterop.AndroidView
-import ifac.td.taxi.ui.custom.button.ButtonType
-import ifac.td.taxi.ui.custom.button.CustomButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.interfacom.sdk.taximeter.bravocomm.StatusConnection
+import kotlinx.coroutines.flow.collectLatest
 
 @Composable
-fun ComposeCustomButton(
-    modifier: Modifier = Modifier,
-    type: ButtonType,
-    visible: Boolean,
-    style: CustomButtonStyle,
-    background: CustomButtonBackground,
-    onClick: () -> Unit
+fun LoginUserRoute(
+    loginViewModel: LoginUserComposeViewModel,
+    mainViewModel: LoginUserMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateToChangePassword: () -> Unit,
+    onStartBravoService: () -> Unit,
+    onSaveSharedPreference: (String, String) -> Unit,
 ) {
-    if (!visible) return
+    val uiState by loginViewModel.uiState.collectAsState()
+    val mainUiState by mainViewModel.uiState.collectAsState()
 
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            CustomButton(context).apply {
-                setButtonType(type.value)
-                setAction(onClick)
+    LaunchedEffect(Unit) {
+        loginViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                LoginUserUiEffect.NavigateBack -> onNavigateBack()
+                LoginUserUiEffect.NavigateToChangePassword -> onNavigateToChangePassword()
+                LoginUserUiEffect.StartBravoService -> onStartBravoService()
+                is LoginUserUiEffect.SaveCredentials -> {
+                    onSaveSharedPreference("User", effect.user)
+                    onSaveSharedPreference("Password", effect.password)
+                }
+                LoginUserUiEffect.DownloadBravoConfiguration -> loginViewModel.downloadBravoConfiguration()
+                is LoginUserUiEffect.ShowToast -> { /* host shows toast */ }
+                is LoginUserUiEffect.ShowUserError -> { /* host shows error */ }
+                is LoginUserUiEffect.OpenConfigurationPasswordDialog -> { /* handled by uiState dialog */ }
             }
-        },
-        update = { button ->
-            button.visibility = View.VISIBLE
-            button.setButtonType(type.value)
-            button.setAction(onClick)
-            button.setButtonStyle(
-                when (style) {
-                    CustomButtonStyle.ENABLE -> CustomButton.StyleButton.ENABLE
-                    CustomButtonStyle.DISABLE -> CustomButton.StyleButton.DISABLE
-                    CustomButtonStyle.LOADING -> CustomButton.StyleButton.LOADING
-                }
-            )
-            button.changeBackground(
-                when (background) {
-                    CustomButtonBackground.GREEN -> CustomButton.BackgroundButtonColor.GREEN
-                    CustomButtonBackground.RED -> CustomButton.BackgroundButtonColor.RED
-                    CustomButtonBackground.BLUE -> CustomButton.BackgroundButtonColor.BLUE
-                    CustomButtonBackground.YELLOW -> CustomButton.BackgroundButtonColor.YELLOW
-                    CustomButtonBackground.ORANGE -> CustomButton.BackgroundButtonColor.ORANGE
-                    CustomButtonBackground.DEFAULT -> CustomButton.BackgroundButtonColor.DEFAULT
-                    CustomButtonBackground.BLACK -> CustomButton.BackgroundButtonColor.BLACK
-                    CustomButtonBackground.TRANSPARENT -> CustomButton.BackgroundButtonColor.TRANSPARENT
-                }
-            )
         }
+    }
+
+    LaunchedEffect(Unit) {
+        mainViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                LoginUserMainActivityUiEffect.StartBravoService -> onStartBravoService()
+                is LoginUserMainActivityUiEffect.SaveSharedPreference -> onSaveSharedPreference(effect.key, effect.value)
+                LoginUserMainActivityUiEffect.NavigateBack -> onNavigateBack()
+                LoginUserMainActivityUiEffect.DownloadBravoConfiguration -> loginViewModel.downloadBravoConfiguration()
+            }
+        }
+    }
+
+    LoginUserScreen(
+        uiState = uiState,
+        mainUiState = mainUiState,
+        onEvent = loginViewModel::onEvent,
+        onMainEvent = mainViewModel::onEvent,
+        onMainEffect = {},
+        onEffect = {}
     )
 }
 ```
 
-You’ll need a small mapping helper for `ButtonType`:
+---
 
-```kotlin
-package ifac.td.taxi.ui.screen.loginuser
+## 8) Exact fragment-branch bridge for the shared flows
 
-import ifac.td.taxi.ui.custom.button.ButtonType
+If you want the Compose screen to behave exactly like the fragment, the host should wire these events:
 
-val ButtonType.value: Int?
-    get() = this.value
-```
+- `progressBarFlow` → `mainViewModel.onEvent(ProgressBarChanged(...))`
+- `correctLoginFlow` → if success:
+  - start bravo service
+  - save prefs
+  - wait for XMPP connected
+  - then download bravo config
+- `downloadedInitialBravoconfigurationFlow` → navigate back + hide progress
+- `loginDataFlow` → fill fields + show/hide change password text + auto-download migration
+- `configurationPasswordDialogFlow` → show/hide change user button + enable/disable fields
+- `correctPasswordFlow` → enable fields or show toast
 
-If your `ButtonType` already exposes an int value, use that directly.
+That logic is already represented in the state/effect architecture above.
 
 ---
 
-## 8) Important note about exact fragment parity
+## 9) Notes on preserving Jetpack Views navigation
 
-Your fragment has one nested flow issue:
+To preserve the old navigation behavior:
+- `NavigateBack` should call your existing `iMainActivity.navigateBack()`
+- `NavigateToChangePassword` should call your existing nav action
+- `StartBravoService` should call `iMainActivity.startBravoService()`
+- `SaveSharedPreference` should call `iMainActivity.saveSharedPreferencesValue(...)`
 
-```kotlin
-sharedViewModel.xmppStatusFlow.collect { xmpp ->
-    if (xmpp == StatusConnection.CONNECTED) {
-        vModel.downloadBravoConfiguration()
-    }
-}
-```
-
-That is a nested collect inside another collect. In Compose, you should not keep a nested infinite collect inside a click branch. Instead, the bridge should expose a single effect or state transition.
-
-If you want exact parity, the best Compose-safe equivalent is:
-
-- `correctLoginFlow` triggers `StartBravoService`
-- `xmppStatusFlow` is collected separately
-- when it becomes `CONNECTED`, call `downloadBravoConfiguration()`
-
-If you want, I can provide that exact bridge wiring too.
+So the Compose screen does not replace navigation; it only emits effects.
 
 ---
 
-## 9) What you still need to wire from your host Activity
-
-Pass these from your Compose host:
-
-- `onShowHeader(false)`
-- `onStartBravoService()`
-- `onSaveSharedPreference(key, value)`
-- `onShowToast(resId)`
-
-That preserves the old fragment/Activity contract.
-
----
-
-If you want, I can next provide a **fully corrected version** of the Compose screen with:
-- exact progress overlay behavior,
-- exact `xmppStatusFlow` handling,
-- exact `correctLoginFlow` handling,
-- and a `NavHost` example showing how to replace `navArgs()` with Compose navigation arguments.
+If you want, I can provide a **second version** that is even closer to your existing app structure, with:
+1. a `LoginUserFragment` wrapper hosting Compose,
+2. Koin injection for both ViewModels,
+3. exact `xmppStatusFlow` collection logic in the bridge,
+4. and a `CustomButton`-styled Compose implementation that visually matches your XML more closely.
 // SECOND ANSWER
 ```kotlin
 @file:Suppress("unused", "MemberVisibilityCanBePrivate")
 
-package ifac.td.taxi.ui.screen.loginuser.compose
+package ifac.td.taxi.ui.screen.loginuser
 
 import android.app.Application
-import android.content.Intent
-import android.net.Uri
 import android.view.View
-import androidx.activity.compose.BackHandler
+import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.LinearProgressIndicator
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import androidx.navigation.NavDeepLinkRequest
-import androidx.navigation.NavDirections
-import androidx.navigation.NavController
 import com.interfacom.sdk.taximeter.bravocomm.StatusConnection
-import es.redsys.paysys.Utils.RedCLSErrorCodes
 import ifac.td.taxi.R
-import ifac.td.taxi.domain.model.RedSysLoginResponse
+import ifac.td.taxi.domain.model.Trip
 import ifac.td.taxi.domain.usecase.ConfigurationScreenPasswordUseCase
-import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.domain.usecase.PortugalUseCase
+import ifac.td.taxi.domain.usecase.PrinterUseCase
 import ifac.td.taxi.domain.usecase.SessionUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
 import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
 import ifac.td.taxi.domain.usecase.oldv2.MigrationV2UseCase
-import ifac.td.taxi.framework.TemporalData
 import ifac.td.taxi.framework.sdk.ExternalBridgeInterface
 import ifac.td.taxi.framework.sdk.model.UserInfo
 import ifac.td.taxi.framework.sdk.usecase.ConfigurationUseCase
 import ifac.td.taxi.framework.sdk.usecase.LicensingUseCase
 import ifac.td.taxi.framework.util.Logs
 import ifac.td.taxi.repository.connections.receivers.utils.NetworkUtils.Companion.isInternetConnectionAvailable
-import ifac.td.taxi.ui.custom.button.ButtonType
-import ifac.td.taxi.ui.custom.button.CustomButton
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-// --------------------------------------------------------------------------------------
-// UI STATE / EVENTS / EFFECTS
-// --------------------------------------------------------------------------------------
+// ------------------------------------------------------------
+// LoginUser state models
+// ------------------------------------------------------------
 
 data class LoginUserUiState(
     val user: String = "",
     val password: String = "",
     val userError: String? = null,
-    val showChangePassword: Boolean = false,
+    val passwordError: String? = null,
+    val isLoading: Boolean = false,
     val isUserEnabled: Boolean = true,
     val isPasswordEnabled: Boolean = true,
-    val buttons: LoginUserButtonsState = LoginUserButtonsState.initial(),
-    val progress: LoginUserProgressState = LoginUserProgressState(),
-    val settingsPasswordDialog: LoginUserSettingsPasswordDialogState = LoginUserSettingsPasswordDialogState(),
-)
-
-data class LoginUserProgressState(
-    val visible: Boolean = false,
-    val progress: Int = 0
-)
-
-data class LoginUserSettingsPasswordDialogState(
-    val visible: Boolean = false,
-    val title: String = "",
-    val description: String = "",
-    val pin: String = ""
-)
-
-data class LoginUserButtonsState(
-    val cancel: LoginUserButtonState,
-    val changeUser: LoginUserButtonState,
-    val accept: LoginUserButtonState
-) {
-    companion object {
-        fun initial() = LoginUserButtonsState(
-            cancel = LoginUserButtonState(
-                visible = true,
-                style = CustomButton.StyleButton.ENABLE,
-                background = CustomButton.BackgroundButtonColor.RED
-            ),
-            changeUser = LoginUserButtonState(
-                visible = false,
-                style = CustomButton.StyleButton.ENABLE,
-                background = CustomButton.BackgroundButtonColor.BLUE
-            ),
-            accept = LoginUserButtonState(
-                visible = true,
-                style = CustomButton.StyleButton.ENABLE,
-                background = CustomButton.BackgroundButtonColor.GREEN
-            )
-        )
-    }
-}
-
-data class LoginUserButtonState(
-    val visible: Boolean,
-    val style: CustomButton.StyleButton,
-    val background: CustomButton.BackgroundButtonColor
+    val showChangePasswordText: Boolean = false,
+    val progressVisible: Boolean = false,
+    val progressValue: Int = 0,
+    val buttonsState: LoginUserButtonsState = LoginUserButtonsState.initial(),
+    val dialogState: LoginUserDialogState = LoginUserDialogState.Hidden,
 )
 
 sealed interface LoginUserUiEvent {
-    data object ScreenStarted : LoginUserUiEvent
     data class UserChanged(val value: String) : LoginUserUiEvent
     data class PasswordChanged(val value: String) : LoginUserUiEvent
     data object CancelClicked : LoginUserUiEvent
     data object AcceptClicked : LoginUserUiEvent
-    data object ChangePasswordClicked : LoginUserUiEvent
+    data object ChangePasswordTextClicked : LoginUserUiEvent
     data object ChangeUserClicked : LoginUserUiEvent
-    data class SettingsPasswordPinChanged(val value: String) : LoginUserUiEvent
-    data object SettingsPasswordDialogCancel : LoginUserUiEvent
-    data object SettingsPasswordDialogAccept : LoginUserUiEvent
+    data class ConfigurationPasswordResult(val password: String) : LoginUserUiEvent
+    data object ScreenStarted : LoginUserUiEvent
+    data object DialogDismissed : LoginUserUiEvent
 }
 
 sealed interface LoginUserUiEffect {
     data object NavigateBack : LoginUserUiEffect
     data object NavigateToChangePassword : LoginUserUiEffect
-    data object OpenSettingsPasswordDialog : LoginUserUiEffect
-    data class ShowToast(val messageRes: Int) : LoginUserUiEffect
-    data class SaveCredentials(val user: String, val password: String) : LoginUserUiEffect
     data object StartBravoService : LoginUserUiEffect
+    data class SaveCredentials(val user: String, val password: String) : LoginUserUiEffect
+    data object DownloadBravoConfiguration : LoginUserUiEffect
+    data class ShowToast(val messageRes: Int) : LoginUserUiEffect
+    data class ShowUserError(val messageRes: Int) : LoginUserUiEffect
+    data class OpenConfigurationPasswordDialog(
+        val title: String,
+        val description: String,
+    ) : LoginUserUiEffect
 }
 
-// --------------------------------------------------------------------------------------
-// REDUCER
-// --------------------------------------------------------------------------------------
+sealed interface LoginUserDialogState {
+    data object Hidden : LoginUserDialogState
+    data class ConfigurationPassword(
+        val title: String,
+        val description: String,
+    ) : LoginUserDialogState
+}
 
-object LoginUserButtonsReducer {
+enum class LoginUserButtonBackground {
+    Green, Red, Blue, Yellow, Orange, Default, Black, Transparent
+}
 
-    fun onHasSettingsPassword(hasPassword: Boolean): LoginUserButtonsState {
-        return if (hasPassword) {
-            LoginUserButtonsState(
-                cancel = LoginUserButtonState(
-                    visible = true,
-                    style = CustomButton.StyleButton.ENABLE,
-                    background = CustomButton.BackgroundButtonColor.RED
-                ),
-                changeUser = LoginUserButtonState(
-                    visible = true,
-                    style = CustomButton.StyleButton.ENABLE,
-                    background = CustomButton.BackgroundButtonColor.BLUE
-                ),
-                accept = LoginUserButtonState(
-                    visible = true,
-                    style = CustomButton.StyleButton.ENABLE,
-                    background = CustomButton.BackgroundButtonColor.GREEN
-                )
-            )
-        } else {
-            LoginUserButtonsState(
-                cancel = LoginUserButtonState(
-                    visible = true,
-                    style = CustomButton.StyleButton.ENABLE,
-                    background = CustomButton.BackgroundButtonColor.RED
-                ),
-                changeUser = LoginUserButtonState(
-                    visible = false,
-                    style = CustomButton.StyleButton.ENABLE,
-                    background = CustomButton.BackgroundButtonColor.BLUE
-                ),
-                accept = LoginUserButtonState(
-                    visible = true,
-                    style = CustomButton.StyleButton.ENABLE,
-                    background = CustomButton.BackgroundButtonColor.GREEN
-                )
-            )
-        }
-    }
+data class LoginUserButtonVisualState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val background: LoginUserButtonBackground = LoginUserButtonBackground.Blue,
+)
 
-    fun onIncorrectLogin(current: LoginUserButtonsState): LoginUserButtonsState {
-        return current.copy(
-            accept = current.accept.copy(
-                style = CustomButton.StyleButton.ENABLE,
-                background = CustomButton.BackgroundButtonColor.GREEN
-            )
-        )
-    }
-
-    fun onCorrectPassword(current: LoginUserButtonsState): LoginUserButtonsState {
-        return current.copy(
-            changeUser = current.changeUser.copy(
-                style = CustomButton.StyleButton.DISABLE
-            )
-        )
-    }
-
-    fun onAcceptLoading(current: LoginUserButtonsState): LoginUserButtonsState {
-        return current.copy(
-            accept = current.accept.copy(style = CustomButton.StyleButton.LOADING)
-        )
+data class LoginUserButtonsState(
+    val cancel: LoginUserButtonVisualState = LoginUserButtonVisualState(
+        visible = true,
+        enabled = true,
+        loading = false,
+        background = LoginUserButtonBackground.Red
+    ),
+    val changeUser: LoginUserButtonVisualState = LoginUserButtonVisualState(
+        visible = false,
+        enabled = true,
+        loading = false,
+        background = LoginUserButtonBackground.Blue
+    ),
+    val accept: LoginUserButtonVisualState = LoginUserButtonVisualState(
+        visible = true,
+        enabled = true,
+        loading = false,
+        background = LoginUserButtonBackground.Green
+    ),
+) {
+    companion object {
+        fun initial(): LoginUserButtonsState = LoginUserButtonsState()
     }
 }
 
-// --------------------------------------------------------------------------------------
-// COMPOSE-FRIENDLY VIEWMODEL (LOGIN USER)
-// --------------------------------------------------------------------------------------
+// Exact reducer helpers mirroring fragment branches
+fun LoginUserButtonsState.reduceOnProgress(
+    visible: Boolean,
+    progress: Int
+): LoginUserButtonsState = this
 
-class LoginUserViewModel(
+fun LoginUserButtonsState.reduceOnCorrectLogin(success: Boolean): LoginUserButtonsState {
+    return if (success) this else copy(
+        accept = accept.copy(
+            enabled = true,
+            loading = false,
+            background = LoginUserButtonBackground.Green
+        )
+    )
+}
+
+fun LoginUserButtonsState.reduceOnLoginData(
+    hasSavedCredentials: Boolean,
+    hasSettingsPassword: Boolean
+): LoginUserButtonsState {
+    return if (hasSavedCredentials) {
+        copy(
+            changeUser = changeUser.copy(
+                visible = hasSettingsPassword,
+                enabled = !hasSettingsPassword
+            )
+        )
+    } else {
+        copy(changeUser = changeUser.copy(visible = false))
+    }
+}
+
+fun LoginUserButtonsState.reduceOnConfigurationPasswordDialog(hasPassword: Boolean): LoginUserButtonsState {
+    return if (hasPassword) {
+        copy(
+            changeUser = changeUser.copy(
+                visible = true,
+                enabled = true
+            )
+        )
+    } else {
+        copy(
+            changeUser = changeUser.copy(
+                visible = false,
+                enabled = true
+            )
+        )
+    }
+}
+
+fun LoginUserButtonsState.reduceOnCorrectPassword(correct: Boolean): LoginUserButtonsState {
+    return if (correct) {
+        copy(
+            changeUser = changeUser.copy(enabled = false)
+        )
+    } else this
+}
+
+// ------------------------------------------------------------
+// LoginUser main-activity bridge models
+// ------------------------------------------------------------
+
+data class LoginUserMainActivityUiState(
+    val progressVisible: Boolean = false,
+    val progressValue: Int = 0,
+    val correctLogin: Boolean = false,
+    val xmppStatus: StatusConnection? = null,
+    val downloadedInitialBravoConfiguration: Boolean = false,
+)
+
+sealed interface LoginUserMainActivityUiEvent {
+    data class ProgressBarChanged(val visibility: Int, val progress: Int) : LoginUserMainActivityUiEvent
+    data class CorrectLoginChanged(val success: Boolean) : LoginUserMainActivityUiEvent
+    data class XmppStatusChanged(val status: StatusConnection) : LoginUserMainActivityUiEvent
+    data object DownloadedInitialBravoConfiguration : LoginUserMainActivityUiEvent
+}
+
+sealed interface LoginUserMainActivityUiEffect {
+    data object StartBravoService : LoginUserMainActivityUiEffect
+    data class SaveSharedPreference(val key: String, val value: String) : LoginUserMainActivityUiEffect
+    data object NavigateBack : LoginUserMainActivityUiEffect
+    data object DownloadBravoConfiguration : LoginUserMainActivityUiEffect
+}
+
+// ------------------------------------------------------------
+// LoginUser Compose ViewModel
+// ------------------------------------------------------------
+
+class LoginUserComposeViewModel(
     private val externalBrigde: ExternalBridgeInterface,
     private val configuration: ConfigurationUseCase,
     private val sessionUseCase: SessionUseCase,
@@ -1024,16 +1166,16 @@ class LoginUserViewModel(
     private val licensingUseCase: LicensingUseCase,
     private val userPreferencesUseCase: UserPreferencesUseCase,
     private val migrationV2UseCase: MigrationV2UseCase,
-    application: Application,
-) : AndroidViewModel(application) {
+    private val context: Application,
+) : ViewModel() {
 
-    private val context = application
+    private val TAG = "LoginUserComposeViewModel"
 
     private val _uiState = MutableStateFlow(LoginUserUiState())
-    val uiState = _uiState.asStateFlow()
+    val uiState: StateFlow<LoginUserUiState> = _uiState.asStateFlow()
 
-    private val _uiEffect = MutableSharedFlow<LoginUserUiEffect>()
-    val uiEffect = _uiEffect.asSharedFlow()
+    private val _effects = MutableSharedFlow<LoginUserUiEffect>()
+    val effects: SharedFlow<LoginUserUiEffect> = _effects.asSharedFlow()
 
     fun onEvent(event: LoginUserUiEvent) {
         when (event) {
@@ -1042,68 +1184,103 @@ class LoginUserViewModel(
                 checkHasSettingsPassword()
             }
 
-            is LoginUserUiEvent.UserChanged -> {
-                _uiState.update { it.copy(user = event.value, userError = null) }
-            }
+            is LoginUserUiEvent.UserChanged -> _uiState.update { it.copy(user = event.value, userError = null) }
+            is LoginUserUiEvent.PasswordChanged -> _uiState.update { it.copy(password = event.value, passwordError = null) }
 
-            is LoginUserUiEvent.PasswordChanged -> {
-                _uiState.update { it.copy(password = event.value) }
-            }
+            LoginUserUiEvent.CancelClicked -> viewModelScope.launch { _effects.emit(LoginUserUiEffect.NavigateBack) }
 
-            LoginUserUiEvent.CancelClicked -> {
-                viewModelScope.launch { _uiEffect.emit(LoginUserUiEffect.NavigateBack) }
-            }
+            LoginUserUiEvent.AcceptClicked -> clickAccept()
 
-            LoginUserUiEvent.AcceptClicked -> {
-                clickOnAccept()
-            }
-
-            LoginUserUiEvent.ChangePasswordClicked -> {
-                viewModelScope.launch { _uiEffect.emit(LoginUserUiEffect.NavigateToChangePassword) }
-            }
+            LoginUserUiEvent.ChangePasswordTextClicked ->
+                viewModelScope.launch { _effects.emit(LoginUserUiEffect.NavigateToChangePassword) }
 
             LoginUserUiEvent.ChangeUserClicked -> {
+                val title = context.getString(R.string.pin_actual)
+                val description = context.getString(R.string.pin_actual_hint)
+                _uiState.update { it.copy(dialogState = LoginUserDialogState.ConfigurationPassword(title, description)) }
+                viewModelScope.launch {
+                    _effects.emit(LoginUserUiEffect.OpenConfigurationPasswordDialog(title, description))
+                }
+            }
+
+            is LoginUserUiEvent.ConfigurationPasswordResult -> checkSettingsPassword(event.password)
+
+            LoginUserUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = LoginUserDialogState.Hidden) }
+        }
+    }
+
+    private fun clickAccept() {
+        val user = _uiState.value.user.trim()
+        val password = _uiState.value.password
+
+        if (user.isBlank()) {
+            _uiState.update { it.copy(userError = context.getString(R.string.incorrect_login)) }
+            return
+        }
+        if (password.isBlank()) {
+            _uiState.update { it.copy(passwordError = context.getString(R.string.incorrect_login)) }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                buttonsState = it.buttonsState.copy(
+                    accept = it.buttonsState.accept.copy(loading = true, enabled = true)
+                )
+            )
+        }
+
+        viewModelScope.launch {
+            if (!isInternetConnectionAvailable(context)) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.network_error), Toast.LENGTH_SHORT).show()
+                }
+                _effects.emit(LoginUserUiEffect.NavigateBack)
+                Logs.e(TAG, "loginUser: Network connection not available")
                 _uiState.update {
                     it.copy(
-                        settingsPasswordDialog = it.settingsPasswordDialog.copy(
-                            visible = true
+                        isLoading = false,
+                        buttonsState = it.buttonsState.copy(
+                            accept = it.buttonsState.accept.copy(
+                                loading = false,
+                                enabled = true,
+                                background = LoginUserButtonBackground.Green
+                            )
                         )
                     )
                 }
-                viewModelScope.launch { _uiEffect.emit(LoginUserUiEffect.OpenSettingsPasswordDialog) }
+                return@launch
             }
 
-            is LoginUserUiEvent.SettingsPasswordPinChanged -> {
-                _uiState.update {
-                    it.copy(settingsPasswordDialog = it.settingsPasswordDialog.copy(pin = event.value))
-                }
-            }
+            externalBrigde.setUsername(user)
+            externalBrigde.setPassword(password)
 
-            LoginUserUiEvent.SettingsPasswordDialogCancel -> {
-                _uiState.update {
-                    it.copy(
-                        settingsPasswordDialog = LoginUserSettingsPasswordDialogState(visible = false)
-                    )
-                }
-            }
+            configuration.downloadConfiguration(
+                userInfo = UserInfo(user = user, password = password),
+                fromMigration = false
+            )
+        }
+    }
 
-            LoginUserUiEvent.SettingsPasswordDialogAccept -> {
-                checkSettingsPassword(_uiState.value.settingsPasswordDialog.pin)
-            }
+    fun downloadBravoConfiguration() {
+        viewModelScope.launch {
+            configuration.downloadBravoconfiguration()
         }
     }
 
     fun checkSavedData() {
         viewModelScope.launch {
             val session = sessionUseCase.getSession()
-            val user = session?.username.orEmpty()
-            val pass = session?.password.orEmpty()
+            val user = session?.username
+            val pass = session?.password
+            val hasData = !user.isNullOrEmpty() && !pass.isNullOrEmpty()
 
             _uiState.update {
                 it.copy(
-                    user = user,
-                    password = pass,
-                    showChangePassword = user.isNotEmpty() && pass.isNotEmpty()
+                    user = user.orEmpty(),
+                    password = pass.orEmpty(),
+                    showChangePasswordText = hasData
                 )
             }
         }
@@ -1114,61 +1291,31 @@ class LoginUserViewModel(
             val hasPassword = configurationScreenPasswordUseCase.hasSettingsPassword()
             _uiState.update {
                 it.copy(
-                    buttons = LoginUserButtonsReducer.onHasSettingsPassword(hasPassword),
                     isUserEnabled = !hasPassword,
-                    isPasswordEnabled = !hasPassword
+                    isPasswordEnabled = !hasPassword,
+                    buttonsState = it.buttonsState.reduceOnConfigurationPasswordDialog(hasPassword)
                 )
             }
         }
     }
 
-    fun loginUser(user: String, password: String, fromMigration: Boolean = false) {
-        viewModelScope.launch {
-            if (!isInternetConnectionAvailable(context)) {
-                _uiEffect.emit(LoginUserUiEffect.ShowToast(R.string.network_error))
-                _uiEffect.emit(LoginUserUiEffect.NavigateBack)
-                return@launch
-            }
-
-            externalBrigde.setUsername(user)
-            externalBrigde.setPassword(password)
-
-            configuration.downloadConfiguration(
-                userInfo = UserInfo(user = user, password = password),
-                fromMigration = fromMigration
-            )
-        }
-    }
-
-    fun clickChangePassword() {
-        viewModelScope.launch {
-            _uiEffect.emit(LoginUserUiEffect.NavigateToChangePassword)
-        }
-    }
-
-    fun downloadBravoConfiguration() {
-        viewModelScope.launch {
-            configuration.downloadBravoconfiguration()
-        }
-    }
-
     fun checkSettingsPassword(pin: String) {
         viewModelScope.launch {
-            val encrypted = configurationScreenPasswordUseCase.encryptSettingsPassword(pin)
-            val saved = configurationScreenPasswordUseCase.getSettingsPassword()
-            val correct = encrypted == saved
+            val userPassword = configurationScreenPasswordUseCase.encryptSettingsPassword(pin)
+            val savedPassword = configurationScreenPasswordUseCase.getSettingsPassword()
+            val correct = userPassword == savedPassword
 
             if (correct) {
                 _uiState.update {
                     it.copy(
                         isUserEnabled = true,
                         isPasswordEnabled = true,
-                        settingsPasswordDialog = LoginUserSettingsPasswordDialogState(visible = false),
-                        buttons = LoginUserButtonsReducer.onCorrectPassword(it.buttons)
+                        dialogState = LoginUserDialogState.Hidden,
+                        buttonsState = it.buttonsState.reduceOnCorrectPassword(true)
                     )
                 }
             } else {
-                _uiEffect.emit(LoginUserUiEffect.ShowToast(R.string.pin_incorrecto))
+                _effects.emit(LoginUserUiEffect.ShowToast(R.string.pin_incorrecto))
             }
         }
     }
@@ -1187,7 +1334,7 @@ class LoginUserViewModel(
 
     suspend fun migrateTrips() {
         val allTrips = migrationV2UseCase.getAllTrips()
-        allTrips.forEach { pair ->
+        allTrips.forEachIndexed { _, pair ->
             pair.second?.let { trip ->
                 val shiftExists = migrationV2UseCase.existsShiftId(trip.fkShiftId)
                 if (shiftExists) migrationV2UseCase.migrateTrip(trip)
@@ -1206,65 +1353,403 @@ class LoginUserViewModel(
             }
         }
     }
+}
 
-    private fun clickOnAccept() {
-        val state = _uiState.value
-        if (state.user.isValidUsername() && state.password.isValidPassword()) {
-            _uiState.update {
-                it.copy(buttons = LoginUserButtonsReducer.onAcceptLoading(it.buttons))
+// ------------------------------------------------------------
+// LoginUser MainActivity bridge ViewModel
+// ------------------------------------------------------------
+
+class LoginUserMainActivityViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(LoginUserMainActivityUiState())
+    val uiState: StateFlow<LoginUserMainActivityUiState> = _uiState.asStateFlow()
+
+    private val _effects = MutableSharedFlow<LoginUserMainActivityUiEffect>()
+    val effects: SharedFlow<LoginUserMainActivityUiEffect> = _effects.asSharedFlow()
+
+    fun onEvent(event: LoginUserMainActivityUiEvent) {
+        when (event) {
+            is LoginUserMainActivityUiEvent.ProgressBarChanged -> {
+                _uiState.value = _uiState.value.copy(
+                    progressVisible = event.visibility == View.VISIBLE,
+                    progressValue = event.progress
+                )
             }
-            loginUser(
-                user = state.user.trim(),
-                password = state.password,
-                fromMigration = false
+
+            is LoginUserMainActivityUiEvent.CorrectLoginChanged -> {
+                _uiState.value = _uiState.value.copy(correctLogin = event.success)
+            }
+
+            is LoginUserMainActivityUiEvent.XmppStatusChanged -> {
+                _uiState.value = _uiState.value.copy(xmppStatus = event.status)
+            }
+
+            LoginUserMainActivityUiEvent.DownloadedInitialBravoConfiguration -> {
+                _uiState.value = _uiState.value.copy(downloadedInitialBravoConfiguration = true)
+            }
+        }
+    }
+
+    fun emitStartBravoService() {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.StartBravoService) }
+    }
+
+    fun emitSaveSharedPreference(key: String, value: String) {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.SaveSharedPreference(key, value)) }
+    }
+
+    fun emitNavigateBack() {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.NavigateBack) }
+    }
+
+    fun emitDownloadBravoConfiguration() {
+        viewModelScope.launch { _effects.emit(LoginUserMainActivityUiEffect.DownloadBravoConfiguration) }
+    }
+}
+
+// ------------------------------------------------------------
+// Compose UI
+// ------------------------------------------------------------
+
+@Composable
+fun LoginUserRoute(
+    loginViewModel: LoginUserComposeViewModel,
+    mainViewModel: LoginUserMainActivityViewModel,
+    onNavigateBack: () -> Unit,
+    onNavigateToChangePassword: () -> Unit,
+    onStartBravoService: () -> Unit,
+    onSaveSharedPreference: (String, String) -> Unit,
+) {
+    val uiState by loginViewModel.uiState.collectAsState()
+    val mainUiState by mainViewModel.uiState.collectAsState()
+
+    LaunchedEffect(Unit) {
+        loginViewModel.onEvent(LoginUserUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(Unit) {
+        loginViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                LoginUserUiEffect.NavigateBack -> onNavigateBack()
+                LoginUserUiEffect.NavigateToChangePassword -> onNavigateToChangePassword()
+                LoginUserUiEffect.StartBravoService -> onStartBravoService()
+                is LoginUserUiEffect.SaveCredentials -> {
+                    onSaveSharedPreference("User", effect.user)
+                    onSaveSharedPreference("Password", effect.password)
+                }
+                LoginUserUiEffect.DownloadBravoConfiguration -> loginViewModel.downloadBravoConfiguration()
+                is LoginUserUiEffect.ShowToast -> Unit
+                is LoginUserUiEffect.ShowUserError -> Unit
+                is LoginUserUiEffect.OpenConfigurationPasswordDialog -> Unit
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        mainViewModel.effects.collectLatest { effect ->
+            when (effect) {
+                LoginUserMainActivityUiEffect.StartBravoService -> onStartBravoService()
+                is LoginUserMainActivityUiEffect.SaveSharedPreference -> onSaveSharedPreference(effect.key, effect.value)
+                LoginUserMainActivityUiEffect.NavigateBack -> onNavigateBack()
+                LoginUserMainActivityUiEffect.DownloadBravoConfiguration -> loginViewModel.downloadBravoConfiguration()
+            }
+        }
+    }
+
+    LoginUserScreen(
+        uiState = uiState,
+        mainUiState = mainUiState,
+        onEvent = loginViewModel::onEvent
+    )
+}
+
+@Composable
+fun LoginUserScreen(
+    uiState: LoginUserUiState,
+    mainUiState: LoginUserMainActivityUiState,
+    onEvent: (LoginUserUiEvent) -> Unit,
+) {
+    val focusManager = LocalFocusManager.current
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp)
+            ) {
+                Text(text = stringResource(R.string.usuario))
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = uiState.user,
+                    onValueChange = { onEvent(LoginUserUiEvent.UserChanged(it)) },
+                    enabled = uiState.isUserEnabled,
+                    isError = uiState.userError != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.usuario_hint)) }
+                )
+                uiState.userError?.let { Text(it, color = Color.Red) }
+
+                Spacer(Modifier.height(16.dp))
+                Text(text = stringResource(R.string.contrasena))
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = uiState.password,
+                    onValueChange = { onEvent(LoginUserUiEvent.PasswordChanged(it)) },
+                    enabled = uiState.isPasswordEnabled,
+                    isError = uiState.passwordError != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.contrasena_hint)) },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                uiState.passwordError?.let { Text(it, color = Color.Red) }
+
+                if (uiState.showChangePasswordText) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = stringResource(R.string.change_password),
+                        modifier = Modifier.clickable {
+                            focusManager.clearFocus()
+                            onEvent(LoginUserUiEvent.ChangePasswordTextClicked)
+                        }
+                    )
+                }
+            }
+
+            if (mainUiState.progressVisible) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xCC000000)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = stringResource(R.string.descargando_configuracion),
+                            color = Color.White
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        LinearProgressIndicator(
+                            progress = { (mainUiState.progressValue / 6f).coerceIn(0f, 1f) }
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 96.dp)
+                .background(Color.Black)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            LoginUserComposeButton(
+                text = stringResource(R.string.btn_cancel).uppercase(),
+                background = Color(0xFFD32F2F),
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    focusManager.clearFocus()
+                    onEvent(LoginUserUiEvent.CancelClicked)
+                }
             )
+
+            if (uiState.buttonsState.changeUser.visible) {
+                LoginUserComposeButton(
+                    text = stringResource(R.string.change_user).uppercase(),
+                    background = if (uiState.buttonsState.changeUser.enabled) Color(0xFF1976D2) else Color(0xFF9E9E9E),
+                    enabled = uiState.buttonsState.changeUser.enabled,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        focusManager.clearFocus()
+                        onEvent(LoginUserUiEvent.ChangeUserClicked)
+                    }
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+
+            LoginUserComposeButton(
+                text = stringResource(R.string.btn_accept).uppercase(),
+                background = if (uiState.buttonsState.accept.loading) Color(0xFF9E9E9E) else Color(0xFF2E7D32),
+                modifier = Modifier.weight(1f),
+                enabled = !uiState.buttonsState.accept.loading,
+                loading = uiState.buttonsState.accept.loading,
+                onClick = {
+                    focusManager.clearFocus()
+                    onEvent(LoginUserUiEvent.AcceptClicked)
+                }
+            )
+        }
+    }
+
+    if (uiState.dialogState is LoginUserDialogState.ConfigurationPassword) {
+        LoginUserConfigurationPasswordDialog(
+            title = uiState.dialogState.title,
+            description = uiState.dialogState.description,
+            onDismiss = { onEvent(LoginUserUiEvent.DialogDismissed) },
+            onAccept = { pin -> onEvent(LoginUserUiEvent.ConfigurationPasswordResult(pin)) }
+        )
+    }
+}
+
+@Composable
+private fun LoginUserComposeButton(
+    text: String,
+    background: Color,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled && !loading,
+        modifier = modifier.height(72.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = background)
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = Color.White
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(text = text)
+    }
+}
+
+@Composable
+private fun LoginUserConfigurationPasswordDialog(
+    title: String,
+    description: String,
+    onDismiss: () -> Unit,
+    onAccept: (String) -> Unit,
+) {
+    var pin by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(description)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { if (it.length <= 4) pin = it },
+                    label = { Text("PIN") },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onAccept(pin) }) {
+                Text(stringResource(R.string.btn_accept))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.btn_cancel))
+            }
+        }
+    )
+}
+
+// ------------------------------------------------------------
+// Extra ViewModels requested in the previous step
+// ------------------------------------------------------------
+
+class TripHistoryViewModel(
+    context: Application,
+    val tripUseCase: TripUseCase,
+    val printerUseCase: PrinterUseCase,
+    val portugalUseCase: PortugalUseCase,
+) : BaseViewModel(context) {
+
+    private val TAG = "TripHistoryViewModel"
+
+    private val _tripListFlow = MutableStateFlow<List<Trip>?>(null)
+    val tripListFlow = _tripListFlow.asStateFlow()
+
+    private val _loadingFlow = MutableStateFlow(false)
+    val loadingFlow = _loadingFlow.asStateFlow()
+
+    var isLastPage = false
+    private val PAGE_SIZE = 25
+
+    fun getTrips(page: Int) {
+        viewModelScope.launch {
+            try {
+                Logs.d(TAG, "getTrips: page: $page")
+                if (isLastPage) return@launch
+
+                _loadingFlow.value = true
+                val loadedItems = page * PAGE_SIZE
+                Logs.d(TAG, "getTrips: loadedItems $loadedItems")
+                val newTrips = tripUseCase.getAllTripsFinishedPaged(loadedItems)
+                Logs.d(TAG, "getTrips: newTrips ${newTrips.size}")
+                val currentTrips = _tripListFlow.value ?: emptyList()
+                Logs.d(TAG, "getTrips: currentTrips ${currentTrips.size}")
+
+                if (newTrips.size < PAGE_SIZE) {
+                    isLastPage = true
+                }
+
+                Logs.d(TAG, "getTrips: isLastPage $isLastPage")
+
+                val combinedTrips = (currentTrips + newTrips).distinctBy { it.id }
+                _tripListFlow.emit(combinedTrips)
+            } catch (e: Exception) {
+                Logs.e(TAG, "getTrips: error: ${e.message}")
+            } finally {
+                _loadingFlow.value = false
+            }
+        }
+    }
+
+    fun deleteSelectedTrips(selectedTrips: Set<Trip>, callback: () -> Unit) {
+        viewModelScope.launch {
+            if (selectedTrips.isNotEmpty()) {
+                val selectedTripsList = selectedTrips.toList()
+                for (trip in selectedTripsList) {
+                    tripUseCase.deleteTrip(trip)
+                    Logs.d("TripHistoryViewModel", "trip ${trip.id} deleted ")
+                    callback.invoke()
+                }
+
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_trips_eliminados_correctamente),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.toast_seleccione_algun_trip),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun printTicket(trip: Trip) {
+        viewModelScope.launch {
+            portugalUseCase.increaseTicketPrinted(trip)
+            printerUseCase.printTicket(trip, true)
         }
     }
 }
 
-// --------------------------------------------------------------------------------------
-// COMPOSE BRIDGE VIEWMODEL FOR SHARED FLOWS
-// --------------------------------------------------------------------------------------
-
-class LoginUserMainActivityViewModel(
-    application: Application
-) : AndroidViewModel(application) {
-
-    private val _progressBarFlow = MutableStateFlow(View.GONE to 0)
-    val progressBarFlow = _progressBarFlow.asStateFlow()
-
-    private val _correctLoginFlow = MutableSharedFlow<Pair<Boolean, String?>>()
-    val correctLoginFlow = _correctLoginFlow.asSharedFlow()
-
-    private val _xmppStatusFlow = MutableSharedFlow<StatusConnection>()
-    val xmppStatusFlow = _xmppStatusFlow.asSharedFlow()
-
-    private val _downloadedInitialBravoconfigurationFlow = MutableSharedFlow<Unit>()
-    val downloadedInitialBravoconfigurationFlow = _downloadedInitialBravoconfigurationFlow.asSharedFlow()
-
-    fun updateProgressBarFlow(visibility: Int, progress: Int) {
-        _progressBarFlow.value = visibility to progress
-    }
-
-    fun emitCorrectLogin(correct: Boolean, message: String? = null) {
-        viewModelScope.launch { _correctLoginFlow.emit(correct to message) }
-    }
-
-    fun emitXmppStatus(status: StatusConnection) {
-        viewModelScope.launch { _xmppStatusFlow.emit(status) }
-    }
-
-    fun emitDownloadedInitialBravoConfiguration() {
-        viewModelScope.launch { _downloadedInitialBravoconfigurationFlow.emit(Unit) }
-    }
-}
-
-// --------------------------------------------------------------------------------------
-// REDSYS VIEWMODEL (FROM YOUR INPUT, KEPT IN SAME FILE)
-// --------------------------------------------------------------------------------------
-
 class LoginUserRedSysViewModel(
-    private val redSysUseCase: RedSysUseCase,
+    private val redSysUseCase: ifac.td.taxi.domain.usecase.RedSysUseCase,
     context: Application,
 ) : BaseViewModel(context) {
 
@@ -1276,7 +1761,7 @@ class LoginUserRedSysViewModel(
     private val _userRedSysFlow = MutableSharedFlow<String?>()
     val userRedSysFlow = _userRedSysFlow.asSharedFlow()
 
-    private val _okStatusFlow = MutableSharedFlow<CustomButton.StyleButton>()
+    private val _okStatusFlow = MutableSharedFlow<ifac.td.taxi.ui.custom.button.CustomButton.StyleButton>()
     val okStatusFlow = _okStatusFlow.asSharedFlow()
 
     private var userRedSys: String = ""
@@ -1295,11 +1780,11 @@ class LoginUserRedSysViewModel(
             )
 
             when (loginRedSys) {
-                is RedSysLoginResponse.Success -> {
+                is ifac.td.taxi.domain.model.RedSysLoginResponse.Success -> {
                     if (loginRedSys.merchantList.size > 0) {
                         redSysUseCase.saveUsernameRedSys(userRedSys)
                         if (passwordRedSys.isNotEmpty()) {
-                            TemporalData.passwordRedSys = passwordRedSys
+                            ifac.td.taxi.framework.TemporalData.passwordRedSys = passwordRedSys
                         }
                         _loginRedSysFlow.emit(true)
                     } else {
@@ -1307,10 +1792,10 @@ class LoginUserRedSysViewModel(
                     }
                 }
 
-                is RedSysLoginResponse.Error -> {
+                is ifac.td.taxi.domain.model.RedSysLoginResponse.Error -> {
                     Logs.d(TAG, "Login RedSys failed or returned empty array: ${loginRedSys.errorMessage}")
-                    if (loginRedSys.errorCode == RedCLSErrorCodes.STATUS_KO_FORMATO_RESP_LOGIN_PWD_CAD) {
-                        _okStatusFlow.emit(CustomButton.StyleButton.ENABLE)
+                    if (loginRedSys.errorCode == es.redsys.paysys.Utils.RedCLSErrorCodes.STATUS_KO_FORMATO_RESP_LOGIN_PWD_CAD) {
+                        _okStatusFlow.emit(ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.ENABLE)
                         navigateTo(R.id.action_loginUserRedSysFragment_to_changePasswordRedSysFragment)
                     } else {
                         _loginRedSysFlow.emit(false)
@@ -1327,310 +1812,7 @@ class LoginUserRedSysViewModel(
         }
     }
 }
-
-// --------------------------------------------------------------------------------------
-// COMPOSABLE SCREEN
-// --------------------------------------------------------------------------------------
-
-@Composable
-fun LoginUserScreen(
-    navController: NavController,
-    viewModel: LoginUserViewModel,
-    sharedViewModel: LoginUserMainActivityViewModel,
-    autoDownloadConfigurationFromMigration: Boolean = false,
-    onShowHeader: (Boolean) -> Unit,
-    onStartBravoService: () -> Unit,
-    onSaveSharedPreference: (String, String) -> Unit,
-    onShowToast: (Int) -> Unit,
-) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val progressState by sharedViewModel.progressBarFlow.collectAsStateWithLifecycle()
-    val focusManager = LocalFocusManager.current
-
-    BackHandler {
-        viewModel.onEvent(LoginUserUiEvent.CancelClicked)
-    }
-
-    LaunchedEffect(Unit) {
-        onShowHeader(false)
-        viewModel.onEvent(LoginUserUiEvent.ScreenStarted)
-    }
-
-    LaunchedEffect(viewModel) {
-        viewModel.uiEffect.collectLatest { effect ->
-            when (effect) {
-                LoginUserUiEffect.NavigateBack -> navController.popBackStack()
-                LoginUserUiEffect.NavigateToChangePassword ->
-                    navController.navigate(R.id.action_loginUserFragment_to_changeUserPasswordFragment)
-
-                LoginUserUiEffect.OpenSettingsPasswordDialog -> Unit
-                LoginUserUiEffect.StartBravoService -> onStartBravoService()
-                is LoginUserUiEffect.SaveCredentials -> {
-                    onSaveSharedPreference(effect.user, effect.password)
-                }
-                is LoginUserUiEffect.ShowToast -> onShowToast(effect.messageRes)
-            }
-        }
-    }
-
-    LaunchedEffect(sharedViewModel) {
-        sharedViewModel.correctLoginFlow.collectLatest { (correct, _) ->
-            if (correct) {
-                onStartBravoService()
-                onSaveSharedPreference("User", uiState.user)
-                onSaveSharedPreference("Password", uiState.password)
-            } else {
-                viewModel.onEvent(LoginUserUiEvent.UserChanged(uiState.user))
-                viewModel.onEvent(LoginUserUiEvent.PasswordChanged(uiState.password))
-                viewModel.onEvent(LoginUserUiEvent.AcceptClicked)
-                // exact fragment behavior is handled by the shared bridge in your host layer
-            }
-        }
-    }
-
-    LaunchedEffect(sharedViewModel) {
-        sharedViewModel.xmppStatusFlow.collectLatest { xmpp ->
-            if (xmpp == StatusConnection.CONNECTED) {
-                viewModel.downloadBravoConfiguration()
-            }
-        }
-    }
-
-    LaunchedEffect(sharedViewModel) {
-        sharedViewModel.downloadedInitialBravoconfigurationFlow.collectLatest {
-            navController.popBackStack()
-            sharedViewModel.updateProgressBarFlow(View.GONE, 0)
-        }
-    }
-
-    if (uiState.settingsPasswordDialog.visible) {
-        AlertDialog(
-            onDismissRequest = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogCancel) },
-            title = { Text(text = stringResource(R.string.pin_actual)) },
-            text = {
-                Column {
-                    Text(text = stringResource(R.string.pin_actual_hint))
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = uiState.settingsPasswordDialog.pin,
-                        onValueChange = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordPinChanged(it)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogAccept) }) {
-                    Text(text = stringResource(android.R.string.ok))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.onEvent(LoginUserUiEvent.SettingsPasswordDialogCancel) }) {
-                    Text(text = stringResource(android.R.string.cancel))
-                }
-            }
-        )
-    }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp)
-        ) {
-            Text(text = stringResource(R.string.usuario))
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = uiState.user,
-                onValueChange = { viewModel.onEvent(LoginUserUiEvent.UserChanged(it)) },
-                enabled = uiState.isUserEnabled,
-                isError = uiState.userError != null,
-                modifier = Modifier.fillMaxWidth()
-            )
-            uiState.userError?.let {
-                Text(text = it, color = MaterialTheme.colorScheme.error)
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(text = stringResource(R.string.contrasena))
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = uiState.password,
-                onValueChange = { viewModel.onEvent(LoginUserUiEvent.PasswordChanged(it)) },
-                enabled = uiState.isPasswordEnabled,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            if (uiState.showChangePassword) {
-                TextButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        viewModel.clickChangePassword()
-                    }
-                ) {
-                    Text(text = stringResource(R.string.change_password))
-                }
-            }
-        }
-
-        if (progressState.first == View.VISIBLE) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(text = stringResource(R.string.descargando_configuracion))
-                    Spacer(modifier = Modifier.height(12.dp))
-                    CircularProgressIndicator(progress = { progressState.second / 100f })
-                }
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-        ) {
-            ComposeCustomButton(
-                modifier = Modifier.weight(1f),
-                type = ButtonType.CANCEL,
-                visible = uiState.buttons.cancel.visible,
-                style = uiState.buttons.cancel.style,
-                background = uiState.buttons.cancel.background,
-                onClick = {
-                    focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.CancelClicked)
-                }
-            )
-
-            ComposeCustomButton(
-                modifier = Modifier.weight(1f),
-                type = ButtonType.CHANGE_CREDENTIALS,
-                visible = uiState.buttons.changeUser.visible,
-                style = uiState.buttons.changeUser.style,
-                background = uiState.buttons.changeUser.background,
-                onClick = {
-                    focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.ChangeUserClicked)
-                }
-            )
-
-            ComposeCustomButton(
-                modifier = Modifier.weight(1f),
-                type = ButtonType.ACCEPT,
-                visible = uiState.buttons.accept.visible,
-                style = uiState.buttons.accept.style,
-                background = uiState.buttons.accept.background,
-                onClick = {
-                    focusManager.clearFocus()
-                    viewModel.onEvent(LoginUserUiEvent.AcceptClicked)
-                }
-            )
-        }
-    }
-}
-
-// --------------------------------------------------------------------------------------
-// COMPOSE WRAPPER FOR EXISTING CUSTOMBUTTON VIEW
-// --------------------------------------------------------------------------------------
-
-@Composable
-fun ComposeCustomButton(
-    modifier: Modifier = Modifier,
-    type: ButtonType,
-    visible: Boolean,
-    style: CustomButton.StyleButton,
-    background: CustomButton.BackgroundButtonColor,
-    onClick: () -> Unit
-) {
-    if (!visible) return
-
-    androidx.compose.ui.viewinterop.AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            CustomButton(context).apply {
-                setButtonType(type.value)
-                setButtonStyle(style)
-                changeBackground(background)
-                setAction(onClick)
-            }
-        },
-        update = { button ->
-            button.visibility = View.VISIBLE
-            button.setButtonType(type.value)
-            button.setButtonStyle(style)
-            button.changeBackground(background)
-            button.setAction(onClick)
-        }
-    )
-}
-
-// --------------------------------------------------------------------------------------
-// BUTTON TYPE MAPPING HELPERS
-// --------------------------------------------------------------------------------------
-
-private val ButtonType.value: Int?
-    get() = when (this) {
-        ButtonType.ACCEPT -> 0
-        ButtonType.CANCEL -> 1
-        ButtonType.CHANGE_CREDENTIALS -> 2
-        else -> null
-    }
-
-// --------------------------------------------------------------------------------------
-// SIMPLE VALIDATION HELPERS
-// --------------------------------------------------------------------------------------
-
-private fun String.isValidUsername(): Boolean = isNotBlank()
-private fun String.isValidPassword(): Boolean = isNotBlank()
-
-// --------------------------------------------------------------------------------------
-// OPTIONAL HOST BRIDGE EXAMPLE
-// --------------------------------------------------------------------------------------
-
-@Composable
-fun LoginUserRoute(
-    navController: NavController,
-    loginUserViewModel: LoginUserViewModel,
-    sharedViewModel: LoginUserMainActivityViewModel,
-    autoDownloadConfigurationFromMigration: Boolean = false,
-    onShowHeader: (Boolean) -> Unit,
-    onStartBravoService: () -> Unit,
-    onSaveSharedPreference: (String, String) -> Unit,
-    onShowToast: (Int) -> Unit,
-) {
-    LoginUserScreen(
-        navController = navController,
-        viewModel = loginUserViewModel,
-        sharedViewModel = sharedViewModel,
-        autoDownloadConfigurationFromMigration = autoDownloadConfigurationFromMigration,
-        onShowHeader = onShowHeader,
-        onStartBravoService = onStartBravoService,
-        onSaveSharedPreference = onSaveSharedPreference,
-        onShowToast = onShowToast
-    )
-}
 ```
-
-### Notes
-- This is a **single file** version, but in a real project you’ll likely split it into:
-  - `LoginUserUiState.kt`
-  - `LoginUserViewModel.kt`
-  - `LoginUserScreen.kt`
-  - `LoginUserMainActivityViewModel.kt`
-- I kept the `LoginUserRedSysViewModel` in the same file because you explicitly included it in the prompt.
-- The `ButtonType.value` mapping is a placeholder because your actual `ButtonType` enum/int mapping wasn’t included in the prompt. Replace it with your real mapping if needed.
-- The `CircularProgressIndicator(progress = { ... })` line assumes a newer Material3 API; if your version doesn’t support it, replace with a plain indeterminate indicator or a custom progress bar.
-
-If you want, I can do a **second cleanup pass** and make this compile against your exact project APIs by:
-1. removing the placeholder `ButtonType.value` mapping,
-2. wiring the exact `CustomButton` enum values,
-3. matching your real `BaseViewModel` / `BaseComposeViewModel` inheritance,
-4. and converting the progress overlay to the exact XML behavior.
 // THIRD ANSWER
 
 // FOURTH ANSWER

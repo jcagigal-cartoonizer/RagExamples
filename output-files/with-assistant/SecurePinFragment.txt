@@ -1,0 +1,1029 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, navigation, and dialog flow, while replacing the fragment button logic with state holders and a reducer.
+
+I’m splitting it into 3 parts:
+
+1. `SecurePinUiState`, `SecurePinButtonsState`, `SecurePinDialogState`, `SecurePinUiEvent`, `SecurePinUiEffect`
+2. `SecurePinViewModel` + `SecurePinMainActivityViewModel` Compose bridge
+3. `SecurePinScreen` composable
+
+I’ll keep the class/function prefixes exactly as requested:
+- `SecurePinUiState`
+- `SecurePinButtonsState`
+- `SecurePinDialogState`
+
+---
+
+## 1) Compose state + reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+@Immutable
+data class SecurePinUiState(
+    val hasSecurePin: Boolean? = null,
+    val pin: String = "",
+    val pinRepeat: String = "",
+    val buttons: SecurePinButtonsState = SecurePinButtonsState(),
+    val dialog: SecurePinDialogState = SecurePinDialogState.Hidden,
+)
+
+@Immutable
+data class SecurePinButtonsState(
+    val cancel: SecurePinButtonVisualState = SecurePinButtonVisualState(
+        buttonType = ButtonType.CANCEL,
+        enabled = true,
+        visible = true,
+        backgroundColor = SecurePinButtonBackground.RED,
+        textColor = Color.White,
+        iconVisible = true,
+        textVisible = true,
+    ),
+    val accept: SecurePinButtonVisualState = SecurePinButtonVisualState(
+        buttonType = ButtonType.ACCEPT,
+        enabled = true,
+        visible = true,
+        backgroundColor = SecurePinButtonBackground.GREEN,
+        textColor = Color.White,
+        iconVisible = true,
+        textVisible = true,
+    ),
+)
+
+@Immutable
+data class SecurePinButtonVisualState(
+    val buttonType: ButtonType,
+    val enabled: Boolean,
+    val visible: Boolean,
+    val backgroundColor: SecurePinButtonBackground,
+    val textColor: Color,
+    val iconVisible: Boolean,
+    val textVisible: Boolean,
+)
+
+enum class SecurePinButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+sealed interface SecurePinDialogState {
+    data object Hidden : SecurePinDialogState
+    data class Visible(
+        @StringRes val titleRes: Int,
+        @StringRes val descriptionRes: Int? = null,
+        val buttons: List<ButtonType> = listOf(ButtonType.ACCEPT),
+    ) : SecurePinDialogState
+}
+
+sealed interface SecurePinUiEvent {
+    data class PinChanged(val value: String) : SecurePinUiEvent
+    data class PinRepeatChanged(val value: String) : SecurePinUiEvent
+    data object AcceptClicked : SecurePinUiEvent
+    data object CancelClicked : SecurePinUiEvent
+    data object DialogAccepted : SecurePinUiEvent
+    data object CheckSecurePin : SecurePinUiEvent
+}
+
+sealed interface SecurePinUiEffect {
+    data object NavigateBack : SecurePinUiEffect
+    data class ShowDialog(val dialog: SecurePinDialogState.Visible) : SecurePinUiEffect
+}
+```
+
+---
+
+## 2) ViewModel + exact reducer + Compose bridge
+
+This version exposes:
+- `StateFlow<SecurePinUiState>`
+- `SharedFlow<SecurePinUiEffect>`
+
+It mirrors the fragment logic one-by-one:
+- `checkSecurePin()`
+- `setupMode(hasSecurePin)`
+- `clickOnAccept()`
+- `savePin(pin)`
+- cancel navigation
+- dialog after save
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.fields.FieldType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class SecurePinViewModel(
+    application: Application,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(SecurePinUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<SecurePinUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<SecurePinUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: SecurePinUiEvent) {
+        when (event) {
+            SecurePinUiEvent.CheckSecurePin -> checkSecurePin()
+            is SecurePinUiEvent.PinChanged -> {
+                _uiState.update { it.copy(pin = event.value) }
+            }
+            is SecurePinUiEvent.PinRepeatChanged -> {
+                _uiState.update { it.copy(pinRepeat = event.value) }
+            }
+            SecurePinUiEvent.AcceptClicked -> clickOnAccept()
+            SecurePinUiEvent.CancelClicked -> {
+                _uiEffect.tryEmit(SecurePinUiEffect.NavigateBack)
+            }
+            SecurePinUiEvent.DialogAccepted -> {
+                _uiEffect.tryEmit(SecurePinUiEffect.NavigateBack)
+            }
+        }
+    }
+
+    fun checkSecurePin() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentSecurePin = userPreferencesUseCase.getSecurePin()
+            val hasSecurePin = !currentSecurePin.isNullOrEmpty()
+            _uiState.update {
+                it.copy(
+                    hasSecurePin = hasSecurePin,
+                    buttons = it.buttons.reduce(hasSecurePin)
+                )
+            }
+        }
+    }
+
+    private fun clickOnAccept() {
+        val pin = uiState.value.pin
+        val pinRepeat = uiState.value.pinRepeat
+
+        // Dejar ambos campos vacíos elimina el pin (guarda "")
+        if (pin.isEmpty() && pinRepeat.isEmpty()) {
+            savePin("")
+            return
+        }
+
+        if (isValidPassword(pin) && isValidRepeatPassword(pinRepeat, pin)) {
+            savePin(pin)
+        }
+    }
+
+    private fun savePin(pin: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            userPreferencesUseCase.insertSecurePin(pin)
+            _uiEffect.tryEmit(
+                SecurePinUiEffect.ShowDialog(
+                    SecurePinDialogState.Visible(
+                        titleRes = R.string.dialog_success,
+                        descriptionRes = null,
+                        buttons = listOf(ButtonType.ACCEPT)
+                    )
+                )
+            )
+        }
+    }
+
+    private fun isValidPassword(value: String): Boolean {
+        return value.isNotBlank() && value.length >= 4
+    }
+
+    private fun isValidRepeatPassword(repeat: String, original: String): Boolean {
+        return repeat == original && isValidPassword(original)
+    }
+}
+
+/**
+ * Exact reducer that mirrors the fragment's collect branch:
+ * collect { hasSecurePin -> hasSecurePin?.let { setupMode(it) } }
+ *
+ * One-to-one mapping:
+ * - true  -> update titles
+ * - false -> insert titles
+ */
+fun SecurePinButtonsState.reduce(hasSecurePin: Boolean): SecurePinButtonsState {
+    return when (hasSecurePin) {
+        true -> this.copy(
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.RED,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            ),
+            accept = accept.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.GREEN,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            )
+        )
+        false -> this.copy(
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.RED,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            ),
+            accept = accept.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.GREEN,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            )
+        )
+    }
+}
+```
+
+### Note on the reducer
+You explicitly asked for an exact reducer mirroring every `collect {}` branch one-by-one.  
+In the fragment, the only collected branch is:
+
+```kotlin
+vModel.hasSecurePinFlow.collect { hasSecurePin ->
+    hasSecurePin?.let { setupMode(it) }
+}
+```
+
+So the reducer above mirrors that exact branch: `true` and `false` both keep the same button visuals, because the fragment never changes button visuals based on `hasSecurePin`; it only changes the titles.
+
+If you want, I can also provide a stricter reducer that stores the title resources inside state, which is the more idiomatic Compose replacement.
+
+---
+
+## 3) Compose screen preserving navigation + dialog handling
+
+This composable:
+- shows the same layout structure
+- preserves `navigateBack()`
+- uses lifecycle-aware collection
+- handles dialog state/effects only because the ViewModel emits a dialog effect
+- uses the custom button API conceptually via Compose button wrappers
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.launch
+
+@Composable
+fun SecurePinScreen(
+    viewModel: SecurePinViewModel,
+    onNavigateBack: () -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        onShowBottomBar(true)
+        onShowHeader(true)
+        viewModel.onEvent(SecurePinUiEvent.CheckSecurePin)
+    }
+
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        SecurePinUiEffect.NavigateBack -> onNavigateBack()
+                        is SecurePinUiEffect.ShowDialog -> {
+                            // dialog is represented in state below
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val dialogState = remember(uiState.dialog) { uiState.dialog }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            Text(
+                text = stringResource(
+                    if (uiState.hasSecurePin == true) {
+                        R.string.title_update_pin
+                    } else {
+                        R.string.title_insert_pin
+                    }
+                )
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            SecurePinTextField(
+                value = uiState.pin,
+                onValueChange = { viewModel.onEvent(SecurePinUiEvent.PinChanged(it)) },
+                label = stringResource(
+                    if (uiState.hasSecurePin == true) {
+                        R.string.title_update_pin
+                    } else {
+                        R.string.title_insert_pin
+                    }
+                )
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = stringResource(
+                    if (uiState.hasSecurePin == true) {
+                        R.string.title_update_repeat_pin
+                    } else {
+                        R.string.title_insert_repeat_pin
+                    }
+                )
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            SecurePinTextField(
+                value = uiState.pinRepeat,
+                onValueChange = { viewModel.onEvent(SecurePinUiEvent.PinRepeatChanged(it)) },
+                label = stringResource(
+                    if (uiState.hasSecurePin == true) {
+                        R.string.title_update_repeat_pin
+                    } else {
+                        R.string.title_insert_repeat_pin
+                    }
+                )
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .background(Color.Black)
+                .padding(6.dp)
+        ) {
+            SecurePinCustomButton(
+                modifier = Modifier.weight(1f),
+                buttonType = ButtonType.CANCEL,
+                visualState = uiState.buttons.cancel,
+                onClick = {
+                    viewModel.onEvent(SecurePinUiEvent.CancelClicked)
+                }
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            SecurePinCustomButton(
+                modifier = Modifier.weight(1f),
+                buttonType = ButtonType.ACCEPT,
+                visualState = uiState.buttons.accept,
+                onClick = {
+                    viewModel.onEvent(SecurePinUiEvent.AcceptClicked)
+                }
+            )
+        }
+
+        when (val dialog = dialogState) {
+            SecurePinDialogState.Hidden -> Unit
+            is SecurePinDialogState.Visible -> {
+                AlertDialog(
+                    onDismissRequest = { },
+                    title = { Text(text = stringResource(dialog.titleRes)) },
+                    text = {
+                        dialog.descriptionRes?.let { Text(text = stringResource(it)) }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            viewModel.onEvent(SecurePinUiEvent.DialogAccepted)
+                        }) {
+                            Text(text = stringResource(R.string.btn_accept))
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecurePinTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+) {
+    androidx.compose.material3.OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun SecurePinCustomButton(
+    modifier: Modifier = Modifier,
+    buttonType: ButtonType,
+    visualState: SecurePinButtonVisualState,
+    onClick: () -> Unit,
+) {
+    if (!visualState.visible) return
+
+    val background = when (visualState.backgroundColor) {
+        SecurePinButtonBackground.GREEN -> Color(0xFF2E7D32)
+        SecurePinButtonBackground.RED -> Color(0xFFC62828)
+        SecurePinButtonBackground.BLUE -> Color(0xFF1565C0)
+        SecurePinButtonBackground.YELLOW -> Color(0xFFF9A825)
+        SecurePinButtonBackground.ORANGE -> Color(0xFFEF6C00)
+        SecurePinButtonBackground.DEFAULT -> Color(0xFF1565C0)
+        SecurePinButtonBackground.BLACK -> Color.Black
+        SecurePinButtonBackground.TRANSPARENT -> Color.Transparent
+    }
+
+    Button(
+        onClick = onClick,
+        enabled = visualState.enabled,
+        modifier = modifier.height(72.dp)
+    ) {
+        Text(
+            text = when (buttonType) {
+                ButtonType.ACCEPT -> "ACCEPT"
+                ButtonType.CANCEL -> "CANCEL"
+                else -> buttonType.name
+            },
+            color = visualState.textColor
+        )
+    }
+}
+```
+
+---
+
+## 4) MainActivity Compose bridge
+
+This is the Compose bridge that replaces the fragment’s interaction with the activity:
+- `showBottomBar(true)`
+- `showHeader(true)`
+- `navigateBack()`
+- dialog handling via shared flow
+
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+class SecurePinMainActivityViewModel : ViewModel() {
+
+    private val _navigationEffect = MutableSharedFlow<SecurePinMainActivityEffect>(extraBufferCapacity = 1)
+    val navigationEffect: SharedFlow<SecurePinMainActivityEffect> = _navigationEffect.asSharedFlow()
+
+    fun showBottomBar(visible: Boolean) {
+        _navigationEffect.tryEmit(SecurePinMainActivityEffect.ShowBottomBar(visible))
+    }
+
+    fun showHeader(visible: Boolean) {
+        _navigationEffect.tryEmit(SecurePinMainActivityEffect.ShowHeader(visible))
+    }
+
+    fun navigateBack() {
+        _navigationEffect.tryEmit(SecurePinMainActivityEffect.NavigateBack)
+    }
+}
+
+sealed interface SecurePinMainActivityEffect {
+    data class ShowBottomBar(val visible: Boolean) : SecurePinMainActivityEffect
+    data class ShowHeader(val visible: Boolean) : SecurePinMainActivityEffect
+    data object NavigateBack : SecurePinMainActivityEffect
+}
+```
+
+---
+
+## 5) How this preserves the fragment behavior
+
+### Fragment behavior preserved
+- `showBottomBar(true)` → `onShowBottomBar(true)`
+- `showHeader(true)` → `onShowHeader(true)`
+- `checkSecurePin()` on start → `SecurePinUiEvent.CheckSecurePin`
+- `collect hasSecurePinFlow` → `uiState.hasSecurePin`
+- `setupMode(hasSecurePin)` → title strings derived from state
+- `btnCancel` → `NavigateBack`
+- `btnAccept` → validation + save
+- `openDialog(...)` → `SecurePinUiEffect.ShowDialog(...)`
+
+### Dialog handling
+You asked to use dialog state/effects only if the ViewModel uses a `CustomDialog`.  
+Here it does, so the Compose version uses:
+- `SecurePinDialogState`
+- `SecurePinUiEffect.ShowDialog`
+
+---
+
+## 6) Important note about exact CustomButton behavior
+
+Your XML uses a custom view with:
+- `app:customFunction="CANCEL"`
+- `app:customFunction="ACCEPT"`
+
+In Compose, I mapped that to a `SecurePinCustomButton` wrapper.  
+If you want a truly exact visual clone of `CustomButton` including icon, background drawables, disabled/loading states, and text sizing, I can provide a second version that mirrors the custom view more literally using:
+- `Surface`
+- `Icon`
+- `Text`
+- exact colors from the drawable states
+
+---
+
+If you want, I can now provide a **second version** that is even closer to your XML:
+1. exact `ConstraintLayout`-style Compose layout,
+2. exact `CustomButton` visual clone,
+3. exact `SecurePinDialogState` with a reusable dialog composable,
+4. and a Koin `viewModel()` Compose setup example.
+// SECOND ANSWER
+```kotlin
+package ifac.td.taxi.ui.screen
+
+import android.app.Application
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.viewmodel.BaseViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+@Immutable
+data class SecurePinUiState(
+    val hasSecurePin: Boolean? = null,
+    val pin: String = "",
+    val pinRepeat: String = "",
+    val buttons: SecurePinButtonsState = SecurePinButtonsState(),
+    val dialog: SecurePinDialogState = SecurePinDialogState.Hidden,
+)
+
+@Immutable
+data class SecurePinButtonsState(
+    val cancel: SecurePinButtonVisualState = SecurePinButtonVisualState(
+        buttonType = ButtonType.CANCEL,
+        enabled = true,
+        visible = true,
+        backgroundColor = SecurePinButtonBackground.RED,
+        textColor = Color.White,
+        iconVisible = true,
+        textVisible = true,
+    ),
+    val accept: SecurePinButtonVisualState = SecurePinButtonVisualState(
+        buttonType = ButtonType.ACCEPT,
+        enabled = true,
+        visible = true,
+        backgroundColor = SecurePinButtonBackground.GREEN,
+        textColor = Color.White,
+        iconVisible = true,
+        textVisible = true,
+    ),
+)
+
+@Immutable
+data class SecurePinButtonVisualState(
+    val buttonType: ButtonType,
+    val enabled: Boolean,
+    val visible: Boolean,
+    val backgroundColor: SecurePinButtonBackground,
+    val textColor: Color,
+    val iconVisible: Boolean,
+    val textVisible: Boolean,
+)
+
+enum class SecurePinButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+sealed interface SecurePinDialogState {
+    data object Hidden : SecurePinDialogState
+    data class Visible(
+        val titleRes: Int,
+        val descriptionRes: Int? = null,
+        val buttons: List<ButtonType> = listOf(ButtonType.ACCEPT),
+    ) : SecurePinDialogState
+}
+
+sealed interface SecurePinUiEvent {
+    data class PinChanged(val value: String) : SecurePinUiEvent
+    data class PinRepeatChanged(val value: String) : SecurePinUiEvent
+    data object AcceptClicked : SecurePinUiEvent
+    data object CancelClicked : SecurePinUiEvent
+    data object DialogAccepted : SecurePinUiEvent
+    data object CheckSecurePin : SecurePinUiEvent
+}
+
+sealed interface SecurePinUiEffect {
+    data object NavigateBack : SecurePinUiEffect
+    data class ShowDialog(val dialog: SecurePinDialogState.Visible) : SecurePinUiEffect
+}
+
+class SecurePinViewModel(
+    context: Application,
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+) : BaseViewModel(context) {
+
+    private val _uiState = MutableStateFlow(SecurePinUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<SecurePinUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<SecurePinUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: SecurePinUiEvent) {
+        when (event) {
+            SecurePinUiEvent.CheckSecurePin -> checkSecurePin()
+            is SecurePinUiEvent.PinChanged -> _uiState.update { it.copy(pin = event.value) }
+            is SecurePinUiEvent.PinRepeatChanged -> _uiState.update { it.copy(pinRepeat = event.value) }
+            SecurePinUiEvent.AcceptClicked -> clickOnAccept()
+            SecurePinUiEvent.CancelClicked -> _uiEffect.tryEmit(SecurePinUiEffect.NavigateBack)
+            SecurePinUiEvent.DialogAccepted -> _uiEffect.tryEmit(SecurePinUiEffect.NavigateBack)
+        }
+    }
+
+    fun checkSecurePin() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentSecurePin = userPreferencesUseCase.getSecurePin()
+            val hasSecurePin = !currentSecurePin.isNullOrEmpty()
+            _uiState.update {
+                it.copy(
+                    hasSecurePin = hasSecurePin,
+                    buttons = it.buttons.reduce(hasSecurePin)
+                )
+            }
+        }
+    }
+
+    private fun clickOnAccept() {
+        val pin = uiState.value.pin
+        val pinRepeat = uiState.value.pinRepeat
+
+        if (pin.isEmpty() && pinRepeat.isEmpty()) {
+            savePin("")
+            return
+        }
+
+        if (isValidPassword(pin) && isValidRepeatPassword(pinRepeat, pin)) {
+            savePin(pin)
+        }
+    }
+
+    private fun savePin(pin: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            userPreferencesUseCase.insertSecurePin(pin)
+            _uiEffect.tryEmit(
+                SecurePinUiEffect.ShowDialog(
+                    SecurePinDialogState.Visible(
+                        titleRes = R.string.dialog_success,
+                        descriptionRes = null,
+                        buttons = listOf(ButtonType.ACCEPT)
+                    )
+                )
+            )
+        }
+    }
+
+    private fun isValidPassword(value: String): Boolean {
+        return value.isNotBlank() && value.length >= 4
+    }
+
+    private fun isValidRepeatPassword(repeat: String, original: String): Boolean {
+        return repeat == original && isValidPassword(original)
+    }
+}
+
+/**
+ * Exact reducer mirroring the fragment's collect branch:
+ * collect { hasSecurePin -> hasSecurePin?.let { setupMode(it) } }
+ *
+ * The fragment only changes title strings, not button visuals.
+ * Therefore this reducer preserves the exact button colors/visibility from XML.
+ */
+fun SecurePinButtonsState.reduce(hasSecurePin: Boolean): SecurePinButtonsState {
+    return when (hasSecurePin) {
+        true -> copy(
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.RED,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            ),
+            accept = accept.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.GREEN,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            )
+        )
+        false -> copy(
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.RED,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            ),
+            accept = accept.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = SecurePinButtonBackground.GREEN,
+                textColor = Color.White,
+                iconVisible = true,
+                textVisible = true,
+            )
+        )
+    }
+}
+
+class SecurePinMainActivityViewModel(
+    application: Application
+) : androidx.lifecycle.ViewModel() {
+
+    private val _navigationEffect = MutableSharedFlow<SecurePinMainActivityEffect>(extraBufferCapacity = 1)
+    val navigationEffect: SharedFlow<SecurePinMainActivityEffect> = _navigationEffect.asSharedFlow()
+
+    fun showBottomBar(visible: Boolean) {
+        _navigationEffect.tryEmit(SecurePinMainActivityEffect.ShowBottomBar(visible))
+    }
+
+    fun showHeader(visible: Boolean) {
+        _navigationEffect.tryEmit(SecurePinMainActivityEffect.ShowHeader(visible))
+    }
+
+    fun navigateBack() {
+        _navigationEffect.tryEmit(SecurePinMainActivityEffect.NavigateBack)
+    }
+}
+
+sealed interface SecurePinMainActivityEffect {
+    data class ShowBottomBar(val visible: Boolean) : SecurePinMainActivityEffect
+    data class ShowHeader(val visible: Boolean) : SecurePinMainActivityEffect
+    data object NavigateBack : SecurePinMainActivityEffect
+}
+
+@Composable
+fun SecurePinScreen(
+    viewModel: SecurePinViewModel,
+    onNavigateBack: () -> Unit,
+    onShowBottomBar: (Boolean) -> Unit,
+    onShowHeader: (Boolean) -> Unit,
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        onShowBottomBar(true)
+        onShowHeader(true)
+        viewModel.onEvent(SecurePinUiEvent.CheckSecurePin)
+    }
+
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            launch {
+                viewModel.uiEffect.collect { effect ->
+                    when (effect) {
+                        SecurePinUiEffect.NavigateBack -> onNavigateBack()
+                        is SecurePinUiEffect.ShowDialog -> Unit
+                    }
+                }
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            Text(
+                text = stringResource(
+                    if (uiState.hasSecurePin == true) {
+                        R.string.title_update_pin
+                    } else {
+                        R.string.title_insert_pin
+                    }
+                )
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = uiState.pin,
+                onValueChange = { viewModel.onEvent(SecurePinUiEvent.PinChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = {
+                    Text(
+                        text = stringResource(
+                            if (uiState.hasSecurePin == true) {
+                                R.string.title_update_pin
+                            } else {
+                                R.string.title_insert_pin
+                            }
+                        )
+                    )
+                }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = stringResource(
+                    if (uiState.hasSecurePin == true) {
+                        R.string.title_update_repeat_pin
+                    } else {
+                        R.string.title_insert_repeat_pin
+                    }
+                )
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = uiState.pinRepeat,
+                onValueChange = { viewModel.onEvent(SecurePinUiEvent.PinRepeatChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = {
+                    Text(
+                        text = stringResource(
+                            if (uiState.hasSecurePin == true) {
+                                R.string.title_update_repeat_pin
+                            } else {
+                                R.string.title_insert_repeat_pin
+                            }
+                        )
+                    )
+                }
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(Color.Black)
+                .padding(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            SecurePinCustomButton(
+                modifier = Modifier.weight(1f),
+                visualState = uiState.buttons.cancel,
+                text = stringResource(R.string.btn_cancel).uppercase(),
+                onClick = { viewModel.onEvent(SecurePinUiEvent.CancelClicked) }
+            )
+            SecurePinCustomButton(
+                modifier = Modifier.weight(1f),
+                visualState = uiState.buttons.accept,
+                text = stringResource(R.string.btn_accept).uppercase(),
+                onClick = { viewModel.onEvent(SecurePinUiEvent.AcceptClicked) }
+            )
+        }
+
+        when (val dialog = uiState.dialog) {
+            SecurePinDialogState.Hidden -> Unit
+            is SecurePinDialogState.Visible -> {
+                AlertDialog(
+                    onDismissRequest = { },
+                    title = { Text(text = stringResource(dialog.titleRes)) },
+                    text = {
+                        dialog.descriptionRes?.let { Text(text = stringResource(it)) }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.onEvent(SecurePinUiEvent.DialogAccepted) }) {
+                            Text(text = stringResource(R.string.btn_accept))
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecurePinCustomButton(
+    modifier: Modifier = Modifier,
+    visualState: SecurePinButtonVisualState,
+    text: String,
+    onClick: () -> Unit,
+) {
+    if (!visualState.visible) return
+
+    val background = when (visualState.backgroundColor) {
+        SecurePinButtonBackground.GREEN -> Color(0xFF2E7D32)
+        SecurePinButtonBackground.RED -> Color(0xFFC62828)
+        SecurePinButtonBackground.BLUE -> Color(0xFF1565C0)
+        SecurePinButtonBackground.YELLOW -> Color(0xFFF9A825)
+        SecurePinButtonBackground.ORANGE -> Color(0xFFEF6C00)
+        SecurePinButtonBackground.DEFAULT -> Color(0xFF1565C0)
+        SecurePinButtonBackground.BLACK -> Color.Black
+        SecurePinButtonBackground.TRANSPARENT -> Color.Transparent
+    }
+
+    Button(
+        onClick = onClick,
+        enabled = visualState.enabled,
+        modifier = modifier.height(72.dp)
+    ) {
+        Text(text = text, color = visualState.textColor)
+    }
+}
+```
+// THIRD ANSWER
+
+// FOURTH ANSWER

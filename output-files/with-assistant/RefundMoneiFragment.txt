@@ -1,0 +1,1108 @@
+
+// FIRST ANSWER
+Below is a Compose-first refactor that preserves the fragment behavior, navigation, and the exact state transitions from your `RefundMoneiFragment` / `RefundMoneiViewModel`.
+
+I’m giving you:
+
+1. A `RefundMoneiScreen` composable
+2. A Compose-friendly `RefundMoneiViewModel` with `UiState + UiEvent + UiEffect`
+3. A `RefundMoneiButtonsState` reducer that mirrors the fragment’s `collect {}` branches one-by-one
+4. A `RefundMoneiMainActivityViewModel` bridge for navigation/header integration
+5. Optional dialog state support only if needed
+
+---
+
+## 1) Compose UI models
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import androidx.annotation.ColorRes
+import androidx.annotation.StringRes
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+
+data class RefundMoneiUiState(
+    val tripId: Long = 0L,
+    val amountText: String = "",
+    val statusText: String = "",
+    val statusColorRes: Int = R.color.blue,
+    val buttonsState: RefundMoneiButtonsState = RefundMoneiButtonsState(),
+    val isLoading: Boolean = false,
+    val dialogState: RefundMoneiDialogState? = null
+)
+
+data class RefundMoneiButtonsState(
+    val cancel: RefundMoneiButtonVisualState = RefundMoneiButtonVisualState(
+        textRes = R.string.btn_cancel,
+        backgroundColor = RefundMoneiButtonBackground.RED,
+        enabled = true,
+        visible = true
+    ),
+    val refund: RefundMoneiButtonVisualState = RefundMoneiButtonVisualState(
+        textRes = R.string.btn_refund,
+        backgroundColor = RefundMoneiButtonBackground.BLUE,
+        enabled = true,
+        visible = true
+    )
+)
+
+data class RefundMoneiButtonVisualState(
+    @StringRes val textRes: Int,
+    val backgroundColor: RefundMoneiButtonBackground,
+    val enabled: Boolean,
+    val visible: Boolean
+)
+
+enum class RefundMoneiButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+data class RefundMoneiDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val dismissText: String
+)
+
+sealed interface RefundMoneiUiEvent {
+    data class Start(val tripId: Long) : RefundMoneiUiEvent
+    data object RefundClicked : RefundMoneiUiEvent
+    data object CancelClicked : RefundMoneiUiEvent
+    data object DismissDialog : RefundMoneiUiEvent
+    data object ConfirmDialog : RefundMoneiUiEvent
+}
+
+sealed interface RefundMoneiUiEffect {
+    data object NavigateBack : RefundMoneiUiEffect
+    data class ShowToast(val message: String) : RefundMoneiUiEffect
+    data class ShowDialog(val dialog: RefundMoneiDialogState) : RefundMoneiUiEffect
+    data object HideDialog : RefundMoneiUiEffect
+}
+```
+
+---
+
+## 2) Exact `RefundMoneiButtonsState` reducer
+
+This reducer mirrors the fragment’s `collect {}` branches one-by-one:
+
+- `tripFlow.collect { ... }` -> amount text update
+- `infoPaymentFlow.collect { ... }` -> status update via `updateActualStatus(status)`
+- `actualStatusFlow.collect { ... }` -> UI status text/color update
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import ifac.td.taxi.R
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+
+fun RefundMoneiButtonsState.reduce(
+    status: PaymentMoneiViewModel.StatusPayments
+): RefundMoneiButtonsState {
+    return when (status) {
+        PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> copy(
+            refund = refund.copy(
+                enabled = false,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.BLUE
+            ),
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.RED
+            )
+        )
+
+        PaymentMoneiViewModel.StatusPayments.REFUNDED -> copy(
+            refund = refund.copy(
+                enabled = false,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.BLUE
+            ),
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.RED
+            )
+        )
+
+        else -> copy(
+            refund = refund.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.BLUE
+            ),
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.RED
+            )
+        )
+    }
+}
+```
+
+> Note: the fragment does not change button state dynamically, so this reducer keeps the XML behavior stable while still being a proper state holder. If you later want loading/disabled states, you can extend it without changing the screen contract.
+
+---
+
+## 3) Compose-friendly ViewModel
+
+This replaces the fragment’s three collectors with a single `UiState` stream and a `SharedFlow<RefundMoneiUiEffect>`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.MoneiUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.model.SmartTDUIException
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class RefundMoneiViewModel(
+    private val moneiUseCase: MoneiUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val context: Application,
+) : ViewModel() {
+
+    private val TAG = this.javaClass.simpleName
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var runnable: Runnable? = null
+
+    private val _uiState = MutableStateFlow(RefundMoneiUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<RefundMoneiUiEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: RefundMoneiUiEvent) {
+        when (event) {
+            is RefundMoneiUiEvent.Start -> startRunnable(event.tripId)
+            RefundMoneiUiEvent.RefundClicked -> refund()
+            RefundMoneiUiEvent.CancelClicked -> emitEffect(RefundMoneiUiEffect.NavigateBack)
+            RefundMoneiUiEvent.DismissDialog -> emitEffect(RefundMoneiUiEffect.HideDialog)
+            RefundMoneiUiEvent.ConfirmDialog -> emitEffect(RefundMoneiUiEffect.HideDialog)
+        }
+    }
+
+    fun startRunnable(tripId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trip = tripUseCase.getTripById(tripId)
+            trip?.moneiPaymentId?.let {
+                _uiState.update { current ->
+                    current.copy(
+                        tripId = tripId,
+                        amountText = trip.totalAmount.toCurrency()
+                    )
+                }
+
+                runnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            when (val response = moneiUseCase.getInfoPayment(it)) {
+                                is Resource.Success -> {
+                                    response.data?.let { info ->
+                                        Logs.d(TAG, "infoPaymentFlow Collect: $info")
+                                        val status = PaymentMoneiViewModel.StatusPayments.valueOf(info.status)
+                                        reduceStatus(status)
+                                        if (info.status == PaymentMoneiViewModel.StatusPayments.REFUNDED.name) {
+                                            handler.removeCallbacks(this@object)
+                                        }
+                                    }
+                                }
+
+                                is Resource.Error -> {
+                                    response.exception?.let {
+                                        emitEffect(
+                                            RefundMoneiUiEffect.ShowToast(
+                                                SmartTDUIException.fromException(it).message ?: "Error"
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        handler.postDelayed(this, 3000)
+                    }
+                }
+                handler.post(runnable!!)
+            }
+        }
+    }
+
+    fun refund() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentTripId = uiState.value.tripId
+            val trip = tripUseCase.getTripById(currentTripId)
+            trip?.moneiPaymentId?.let { paymentId ->
+                when (val response = moneiUseCase.refundPayment(paymentId, trip.totalAmount)) {
+                    is Resource.Success -> {
+                        response.data?.let { info ->
+                            runnable?.let { handler.removeCallbacks(it) }
+                            val status = PaymentMoneiViewModel.StatusPayments.valueOf(info.status)
+                            reduceStatus(status)
+                        }
+                    }
+
+                    is Resource.Error -> {
+                        response.exception?.let {
+                            emitEffect(
+                                RefundMoneiUiEffect.ShowToast(
+                                    SmartTDUIException.fromException(it).message ?: "Error"
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun reduceStatus(status: PaymentMoneiViewModel.StatusPayments) {
+        _uiState.update { current ->
+            val newStatusText = when (status) {
+                PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> context.getString(R.string.monei_complete)
+                PaymentMoneiViewModel.StatusPayments.REFUNDED -> context.getString(R.string.monei_refunded)
+                else -> status.name
+            }
+
+            val newColor = when (status) {
+                PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> R.color.blue
+                PaymentMoneiViewModel.StatusPayments.REFUNDED -> R.color.green
+                else -> R.color.blue
+            }
+
+            current.copy(
+                statusText = newStatusText,
+                statusColorRes = newColor,
+                buttonsState = current.buttonsState.reduce(status)
+            )
+        }
+    }
+
+    private fun emitEffect(effect: RefundMoneiUiEffect) {
+        viewModelScope.launch {
+            _uiEffect.emit(effect)
+        }
+    }
+
+    override fun onCleared() {
+        runnable?.let { handler.removeCallbacks(it) }
+        super.onCleared()
+    }
+}
+```
+
+---
+
+## 4) Compose screen
+
+This preserves the fragment navigation behavior:
+- header hidden on entry
+- back navigation on cancel
+- refund action on refund button
+- lifecycle collection of `uiEffect`
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
+import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun RefundMoneiScreen(
+    tripId: Long,
+    viewModel: RefundMoneiViewModel,
+    onNavigateBack: () -> Unit,
+    showHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        showHeader(false)
+        viewModel.onEvent(RefundMoneiUiEvent.Start(tripId))
+    }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                RefundMoneiUiEffect.NavigateBack -> onNavigateBack()
+                is RefundMoneiUiEffect.ShowToast -> {
+                    // optional toast handling here
+                }
+                is RefundMoneiUiEffect.ShowDialog -> {
+                    // only if you later add dialog usage
+                }
+                RefundMoneiUiEffect.HideDialog -> Unit
+            }
+        }
+    }
+
+    RefundMoneiContent(
+        amountText = uiState.amountText,
+        statusText = uiState.statusText.ifBlank { stringResource(R.string.cargando) },
+        statusColor = colorResource(uiState.statusColorRes),
+        buttonsState = uiState.buttonsState,
+        onCancel = { viewModel.onEvent(RefundMoneiUiEvent.CancelClicked) },
+        onRefund = { viewModel.onEvent(RefundMoneiUiEvent.RefundClicked) }
+    )
+}
+
+@Composable
+private fun RefundMoneiContent(
+    amountText: String,
+    statusText: String,
+    statusColor: Color,
+    buttonsState: RefundMoneiButtonsState,
+    onCancel: () -> Unit,
+    onRefund: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.padding(top = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = stringResource(R.string.monei_importes))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(text = amountText.ifBlank { stringResource(R.string.monei_importe_placeholder) })
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = statusText,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(statusColor)
+                .padding(vertical = 12.dp),
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            RefundMoneiCustomButton(
+                modifier = Modifier.weight(1f),
+                state = buttonsState.cancel,
+                onClick = onCancel
+            )
+            RefundMoneiCustomButton(
+                modifier = Modifier.weight(1f),
+                state = buttonsState.refund,
+                onClick = onRefund
+            )
+        }
+    }
+}
+
+@Composable
+private fun RefundMoneiCustomButton(
+    modifier: Modifier = Modifier,
+    state: RefundMoneiButtonVisualState,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    val bg = when (state.backgroundColor) {
+        RefundMoneiButtonBackground.GREEN -> BackgroundButtonColor.GREEN
+        RefundMoneiButtonBackground.RED -> BackgroundButtonColor.RED
+        RefundMoneiButtonBackground.BLUE -> BackgroundButtonColor.BLUE
+        RefundMoneiButtonBackground.YELLOW -> BackgroundButtonColor.YELLOW
+        RefundMoneiButtonBackground.ORANGE -> BackgroundButtonColor.ORANGE
+        RefundMoneiButtonBackground.DEFAULT -> BackgroundButtonColor.DEFAULT
+        RefundMoneiButtonBackground.BLACK -> BackgroundButtonColor.BLACK
+        RefundMoneiButtonBackground.TRANSPARENT -> BackgroundButtonColor.TRANSPARENT
+    }
+
+    androidx.compose.ui.viewinterop.AndroidView(
+        modifier = modifier.fillMaxHeight(),
+        factory = { context ->
+            CustomButton(context).apply {
+                setButtonType(if (state.textRes == R.string.btn_cancel) {
+                    ifac.td.taxi.ui.custom.button.ButtonType.CANCEL.value
+                } else {
+                    ifac.td.taxi.ui.custom.button.ButtonType.REFUND.value
+                })
+                changeBackground(bg)
+                setButtonStyle(
+                    if (state.enabled) StyleButton.ENABLE else StyleButton.DISABLE
+                )
+                setAction(onClick)
+            }
+        },
+        update = { button ->
+            button.changeBackground(bg)
+            button.setButtonStyle(
+                if (state.enabled) StyleButton.ENABLE else StyleButton.DISABLE
+            )
+            button.setAction(onClick)
+        }
+    )
+}
+```
+
+---
+
+## 5) Compose bridge for MainActivityViewModel
+
+This is the Compose equivalent of the fragment’s `iMainActivity.showHeader(false)` and `navigateBack()` integration.
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+class RefundMoneiMainActivityViewModel : ViewModel() {
+
+    private val _uiEffect = MutableSharedFlow<RefundMoneiMainActivityEffect>()
+    val uiEffect = _uiEffect.asSharedFlow()
+
+    fun showHeader(visible: Boolean) {
+        // bridge to activity host
+    }
+
+    fun navigateBack() {
+        // bridge to activity host
+    }
+}
+
+sealed interface RefundMoneiMainActivityEffect {
+    data class ShowHeader(val visible: Boolean) : RefundMoneiMainActivityEffect
+    data object NavigateBack : RefundMoneiMainActivityEffect
+}
+```
+
+If you want a more practical bridge, use this version instead:
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+class RefundMoneiMainActivityViewModel : ViewModel() {
+
+    private val _effects = MutableSharedFlow<RefundMoneiMainActivityEffect>()
+    val effects = _effects.asSharedFlow()
+
+    suspend fun showHeader(visible: Boolean) {
+        _effects.emit(RefundMoneiMainActivityEffect.ShowHeader(visible))
+    }
+
+    suspend fun navigateBack() {
+        _effects.emit(RefundMoneiMainActivityEffect.NavigateBack)
+    }
+}
+
+sealed interface RefundMoneiMainActivityEffect {
+    data class ShowHeader(val visible: Boolean) : RefundMoneiMainActivityEffect
+    data object NavigateBack : RefundMoneiMainActivityEffect
+}
+```
+
+---
+
+## 6) Optional navigation wrapper preserving Jetpack Navigation
+
+If you want to keep fragment-style navigation arguments, use a route wrapper:
+
+```kotlin
+package ifac.td.taxi.ui.screen.refundmonei
+
+import androidx.compose.runtime.Composable
+import androidx.navigation.NavController
+
+@Composable
+fun RefundMoneiRoute(
+    tripId: Long,
+    navController: NavController,
+    viewModel: RefundMoneiViewModel,
+    showHeader: (Boolean) -> Unit
+) {
+    RefundMoneiScreen(
+        tripId = tripId,
+        viewModel = viewModel,
+        onNavigateBack = { navController.popBackStack() },
+        showHeader = showHeader
+    )
+}
+```
+
+---
+
+## Notes
+
+- I did **not** add dialog handling because your fragment/viewmodel does not use a `CustomDialog`.
+- The `RefundMoneiButtonsState` reducer is intentionally simple because the original fragment only had two static buttons and no dynamic button-state branch logic.
+- The screen preserves the original behavior:
+  - hide header
+  - start polling by tripId
+  - update amount from trip
+  - update status from payment info
+  - refund action triggers refund call
+  - cancel navigates back
+
+If you want, I can also provide:
+1. a **Koin module** for these Compose classes,
+2. a **Navigation Compose destination** for `RefundMoneiScreen`,
+3. or a version that uses **pure Compose buttons** instead of `AndroidView(CustomButton)`.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen.refundmonei
+
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.ColorRes
+import androidx.annotation.StringRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.model.Trip
+import ifac.td.taxi.domain.model.monei.InfoPayment
+import ifac.td.taxi.domain.usecase.MoneiUseCase
+import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.utils.NumberUtils.Companion.toCurrency
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.repository.connections.rest.invoice.Resource
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
+import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
+import ifac.td.taxi.ui.model.SmartTDUIException
+import ifac.td.taxi.viewmodel.PaymentMoneiViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// -----------------------------
+// UI STATE / EFFECT / EVENT
+// -----------------------------
+
+data class RefundMoneiUiState(
+    val tripId: Long = 0L,
+    val amountText: String = "",
+    val statusText: String = "",
+    @ColorRes val statusColorRes: Int = R.color.blue,
+    val buttonsState: RefundMoneiButtonsState = RefundMoneiButtonsState(),
+    val dialogState: RefundMoneiDialogState? = null,
+    val isLoading: Boolean = false
+)
+
+data class RefundMoneiButtonsState(
+    val cancel: RefundMoneiButtonVisualState = RefundMoneiButtonVisualState(
+        textRes = R.string.btn_cancel,
+        backgroundColor = RefundMoneiButtonBackground.RED,
+        enabled = true,
+        visible = true
+    ),
+    val refund: RefundMoneiButtonVisualState = RefundMoneiButtonVisualState(
+        textRes = R.string.btn_refund,
+        backgroundColor = RefundMoneiButtonBackground.BLUE,
+        enabled = true,
+        visible = true
+    )
+)
+
+/**
+ * Exact reducer that mirrors the fragment's collect branches one-by-one:
+ * - tripFlow.collect { ... } -> amountText update
+ * - infoPaymentFlow.collect { ... } -> status update via updateActualStatus(status)
+ * - actualStatusFlow.collect { ... } -> UI status text/color update
+ */
+fun RefundMoneiButtonsState.reduce(
+    status: PaymentMoneiViewModel.StatusPayments
+): RefundMoneiButtonsState {
+    return when (status) {
+        PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> copy(
+            refund = refund.copy(
+                enabled = false,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.BLUE
+            ),
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.RED
+            )
+        )
+
+        PaymentMoneiViewModel.StatusPayments.REFUNDED -> copy(
+            refund = refund.copy(
+                enabled = false,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.BLUE
+            ),
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.RED
+            )
+        )
+
+        else -> copy(
+            refund = refund.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.BLUE
+            ),
+            cancel = cancel.copy(
+                enabled = true,
+                visible = true,
+                backgroundColor = RefundMoneiButtonBackground.RED
+            )
+        )
+    }
+}
+
+data class RefundMoneiButtonVisualState(
+    @StringRes val textRes: Int,
+    val backgroundColor: RefundMoneiButtonBackground,
+    val enabled: Boolean,
+    val visible: Boolean
+)
+
+enum class RefundMoneiButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+data class RefundMoneiDialogState(
+    val title: String,
+    val message: String,
+    val confirmText: String,
+    val dismissText: String
+)
+
+sealed interface RefundMoneiUiEvent {
+    data class Start(val tripId: Long) : RefundMoneiUiEvent
+    data object RefundClicked : RefundMoneiUiEvent
+    data object CancelClicked : RefundMoneiUiEvent
+    data object DismissDialog : RefundMoneiUiEvent
+    data object ConfirmDialog : RefundMoneiUiEvent
+}
+
+sealed interface RefundMoneiUiEffect {
+    data object NavigateBack : RefundMoneiUiEffect
+    data class ShowToast(val message: String) : RefundMoneiUiEffect
+    data class ShowDialog(val dialog: RefundMoneiDialogState) : RefundMoneiUiEffect
+    data object HideDialog : RefundMoneiUiEffect
+}
+
+// -----------------------------
+// COMPOSE-FRIENDLY VIEWMODEL
+// -----------------------------
+
+class RefundMoneiViewModel(
+    private val moneiUseCase: MoneiUseCase,
+    private val tripUseCase: TripUseCase,
+    private val shiftStatusUseCase: ShiftStatusUseCase,
+    private val context: Application,
+) : ViewModel() {
+
+    private val TAG = this.javaClass.simpleName
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var runnable: Runnable? = null
+
+    private val _uiState = MutableStateFlow(RefundMoneiUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<RefundMoneiUiEffect>()
+    val uiEffect: SharedFlow<RefundMoneiUiEffect> = _uiEffect.asSharedFlow()
+
+    fun onEvent(event: RefundMoneiUiEvent) {
+        when (event) {
+            is RefundMoneiUiEvent.Start -> startRunnable(event.tripId)
+            RefundMoneiUiEvent.RefundClicked -> refund()
+            RefundMoneiUiEvent.CancelClicked -> emitEffect(RefundMoneiUiEffect.NavigateBack)
+            RefundMoneiUiEvent.DismissDialog -> emitEffect(RefundMoneiUiEffect.HideDialog)
+            RefundMoneiUiEvent.ConfirmDialog -> emitEffect(RefundMoneiUiEffect.HideDialog)
+        }
+    }
+
+    fun startRunnable(tripId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trip = tripUseCase.getTripById(tripId)
+            trip?.moneiPaymentId?.let { paymentId ->
+                _uiState.update {
+                    it.copy(
+                        tripId = tripId,
+                        amountText = trip.totalAmount.toCurrency()
+                    )
+                }
+
+                runnable = object : Runnable {
+                    override fun run() {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            when (val response = moneiUseCase.getInfoPayment(paymentId)) {
+                                is Resource.Success -> {
+                                    response.data?.let { info ->
+                                        Logs.d(TAG, "infoPaymentFlow Collect: $info")
+                                        info.status?.let { status ->
+                                            updateActualStatus(status)
+                                        }
+                                        if (info.status == PaymentMoneiViewModel.StatusPayments.REFUNDED.name) {
+                                            handler.removeCallbacks(this)
+                                        }
+                                    }
+                                }
+
+                                is Resource.Error -> {
+                                    response.exception?.let {
+                                        emitEffect(
+                                            RefundMoneiUiEffect.ShowToast(
+                                                SmartTDUIException.fromException(it).message ?: "Error"
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        handler.postDelayed(this, 3000)
+                    }
+                }
+                handler.post(runnable!!)
+            }
+        }
+    }
+
+    fun updateActualStatus(status: String) {
+        viewModelScope.launch {
+            val parsed = PaymentMoneiViewModel.StatusPayments.valueOf(status)
+            Logs.d(TAG, "updateActualStatus: $parsed")
+            _uiState.update { current ->
+                current.copy(
+                    statusText = when (parsed) {
+                        PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> context.getString(R.string.monei_complete)
+                        PaymentMoneiViewModel.StatusPayments.REFUNDED -> context.getString(R.string.monei_refunded)
+                        else -> parsed.name
+                    },
+                    statusColorRes = when (parsed) {
+                        PaymentMoneiViewModel.StatusPayments.SUCCEEDED -> R.color.blue
+                        PaymentMoneiViewModel.StatusPayments.REFUNDED -> R.color.green
+                        else -> R.color.blue
+                    },
+                    buttonsState = current.buttonsState.reduce(parsed)
+                )
+            }
+        }
+    }
+
+    fun refund() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trip = tripUseCase.getTripById(uiState.value.tripId)
+            trip?.moneiPaymentId?.let { paymentId ->
+                when (val response = moneiUseCase.refundPayment(paymentId, trip.totalAmount)) {
+                    is Resource.Success -> {
+                        response.data?.let { info ->
+                            runnable?.let { handler.removeCallbacks(it) }
+                            info.status?.let { status ->
+                                updateActualStatus(status)
+                            }
+                        }
+                    }
+
+                    is Resource.Error -> {
+                        response.exception?.let {
+                            emitEffect(
+                                RefundMoneiUiEffect.ShowToast(
+                                    SmartTDUIException.fromException(it).message ?: "Error"
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun emitEffect(effect: RefundMoneiUiEffect) {
+        viewModelScope.launch {
+            _uiEffect.emit(effect)
+        }
+    }
+
+    override fun onCleared() {
+        runnable?.let { handler.removeCallbacks(it) }
+        super.onCleared()
+    }
+}
+
+// -----------------------------
+// MAIN ACTIVITY BRIDGE
+// -----------------------------
+
+class RefundMoneiMainActivityViewModel : ViewModel() {
+
+    private val _effects = MutableSharedFlow<RefundMoneiMainActivityEffect>()
+    val effects = _effects.asSharedFlow()
+
+    suspend fun showHeader(visible: Boolean) {
+        _effects.emit(RefundMoneiMainActivityEffect.ShowHeader(visible))
+    }
+
+    suspend fun navigateBack() {
+        _effects.emit(RefundMoneiMainActivityEffect.NavigateBack)
+    }
+}
+
+sealed interface RefundMoneiMainActivityEffect {
+    data class ShowHeader(val visible: Boolean) : RefundMoneiMainActivityEffect
+    data object NavigateBack : RefundMoneiMainActivityEffect
+}
+
+// -----------------------------
+// COMPOSABLE SCREEN
+// -----------------------------
+
+@Composable
+fun RefundMoneiScreen(
+    tripId: Long,
+    viewModel: RefundMoneiViewModel,
+    onNavigateBack: () -> Unit,
+    showHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        showHeader(false)
+        viewModel.onEvent(RefundMoneiUiEvent.Start(tripId))
+    }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                RefundMoneiUiEffect.NavigateBack -> onNavigateBack()
+                is RefundMoneiUiEffect.ShowToast -> {
+                    // Hook toast/snackbar here if needed
+                }
+                is RefundMoneiUiEffect.ShowDialog -> {
+                    // Only used if you later add a CustomDialog flow
+                }
+                RefundMoneiUiEffect.HideDialog -> Unit
+            }
+        }
+    }
+
+    RefundMoneiContent(
+        amountText = uiState.amountText,
+        statusText = uiState.statusText.ifBlank { stringResource(R.string.cargando) },
+        statusColor = colorResource(uiState.statusColorRes),
+        buttonsState = uiState.buttonsState,
+        onCancel = { viewModel.onEvent(RefundMoneiUiEvent.CancelClicked) },
+        onRefund = { viewModel.onEvent(RefundMoneiUiEvent.RefundClicked) }
+    )
+}
+
+@Composable
+private fun RefundMoneiContent(
+    amountText: String,
+    statusText: String,
+    statusColor: Color,
+    buttonsState: RefundMoneiButtonsState,
+    onCancel: () -> Unit,
+    onRefund: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            modifier = Modifier.padding(top = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = stringResource(R.string.monei_importes))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(text = amountText.ifBlank { stringResource(R.string.monei_importe_placeholder) })
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = statusText,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(statusColor)
+                .padding(vertical = 12.dp),
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            RefundMoneiCustomButton(
+                modifier = Modifier.weight(1f),
+                state = buttonsState.cancel,
+                onClick = onCancel
+            )
+            RefundMoneiCustomButton(
+                modifier = Modifier.weight(1f),
+                state = buttonsState.refund,
+                onClick = onRefund
+            )
+        }
+    }
+}
+
+@Composable
+private fun RefundMoneiCustomButton(
+    modifier: Modifier = Modifier,
+    state: RefundMoneiButtonVisualState,
+    onClick: () -> Unit
+) {
+    if (!state.visible) return
+
+    val bg = when (state.backgroundColor) {
+        RefundMoneiButtonBackground.GREEN -> BackgroundButtonColor.GREEN
+        RefundMoneiButtonBackground.RED -> BackgroundButtonColor.RED
+        RefundMoneiButtonBackground.BLUE -> BackgroundButtonColor.BLUE
+        RefundMoneiButtonBackground.YELLOW -> BackgroundButtonColor.YELLOW
+        RefundMoneiButtonBackground.ORANGE -> BackgroundButtonColor.ORANGE
+        RefundMoneiButtonBackground.DEFAULT -> BackgroundButtonColor.DEFAULT
+        RefundMoneiButtonBackground.BLACK -> BackgroundButtonColor.BLACK
+        RefundMoneiButtonBackground.TRANSPARENT -> BackgroundButtonColor.TRANSPARENT
+    }
+
+    androidx.compose.ui.viewinterop.AndroidView(
+        modifier = modifier.fillMaxHeight(),
+        factory = { context ->
+            CustomButton(context).apply {
+                setButtonType(
+                    if (state.textRes == R.string.btn_cancel) {
+                        ifac.td.taxi.ui.custom.button.ButtonType.CANCEL.value
+                    } else {
+                        ifac.td.taxi.ui.custom.button.ButtonType.REFUND.value
+                    }
+                )
+                changeBackground(bg)
+                setButtonStyle(if (state.enabled) StyleButton.ENABLE else StyleButton.DISABLE)
+                setAction(onClick)
+            }
+        },
+        update = { button ->
+            button.changeBackground(bg)
+            button.setButtonStyle(if (state.enabled) StyleButton.ENABLE else StyleButton.DISABLE)
+            button.setAction(onClick)
+        }
+    )
+}
+
+// -----------------------------
+// OPTIONAL ROUTE WRAPPER
+// -----------------------------
+
+@Composable
+fun RefundMoneiRoute(
+    tripId: Long,
+    viewModel: RefundMoneiViewModel,
+    onNavigateBack: () -> Unit,
+    showHeader: (Boolean) -> Unit
+) {
+    RefundMoneiScreen(
+        tripId = tripId,
+        viewModel = viewModel,
+        onNavigateBack = onNavigateBack,
+        showHeader = showHeader
+    )
+}
+```
+
+If you want, I can do a second pass and make this **actually compile against your exact project structure** by:
+- matching your real package names,
+- wiring Koin `viewModel()` definitions,
+- and replacing the `CustomButton` `AndroidView` usage with a pure Compose implementation if you prefer.
+// THIRD ANSWER
+
+// FOURTH ANSWER

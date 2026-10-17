@@ -1,0 +1,1392 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite that preserves the fragment behavior, keeps navigation compatible with Jetpack Views, and replaces the fragment’s button/dialog logic with state + reducer + effects.
+
+I’m giving you:
+
+1. A `ReceiptRedSysScreen` composable
+2. A Compose-friendly `ReceiptRedSysViewModel` using `UiState + UiEvent + SharedFlow<ReceiptRedSysUiEffect>`
+3. A `ReceiptRedSysButtonsState` reducer that mirrors the fragment branches one-by-one
+4. A `ReceiptRedSysMainActivityViewModel` bridge for dialog/navigation integration
+5. A small Compose dialog handler pattern for `CustomDialog`-style dialogs
+6. A Compose replacement for the RecyclerView list using `LazyColumn`
+
+---
+
+## 1) Compose UI model + reducer
+
+```kotlin
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.AUTHORIZATION
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.DENIED
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.REFUND
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class ReceiptRedSysButtonVisualState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val buttonType: ButtonType = ButtonType.IMPRIMIR,
+    val backgroundColor: ReceiptRedSysButtonBackground = ReceiptRedSysButtonBackground.BLUE,
+    val iconRes: Int? = null,
+    val text: String = "",
+    val textVisible: Boolean = true,
+    val iconVisible: Boolean = true,
+    val onlyTextVisible: Boolean = false,
+    val onlyTextValue: String? = null,
+)
+
+enum class ReceiptRedSysButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+data class ReceiptRedSysButtonsState(
+    val primary: ReceiptRedSysButtonVisualState = ReceiptRedSysButtonVisualState(),
+    val secondary: ReceiptRedSysButtonVisualState = ReceiptRedSysButtonVisualState(visible = false),
+) {
+    companion object {
+        fun fromOperation(operation: RedSysOperation): ReceiptRedSysButtonsState {
+            val canOpenDialog =
+                (operation.operationType == REFUND && operation.refundResponse != null) ||
+                (operation.operationType == AUTHORIZATION && operation.result != DENIED)
+
+            if (!canOpenDialog) {
+                return ReceiptRedSysButtonsState(
+                    primary = ReceiptRedSysButtonVisualState(visible = false),
+                    secondary = ReceiptRedSysButtonVisualState(visible = false)
+                )
+            }
+
+            return if (operation.operationType == AUTHORIZATION && operation.result != DENIED) {
+                ReceiptRedSysButtonsState(
+                    primary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.DEVOLVER,
+                        backgroundColor = ReceiptRedSysButtonBackground.RED,
+                        text = "DEVOLVER",
+                        iconVisible = true,
+                        textVisible = true
+                    ),
+                    secondary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.IMPRIMIR,
+                        backgroundColor = ReceiptRedSysButtonBackground.BLUE,
+                        text = "IMPRIMIR",
+                        iconVisible = true,
+                        textVisible = true
+                    )
+                )
+            } else {
+                ReceiptRedSysButtonsState(
+                    primary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.IMPRIMIR,
+                        backgroundColor = ReceiptRedSysButtonBackground.BLUE,
+                        text = "IMPRIMIR",
+                        iconVisible = true,
+                        textVisible = true
+                    ),
+                    secondary = ReceiptRedSysButtonVisualState(visible = false)
+                )
+            }
+        }
+    }
+}
+```
+
+---
+
+## 2) Compose-friendly UiState + UiEvent + UiEffect
+
+```kotlin
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+data class ReceiptRedSysUiState(
+    val operations: List<RedSysOperation> = emptyList(),
+    val selectedOperation: RedSysOperation? = null,
+    val buttonsState: ReceiptRedSysButtonsState = ReceiptRedSysButtonsState(),
+    val isLoading: Boolean = false,
+    val dialogState: ReceiptRedSysDialogState? = null,
+)
+
+data class ReceiptRedSysDialogState(
+    val title: String,
+    val description: String,
+    val buttons: List<ButtonType>,
+    val operation: RedSysOperation? = null,
+)
+
+sealed interface ReceiptRedSysUiEvent {
+    data object ScreenStarted : ReceiptRedSysUiEvent
+    data class OperationClicked(val operation: RedSysOperation) : ReceiptRedSysUiEvent
+    data object DialogDismissed : ReceiptRedSysUiEvent
+    data class DialogButtonClicked(val buttonType: ButtonType) : ReceiptRedSysUiEvent
+    data object RefreshRequested : ReceiptRedSysUiEvent
+}
+
+sealed interface ReceiptRedSysUiEffect {
+    data class ShowDialog(val dialogState: ReceiptRedSysDialogState) : ReceiptRedSysUiEffect
+    data class PrintServiceTicket(val operation: RedSysOperation) : ReceiptRedSysUiEffect
+    data class PrintRefundTicket(val operation: RedSysOperation) : ReceiptRedSysUiEffect
+    data class DoRefund(val operation: RedSysOperation) : ReceiptRedSysUiEffect
+    data class ShowRefundResultDialog(val success: Boolean) : ReceiptRedSysUiEffect
+    data object RefreshList : ReceiptRedSysUiEffect
+}
+```
+
+---
+
+## 3) Compose ViewModel with SharedFlow effects
+
+This keeps the original business logic, but exposes state/effects for Compose.
+
+```kotlin
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import android.app.Application
+import androidx.lifecycle.viewModelScope
+import es.redsys.paysys.Operative.Managers.RedCLSRefundResponse
+import ifac.td.taxi.domain.model.RedSysLoginResponse.Error
+import ifac.td.taxi.domain.model.RedSysLoginResponse.Success
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.domain.model.RedSysReturn
+import ifac.td.taxi.domain.model.RedSysSessionState
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class ReceiptRedSysViewModel(
+    context: Application,
+    private val redSysUseCase: RedSysUseCase,
+    private val ticketUseCase: TicketUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val redSysSessionState: RedSysSessionState,
+    private val tripUseCase: TripUseCase,
+) : androidx.lifecycle.AndroidViewModel(context) {
+
+    private val _uiState = MutableStateFlow(ReceiptRedSysUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ReceiptRedSysUiEffect>()
+    val uiEffect: SharedFlow<ReceiptRedSysUiEffect> = _uiEffect
+
+    fun onEvent(event: ReceiptRedSysUiEvent) {
+        when (event) {
+            ReceiptRedSysUiEvent.ScreenStarted -> updateList()
+            ReceiptRedSysUiEvent.RefreshRequested -> updateList()
+            is ReceiptRedSysUiEvent.OperationClicked -> handleOperationClicked(event.operation)
+            ReceiptRedSysUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = null) }
+            is ReceiptRedSysUiEvent.DialogButtonClicked -> handleDialogButton(event.buttonType)
+        }
+    }
+
+    private fun handleOperationClicked(operation: RedSysOperation) {
+        val buttonsState = ReceiptRedSysButtonsState.fromOperation(operation)
+        _uiState.update {
+            it.copy(
+                selectedOperation = operation,
+                buttonsState = buttonsState,
+                dialogState = if (buttonsState.primary.visible) {
+                    ReceiptRedSysDialogState(
+                        title = "RedSys",
+                        description = "Operación RedSys",
+                        buttons = if (operation.operationType == RedSysOperation.AUTHORIZATION && operation.result != RedSysOperation.DENIED) {
+                            listOf(ButtonType.DEVOLVER, ButtonType.IMPRIMIR)
+                        } else {
+                            listOf(ButtonType.IMPRIMIR)
+                        },
+                        operation = operation
+                    )
+                } else null
+            )
+        }
+
+        if (buttonsState.primary.visible) {
+            viewModelScope.launch {
+                _uiEffect.emit(
+                    ReceiptRedSysUiEffect.ShowDialog(
+                        _uiState.value.dialogState!!
+                    )
+                )
+            }
+        }
+    }
+
+    private fun handleDialogButton(buttonType: ButtonType) {
+        val operation = _uiState.value.selectedOperation ?: return
+        when (buttonType) {
+            ButtonType.DEVOLVER -> viewModelScope.launch {
+                _uiEffect.emit(ReceiptRedSysUiEffect.DoRefund(operation))
+            }
+
+            ButtonType.IMPRIMIR -> viewModelScope.launch {
+                if (operation.result != RedSysOperation.DENIED && operation.operationType == RedSysOperation.AUTHORIZATION) {
+                    _uiEffect.emit(ReceiptRedSysUiEffect.PrintServiceTicket(operation))
+                } else if (operation.result != RedSysOperation.DENIED && operation.operationType == RedSysOperation.REFUND) {
+                    _uiEffect.emit(ReceiptRedSysUiEffect.PrintRefundTicket(operation))
+                }
+            }
+
+            ButtonType.ACCEPT -> {
+                _uiState.update { it.copy(dialogState = null) }
+            }
+
+            else -> Unit
+        }
+    }
+
+    fun doRefund(redSysOperation: RedSysOperation) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val usernameRedSys = redSysUseCase.getUsernameRedSys()
+                val passwordRedSys = TemporalData.passwordRedSys
+                val loginResponse = usernameRedSys?.let { redSysUseCase.loginRedSys(it, passwordRedSys) }
+
+                when (loginResponse) {
+                    is Success -> {
+                        val terminal = loginResponse.merchantList.firstOrNull()?.terminalList?.firstOrNull()
+                            ?: return@launch
+
+                        val rtsIdentifierLast5 = redSysOperation.RTSIdentifier.takeLast(5)
+                        val consultaResponse = redSysUseCase.consultaRedSys(terminal, null)
+                        val paymentInfo = consultaResponse?.transactionDataList?.find {
+                            it.identifierRTS.takeLast(5) == rtsIdentifierLast5
+                        } ?: return@launch
+
+                        val refundResponse = redSysUseCase.doRefund(terminal, paymentInfo)
+                        redSysOperation.refundResponse = refundResponse
+                        processRefundResponse(refundResponse)
+                    }
+
+                    is Error -> _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                    null -> _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                }
+            }.onFailure {
+                _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+            }
+        }
+    }
+
+    private suspend fun processRefundResponse(refundResponse: RedCLSRefundResponse?) {
+        val result = refundResponse?.let { redSysUseCase.parseDevolucion(it) }
+        if (result != null && result.result.equals(RedSysOperation.AUTHORIZED, ignoreCase = true)) {
+            _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(true))
+            printRefundTicket(refund = result)
+        } else {
+            _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+        }
+    }
+
+    fun printServiceTicket(redSysOperation: RedSysOperation?) {
+        viewModelScope.launch {
+            redSysOperation?.RTSIdentifier?.let {
+                val buffTicketRedsys = tripUseCase.getTripByRedsysByRTS(it)
+                val ticketBuff = buffTicketRedsys?.ticketBufferRedSys
+                if (!ticketBuff.isNullOrEmpty()) {
+                    printerUseCase.printTicket(ticketBuff, true)
+                }
+            }
+        }
+    }
+
+    fun printRefundTicket(redSysOperation: RedSysOperation? = null, refund: RedSysReturn? = null) {
+        viewModelScope.launch {
+            val parsedResult = refund ?: redSysOperation?.refundResponse?.let { redSysUseCase.parseDevolucion(it) } ?: return@launch
+            val terminalData = redSysSessionState.terminalData ?: return@launch
+
+            val ticket = ticketUseCase.prepareRedSysRefundTicket(
+                signature = false,
+                resultadoDevolucion = parsedResult,
+                terminalData = terminalData
+            )
+            printerUseCase.printTicket(ticket, true)
+        }
+    }
+
+    fun updateList() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val operations = fetchOperations()
+            _uiState.update { it.copy(operations = operations ?: emptyList()) }
+        }
+    }
+
+    private suspend fun fetchOperations(): List<RedSysOperation>? {
+        redSysUseCase.configureRedSys()
+        val usernameRedSys = redSysUseCase.getUsernameRedSys() ?: return null
+        val passwordRedSys = TemporalData.passwordRedSys
+        val loginResponse = redSysUseCase.loginRedSys(usernameRedSys, passwordRedSys)
+
+        return when (loginResponse) {
+            is Success -> {
+                val terminal = loginResponse.merchantList.firstOrNull()?.terminalList?.firstOrNull() ?: return null
+                val consultaResponse = redSysUseCase.consultaRedSys(terminal, null)
+                redSysUseCase.parseConsulta(consultaResponse)
+            }
+
+            is Error, null -> null
+        }
+    }
+}
+```
+
+---
+
+## 4) Exact `ReceiptRedSysButtonsState` reducer mirroring fragment branches
+
+This is the one-to-one mapping of the fragment’s dialog/button logic:
+
+```kotlin
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.AUTHORIZATION
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.DENIED
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.REFUND
+import ifac.td.taxi.ui.custom.button.ButtonType
+
+fun ReceiptRedSysButtonsState.reduceForOperation(operation: RedSysOperation): ReceiptRedSysButtonsState {
+    return when {
+        (operation.operationType == REFUND && operation.refundResponse != null) ||
+            (operation.operationType == AUTHORIZATION && operation.result != DENIED) -> {
+            if (operation.operationType == AUTHORIZATION && operation.result != DENIED) {
+                copy(
+                    primary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.DEVOLVER,
+                        backgroundColor = ReceiptRedSysButtonBackground.RED,
+                        text = "DEVOLVER",
+                        iconVisible = true,
+                        textVisible = true
+                    ),
+                    secondary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.IMPRIMIR,
+                        backgroundColor = ReceiptRedSysButtonBackground.BLUE,
+                        text = "IMPRIMIR",
+                        iconVisible = true,
+                        textVisible = true
+                    )
+                )
+            } else {
+                copy(
+                    primary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.IMPRIMIR,
+                        backgroundColor = ReceiptRedSysButtonBackground.BLUE,
+                        text = "IMPRIMIR",
+                        iconVisible = true,
+                        textVisible = true
+                    ),
+                    secondary = ReceiptRedSysButtonVisualState(
+                        visible = false
+                    )
+                )
+            }
+        }
+
+        else -> copy(
+            primary = ReceiptRedSysButtonVisualState(visible = false),
+            secondary = ReceiptRedSysButtonVisualState(visible = false)
+        )
+    }
+}
+```
+
+---
+
+## 5) Compose screen
+
+This replaces the fragment + RecyclerView + observer collection.
+
+```kotlin
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleStartEffect
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.ui.custom.button.ButtonType
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun ReceiptRedSysScreen(
+    viewModel: ReceiptRedSysViewModel,
+    onBack: () -> Unit = {},
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LifecycleStartEffect(Unit) {
+        viewModel.onEvent(ReceiptRedSysUiEvent.ScreenStarted)
+        onStop { }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ReceiptRedSysUiEffect.ShowDialog -> {
+                    // handled by dialog state below
+                }
+
+                is ReceiptRedSysUiEffect.DoRefund -> viewModel.doRefund(effect.operation)
+                is ReceiptRedSysUiEffect.PrintServiceTicket -> viewModel.printServiceTicket(effect.operation)
+                is ReceiptRedSysUiEffect.PrintRefundTicket -> viewModel.printRefundTicket(effect.operation)
+                is ReceiptRedSysUiEffect.ShowRefundResultDialog -> {
+                    // dialog state can be updated here if you want a dedicated result dialog
+                }
+
+                ReceiptRedSysUiEffect.RefreshList -> viewModel.updateList()
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(uiState.operations) { operation ->
+                ReceiptRedSysOperationRow(
+                    operation = operation,
+                    onClick = { viewModel.onEvent(ReceiptRedSysUiEvent.OperationClicked(operation)) }
+                )
+            }
+        }
+
+        uiState.dialogState?.let { dialog ->
+            AlertDialog(
+                onDismissRequest = { viewModel.onEvent(ReceiptRedSysUiEvent.DialogDismissed) },
+                title = { Text(dialog.title) },
+                text = { Text(dialog.description) },
+                confirmButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        dialog.buttons.forEach { button ->
+                            TextButton(onClick = {
+                                viewModel.onEvent(ReceiptRedSysUiEvent.DialogButtonClicked(button))
+                            }) {
+                                Text(button.name)
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReceiptRedSysOperationRow(
+    operation: RedSysOperation,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(16.dp)
+    ) {
+        Text(text = "RTS: ${operation.RTSIdentifier}")
+        Text(text = "Type: ${operation.operationType}")
+        Text(text = "Result: ${operation.result}")
+    }
+}
+```
+
+---
+
+## 6) Compose bridge for MainActivity ViewModel
+
+This is the bridge that lets your Compose screen behave like the fragment did, especially for dialog handling and shared flows.
+
+```kotlin
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+
+data class ReceiptRedSysMainActivityDialogState(
+    val model: CustomDialog.CustomDialogModel,
+)
+
+sealed interface ReceiptRedSysMainActivityUiEffect {
+    data class OpenDialog(val dialog: ReceiptRedSysMainActivityDialogState) : ReceiptRedSysMainActivityUiEffect
+    data object CloseDialog : ReceiptRedSysMainActivityUiEffect
+}
+
+class ReceiptRedSysMainActivityViewModel : ViewModel() {
+
+    private val _uiEffect = MutableSharedFlow<ReceiptRedSysMainActivityUiEffect>()
+    val uiEffect: SharedFlow<ReceiptRedSysMainActivityUiEffect> = _uiEffect.asSharedFlow()
+
+    fun openDialog(model: CustomDialog.CustomDialogModel) {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                ReceiptRedSysMainActivityUiEffect.OpenDialog(
+                    ReceiptRedSysMainActivityDialogState(model)
+                )
+            )
+        }
+    }
+
+    fun closeDialog() {
+        viewModelScope.launch {
+            _uiEffect.emit(ReceiptRedSysMainActivityUiEffect.CloseDialog)
+        }
+    }
+}
+```
+
+---
+
+## 7) If you want exact CustomDialog integration in Compose
+
+If your app still uses the existing `CustomDialog` model, you can keep the dialog state in the ViewModel and render a Compose dialog from it, while preserving the same semantics as the fragment.
+
+Example mapping:
+
+```kotlin
+@Composable
+fun ReceiptRedSysCustomDialog(
+    dialogState: ReceiptRedSysDialogState,
+    onButtonClick: (ButtonType) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(dialogState.title) },
+        text = { Text(dialogState.description) },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                dialogState.buttons.forEach { button ->
+                    TextButton(onClick = { onButtonClick(button) }) {
+                        Text(button.name)
+                    }
+                }
+            }
+        }
+    )
+}
+```
+
+---
+
+## Notes
+
+- The fragment’s navigation is preserved conceptually: the screen is still driven by the same `receiptRedSysList` data and can be hosted inside your existing NavHost.
+- The `ReceiptRedSysButtonsState` reducer is explicit and mirrors the fragment’s `when` branches for:
+  - `AUTHORIZATION + not DENIED` → `DEVOLVER + IMPRIMIR`
+  - `REFUND + refundResponse != null` → `IMPRIMIR`
+  - otherwise hidden
+- The `SharedFlow<ReceiptRedSysUiEffect>` is used as requested.
+- I did not reuse code from other view models/classes.
+
+If you want, I can also provide:
+1. a `NavHost` destination example for this screen,
+2. a Koin module for the Compose ViewModel,
+3. a more exact Compose replica of the `ReceiptRedSysAdapter` row UI.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen.receiptredsys
+
+import android.app.Application
+import android.content.res.Configuration
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import es.redsys.paysys.Operative.Managers.RedCLSRefundResponse
+import ifac.td.taxi.domain.model.RedSysLoginResponse.Error
+import ifac.td.taxi.domain.model.RedSysLoginResponse.Success
+import ifac.td.taxi.domain.model.RedSysOperation
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.AUTHORIZATION
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.DENIED
+import ifac.td.taxi.domain.model.RedSysOperation.Companion.REFUND
+import ifac.td.taxi.domain.model.RedSysReturn
+import ifac.td.taxi.domain.model.RedSysSessionState
+import ifac.td.taxi.domain.usecase.PrinterUseCase
+import ifac.td.taxi.domain.usecase.RedSysUseCase
+import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.framework.TemporalData
+import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
+import ifac.td.taxi.framework.util.Logs
+import ifac.td.taxi.ui.custom.button.ButtonType
+import ifac.td.taxi.ui.custom.dialog.CustomDialog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+// -----------------------------
+// UI STATE / EFFECTS / EVENTS
+// -----------------------------
+
+data class ReceiptRedSysUiState(
+    val operations: List<RedSysOperation> = emptyList(),
+    val selectedOperation: RedSysOperation? = null,
+    val buttonsState: ReceiptRedSysButtonsState = ReceiptRedSysButtonsState(),
+    val dialogState: ReceiptRedSysDialogState? = null,
+    val isLoading: Boolean = false,
+)
+
+data class ReceiptRedSysDialogState(
+    val title: String,
+    val description: String,
+    val buttons: List<ButtonType>,
+    val operation: RedSysOperation? = null,
+    val checkDisableButton: Boolean = false,
+)
+
+sealed interface ReceiptRedSysUiEvent {
+    data object ScreenStarted : ReceiptRedSysUiEvent
+    data object RefreshRequested : ReceiptRedSysUiEvent
+    data class OperationClicked(val operation: RedSysOperation) : ReceiptRedSysUiEvent
+    data class DialogButtonClicked(val buttonType: ButtonType) : ReceiptRedSysUiEvent
+    data object DialogDismissed : ReceiptRedSysUiEvent
+}
+
+sealed interface ReceiptRedSysUiEffect {
+    data class ShowDialog(val dialogState: ReceiptRedSysDialogState) : ReceiptRedSysUiEffect
+    data class DoRefund(val operation: RedSysOperation) : ReceiptRedSysUiEffect
+    data class PrintServiceTicket(val operation: RedSysOperation) : ReceiptRedSysUiEffect
+    data class PrintRefundTicket(val operation: RedSysOperation) : ReceiptRedSysUiEffect
+    data class ShowRefundResultDialog(val success: Boolean) : ReceiptRedSysUiEffect
+    data object RefreshList : ReceiptRedSysUiEffect
+}
+
+// -----------------------------
+// BUTTON VISUAL STATE
+// -----------------------------
+
+data class ReceiptRedSysButtonVisualState(
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    val buttonType: ButtonType = ButtonType.IMPRIMIR,
+    val backgroundColor: ReceiptRedSysButtonBackground = ReceiptRedSysButtonBackground.BLUE,
+    val text: String = "",
+    val iconVisible: Boolean = true,
+    val textVisible: Boolean = true,
+    val onlyTextVisible: Boolean = false,
+    val onlyTextValue: String? = null,
+)
+
+enum class ReceiptRedSysButtonBackground {
+    GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT
+}
+
+data class ReceiptRedSysButtonsState(
+    val primary: ReceiptRedSysButtonVisualState = ReceiptRedSysButtonVisualState(visible = false),
+    val secondary: ReceiptRedSysButtonVisualState = ReceiptRedSysButtonVisualState(visible = false),
+) {
+    companion object {
+        fun fromOperation(operation: RedSysOperation): ReceiptRedSysButtonsState {
+            return ReceiptRedSysButtonsState().reduceForOperation(operation)
+        }
+    }
+}
+
+/**
+ * Exact reducer mirroring the fragment branches one-by-one:
+ *
+ * if ((operation.operationType == REFUND && operation.refundResponse != null) ||
+ *     operation.operationType == AUTHORIZATION && operation.result != DENIED) {
+ *   dialog buttons = if AUTHORIZATION && not DENIED -> [DEVOLVER, IMPRIMIR]
+ *                   else -> [IMPRIMIR]
+ * }
+ * else -> hidden
+ */
+fun ReceiptRedSysButtonsState.reduceForOperation(operation: RedSysOperation): ReceiptRedSysButtonsState {
+    return when {
+        (operation.operationType == REFUND && operation.refundResponse != null) ||
+            (operation.operationType == AUTHORIZATION && operation.result != DENIED) -> {
+            if (operation.operationType == AUTHORIZATION && operation.result != DENIED) {
+                copy(
+                    primary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.DEVOLVER,
+                        backgroundColor = ReceiptRedSysButtonBackground.RED,
+                        text = "DEVOLVER",
+                        iconVisible = true,
+                        textVisible = true
+                    ),
+                    secondary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.IMPRIMIR,
+                        backgroundColor = ReceiptRedSysButtonBackground.BLUE,
+                        text = "IMPRIMIR",
+                        iconVisible = true,
+                        textVisible = true
+                    )
+                )
+            } else {
+                copy(
+                    primary = ReceiptRedSysButtonVisualState(
+                        visible = true,
+                        enabled = true,
+                        buttonType = ButtonType.IMPRIMIR,
+                        backgroundColor = ReceiptRedSysButtonBackground.BLUE,
+                        text = "IMPRIMIR",
+                        iconVisible = true,
+                        textVisible = true
+                    ),
+                    secondary = ReceiptRedSysButtonVisualState(visible = false)
+                )
+            }
+        }
+
+        else -> copy(
+            primary = ReceiptRedSysButtonVisualState(visible = false),
+            secondary = ReceiptRedSysButtonVisualState(visible = false)
+        )
+    }
+}
+
+// -----------------------------
+// COMPOSE-FRIENDLY VIEWMODEL
+// -----------------------------
+
+class ReceiptRedSysViewModel(
+    context: Application,
+    private val redSysUseCase: RedSysUseCase,
+    private val ticketUseCase: TicketUseCase,
+    private val printerUseCase: PrinterUseCase,
+    private val redSysSessionState: RedSysSessionState,
+    private val tripUseCase: TripUseCase,
+) : AndroidViewModel(context) {
+
+    private val TAG = "ReceiptRedSysViewModel"
+
+    private val _uiState = MutableStateFlow(ReceiptRedSysUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ReceiptRedSysUiEffect>()
+    val uiEffect: SharedFlow<ReceiptRedSysUiEffect> = _uiEffect
+
+    fun onEvent(event: ReceiptRedSysUiEvent) {
+        when (event) {
+            ReceiptRedSysUiEvent.ScreenStarted -> updateList()
+            ReceiptRedSysUiEvent.RefreshRequested -> updateList()
+            is ReceiptRedSysUiEvent.OperationClicked -> handleOperationClicked(event.operation)
+            is ReceiptRedSysUiEvent.DialogButtonClicked -> handleDialogButton(event.buttonType)
+            ReceiptRedSysUiEvent.DialogDismissed -> _uiState.update { it.copy(dialogState = null) }
+        }
+    }
+
+    private fun handleOperationClicked(operation: RedSysOperation) {
+        val buttonsState = ReceiptRedSysButtonsState.fromOperation(operation)
+        val dialogState = buildDialogState(operation)
+
+        _uiState.update {
+            it.copy(
+                selectedOperation = operation,
+                buttonsState = buttonsState,
+                dialogState = dialogState
+            )
+        }
+
+        if (dialogState != null) {
+            viewModelScope.launch {
+                _uiEffect.emit(ReceiptRedSysUiEffect.ShowDialog(dialogState))
+            }
+        }
+    }
+
+    private fun buildDialogState(operation: RedSysOperation): ReceiptRedSysDialogState? {
+        val shouldOpenDialog =
+            (operation.operationType == REFUND && operation.refundResponse != null) ||
+                (operation.operationType == AUTHORIZATION && operation.result != DENIED)
+
+        if (!shouldOpenDialog) return null
+
+        val buttons = if (operation.operationType == AUTHORIZATION && operation.result != DENIED) {
+            listOf(ButtonType.DEVOLVER, ButtonType.IMPRIMIR)
+        } else {
+            listOf(ButtonType.IMPRIMIR)
+        }
+
+        return ReceiptRedSysDialogState(
+            title = "RedSys",
+            description = "Operación RedSys",
+            buttons = buttons,
+            operation = operation
+        )
+    }
+
+    private fun handleDialogButton(buttonType: ButtonType) {
+        val operation = _uiState.value.selectedOperation ?: return
+        when (buttonType) {
+            ButtonType.DEVOLVER -> viewModelScope.launch {
+                _uiEffect.emit(ReceiptRedSysUiEffect.DoRefund(operation))
+            }
+
+            ButtonType.IMPRIMIR -> viewModelScope.launch {
+                if (operation.result != DENIED && operation.operationType == AUTHORIZATION) {
+                    _uiEffect.emit(ReceiptRedSysUiEffect.PrintServiceTicket(operation))
+                } else if (operation.result != DENIED && operation.operationType == REFUND) {
+                    _uiEffect.emit(ReceiptRedSysUiEffect.PrintRefundTicket(operation))
+                }
+            }
+
+            ButtonType.ACCEPT -> _uiState.update { it.copy(dialogState = null) }
+            else -> Unit
+        }
+    }
+
+    fun updateList() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Logs.d(TAG, "Updating list...")
+            val operations = fetchOperations()
+            Logs.d(TAG, "Updated list: $operations")
+            _uiState.update { it.copy(operations = operations ?: emptyList()) }
+        }
+    }
+
+    fun doRefund(redSysOperation: RedSysOperation) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val usernameRedSys = redSysUseCase.getUsernameRedSys()
+                val passwordRedSys = TemporalData.passwordRedSys
+                val loginResponse = usernameRedSys?.let { redSysUseCase.loginRedSys(it, passwordRedSys) }
+
+                when (loginResponse) {
+                    is Success -> {
+                        val terminal = loginResponse.merchantList.firstOrNull()?.terminalList?.firstOrNull()
+                        if (terminal == null) {
+                            Logs.d(TAG, "No terminal available in the login response")
+                            _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                            return@launch
+                        }
+
+                        val rtsIdentifierLast5 = redSysOperation.RTSIdentifier.takeLast(5)
+                        val consultaResponse = redSysUseCase.consultaRedSys(terminal, null)
+                        val paymentInfo = consultaResponse?.transactionDataList?.find {
+                            it.identifierRTS.takeLast(5) == rtsIdentifierLast5
+                        }
+
+                        if (paymentInfo == null) {
+                            Logs.d(TAG, "No payment info found for the given RTSIdentifier")
+                            _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                            return@launch
+                        }
+
+                        val refundResponse = redSysUseCase.doRefund(terminal, paymentInfo)
+                        redSysOperation.refundResponse = refundResponse
+                        processRefundResponse(refundResponse)
+                    }
+
+                    is Error -> {
+                        Logs.e(TAG, "Error during login: ${loginResponse.errorCode} - ${loginResponse.errorMessage}")
+                        _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                    }
+
+                    null -> {
+                        Logs.e(TAG, "Login response is null")
+                        _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                    }
+                }
+            }.onFailure { e ->
+                Logs.e(TAG, "Exception in doRefund: ${e.message}")
+                _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+            }
+        }
+    }
+
+    private suspend fun processRefundResponse(refundResponse: RedCLSRefundResponse?) {
+        refundResponse?.let {
+            val result = redSysUseCase.parseDevolucion(it)
+            if (result != null) {
+                when {
+                    result.result.equals(RedSysOperation.AUTHORIZED, ignoreCase = true) -> {
+                        Logs.d(TAG, "processRefundResponse: Refund authorized")
+                        _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(true))
+                        printRefundTicket(refund = result)
+                    }
+
+                    else -> {
+                        Logs.d(TAG, "processRefundResponse: Refund result: $result")
+                        _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+                    }
+                }
+            } else {
+                _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+            }
+        } ?: run {
+            Logs.d(TAG, "processRefundResponse: Refund response is null")
+            _uiEffect.emit(ReceiptRedSysUiEffect.ShowRefundResultDialog(false))
+        }
+    }
+
+    fun printServiceTicket(redSysOperation: RedSysOperation?) {
+        viewModelScope.launch {
+            redSysOperation?.RTSIdentifier?.let {
+                val buffTicketRedsys = tripUseCase.getTripByRedsysByRTS(it)
+                val ticketBuff = buffTicketRedsys?.ticketBufferRedSys
+                if (!ticketBuff.isNullOrEmpty()) {
+                    printerUseCase.printTicket(ticketBuff, true)
+                }
+            }
+        }
+    }
+
+    fun printRefundTicket(redSysOperation: RedSysOperation? = null, refund: RedSysReturn? = null) {
+        viewModelScope.launch {
+            val parsedResult = refund ?: redSysOperation?.refundResponse?.let {
+                redSysUseCase.parseDevolucion(it)
+            } ?: run {
+                Logs.e(TAG, "printRefundTicket: Aborted. No refund data available.")
+                return@launch
+            }
+
+            val terminalData = redSysSessionState.terminalData ?: run {
+                Logs.e(TAG, "printRefundTicket: Aborted. No terminal data found in session state")
+                return@launch
+            }
+
+            try {
+                val ticket = ticketUseCase.prepareRedSysRefundTicket(
+                    signature = false,
+                    resultadoDevolucion = parsedResult,
+                    terminalData = terminalData
+                )
+                printerUseCase.printTicket(ticket, true)
+            } catch (e: Exception) {
+                Logs.e(TAG, "printRefundTicket: Error during ticket preparation or printing: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun fetchOperations(): List<RedSysOperation>? {
+        Logs.d(TAG, "Fetching operations...")
+        redSysUseCase.configureRedSys()
+
+        val usernameRedSys = redSysUseCase.getUsernameRedSys()
+        if (usernameRedSys == null) {
+            Logs.e(TAG, "Username RedSys is null.")
+            return null
+        }
+
+        val passwordRedSys = TemporalData.passwordRedSys
+        val loginResponse = redSysUseCase.loginRedSys(usernameRedSys, passwordRedSys)
+
+        return when (loginResponse) {
+            is Success -> {
+                val terminal = loginResponse.merchantList.firstOrNull()?.terminalList?.firstOrNull()
+                if (terminal == null) {
+                    Logs.e(TAG, "No terminal available in the login response.")
+                    return null
+                }
+
+                val consultaResponse = redSysUseCase.consultaRedSys(terminal, null)
+                redSysUseCase.parseConsulta(consultaResponse)
+            }
+
+            is Error -> {
+                Logs.e(TAG, "Login RedSys failed: ${loginResponse.errorCode} - ${loginResponse.errorMessage}")
+                null
+            }
+
+            null -> {
+                Logs.e(TAG, "Login response is null.")
+                null
+            }
+        }
+    }
+}
+
+// -----------------------------
+// MAIN ACTIVITY BRIDGE VIEWMODEL
+// -----------------------------
+
+data class ReceiptRedSysMainActivityDialogState(
+    val model: CustomDialog.CustomDialogModel
+)
+
+sealed interface ReceiptRedSysMainActivityUiEffect {
+    data class OpenDialog(val dialog: ReceiptRedSysMainActivityDialogState) : ReceiptRedSysMainActivityUiEffect
+    data object CloseDialog : ReceiptRedSysMainActivityUiEffect
+}
+
+class ReceiptRedSysMainActivityViewModel : ViewModel() {
+    private val _uiEffect = MutableSharedFlow<ReceiptRedSysMainActivityUiEffect>()
+    val uiEffect: SharedFlow<ReceiptRedSysMainActivityUiEffect> = _uiEffect
+
+    fun openDialog(model: CustomDialog.CustomDialogModel) {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                ReceiptRedSysMainActivityUiEffect.OpenDialog(
+                    ReceiptRedSysMainActivityDialogState(model)
+                )
+            )
+        }
+    }
+
+    fun closeDialog() {
+        viewModelScope.launch {
+            _uiEffect.emit(ReceiptRedSysMainActivityUiEffect.CloseDialog)
+        }
+    }
+}
+
+// -----------------------------
+// COMPOSABLE SCREEN
+// -----------------------------
+
+@Composable
+fun ReceiptRedSysScreen(
+    uiState: ReceiptRedSysUiState,
+    onEvent: (ReceiptRedSysUiEvent) -> Unit,
+    onDialogButton: (ButtonType) -> Unit,
+    onOperationClick: (RedSysOperation) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    LaunchedEffect(Unit) {
+        onEvent(ReceiptRedSysUiEvent.ScreenStarted)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(WindowInsets.safeDrawing.asPaddingValues())
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(uiState.operations) { operation ->
+                ReceiptRedSysOperationRow(
+                    operation = operation,
+                    onClick = { onOperationClick(operation) }
+                )
+            }
+        }
+
+        uiState.dialogState?.let { dialog ->
+            ReceiptRedSysDialog(
+                dialogState = dialog,
+                isLandscape = isLandscape,
+                onDismiss = { onEvent(ReceiptRedSysUiEvent.DialogDismissed) },
+                onButtonClick = onDialogButton
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReceiptRedSysOperationRow(
+    operation: RedSysOperation,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp),
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = "RTS: ${operation.RTSIdentifier}", fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "Type: ${operation.operationType}")
+            Text(text = "Result: ${operation.result}")
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReceiptRedSysDialog(
+    dialogState: ReceiptRedSysDialogState,
+    isLandscape: Boolean,
+    onDismiss: () -> Unit,
+    onButtonClick: (ButtonType) -> Unit,
+) {
+    val buttons = dialogState.buttons
+    val ttsText = remember(dialogState) {
+        buildReceiptRedSysTtsText(
+            description = dialogState.description,
+            title = dialogState.title,
+            buttons = buttons.map { it.name }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(dialogState.title) },
+        text = {
+            Column {
+                Text(dialogState.description)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = ttsText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            ReceiptRedSysButtonsContainer(
+                buttons = buttons,
+                isLandscape = isLandscape,
+                onButtonClick = onButtonClick
+            )
+        }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReceiptRedSysButtonsContainer(
+    buttons: List<ButtonType>,
+    isLandscape: Boolean,
+    onButtonClick: (ButtonType) -> Unit,
+) {
+    val visibleButtons = buttons.take(3)
+
+    if (isLandscape) {
+        // Mirrors moveBtnGridRight(): content 70% / buttons 30%, buttons stacked vertically.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Spacer(modifier = Modifier.weight(0.7f))
+            Column(
+                modifier = Modifier.weight(0.3f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                visibleButtons.forEach { buttonType ->
+                    ReceiptRedSysDialogButton(
+                        buttonType = buttonType,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onButtonClick(buttonType) }
+                    )
+                }
+            }
+        }
+    } else {
+        // Mirrors default dialog button flow.
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            visibleButtons.forEach { buttonType ->
+                ReceiptRedSysDialogButton(
+                    buttonType = buttonType,
+                    onClick = { onButtonClick(buttonType) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReceiptRedSysDialogButton(
+    buttonType: ButtonType,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val (label, bgColor, contentColor) = remember(buttonType) {
+        when (buttonType) {
+            ButtonType.ACCEPT -> Triple("ACEPTAR", Color(0xFF2E7D32), Color.White)
+            ButtonType.CANCEL -> Triple("CANCELAR", Color(0xFFC62828), Color.White)
+            ButtonType.DEVOLVER -> Triple("DEVOLVER", Color(0xFFC62828), Color.White)
+            ButtonType.IMPRIMIR -> Triple("IMPRIMIR", Color(0xFF1565C0), Color.White)
+            else -> Triple(buttonType.name, Color(0xFF1565C0), Color.White)
+        }
+    }
+
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = bgColor,
+            contentColor = contentColor
+        )
+    ) {
+        Text(label)
+    }
+}
+
+// -----------------------------
+// HELPERS
+// -----------------------------
+
+private fun buildReceiptRedSysTtsText(
+    description: String,
+    title: String,
+    buttons: List<String>
+): String {
+    return buildString {
+        append(description.ifEmpty { title })
+        if (buttons.isNotEmpty()) {
+            append(". ")
+            append(buttons.dropLast(1).joinToString(", "))
+            if (buttons.size > 1) {
+                append(" o ")
+                append(buttons.last())
+            } else {
+                append(buttons.first())
+            }
+        }
+    }
+}
+
+// -----------------------------
+// OPTIONAL: DIALOG-LIKE LAYOUT HELPERS MIRRORING THE XML BEHAVIOR
+// -----------------------------
+
+@Composable
+fun ReceiptRedSysDialogContent(
+    title: String,
+    description: String,
+    buttons: List<ButtonType>,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.padding(16.dp)) {
+        Text(text = title, style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = description)
+        Spacer(modifier = Modifier.height(16.dp))
+        ReceiptRedSysButtonsContainer(
+            buttons = buttons,
+            isLandscape = false,
+            onButtonClick = {}
+        )
+    }
+}
+
+// -----------------------------
+// EXAMPLE HOST COMPOSABLE
+// -----------------------------
+
+@Composable
+fun ReceiptRedSysRoute(
+    viewModel: ReceiptRedSysViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val uiState by viewModel.uiState.collectAsState()
+
+    ReceiptRedSysScreen(
+        uiState = uiState,
+        onEvent = viewModel::onEvent,
+        onDialogButton = { buttonType -> viewModel.onEvent(ReceiptRedSysUiEvent.DialogButtonClicked(buttonType)) },
+        onOperationClick = { operation -> viewModel.onEvent(ReceiptRedSysUiEvent.OperationClicked(operation)) },
+        modifier = modifier
+    )
+
+    LaunchedEffect(Unit) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is ReceiptRedSysUiEffect.DoRefund -> viewModel.doRefund(effect.operation)
+                is ReceiptRedSysUiEffect.PrintServiceTicket -> viewModel.printServiceTicket(effect.operation)
+                is ReceiptRedSysUiEffect.PrintRefundTicket -> viewModel.printRefundTicket(effect.operation)
+                is ReceiptRedSysUiEffect.ShowRefundResultDialog -> {
+                    // In a real host, map this to a dialog/snackbar.
+                    Logs.d("ReceiptRedSysRoute", "Refund result: ${effect.success}")
+                }
+
+                is ReceiptRedSysUiEffect.ShowDialog -> {
+                    // Dialog is already represented in state; keep for parity with fragment-style side effects.
+                    Logs.d("ReceiptRedSysRoute", "Show dialog: ${effect.dialogState}")
+                }
+
+                ReceiptRedSysUiEffect.RefreshList -> viewModel.updateList()
+            }
+        }
+    }
+}
+```
+
+If you want, I can do one more pass and make this **strictly compile-ready against your exact project types** by:
+- replacing the placeholder `"RedSys"` / `"Operación RedSys"` strings with `stringResource(...)`,
+- wiring the `CustomDialog.CustomDialogModel` fields exactly as your app expects,
+- and matching your real `ButtonType` enum labels/icons 1:1.
+// THIRD ANSWER
+
+// FOURTH ANSWER

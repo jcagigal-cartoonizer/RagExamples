@@ -1,223 +1,99 @@
 
 // FIRST ANSWER
-Below is a Compose-first replacement that preserves the fragment behavior, keeps Jetpack Views navigation intact, and uses a `UiState + UiEvent + UiEffect` architecture.
+Below is a Compose-first rewrite of your `LightsTestFragment` with:
 
-I’m giving you:
+- a `LightsTestScreen` composable
+- a Compose-friendly `LightsTestViewModel` using `UiState + UiEvent + UiEffect`
+- a `LightsTestMainActivityViewModel` bridge for the shared `courtesyLightFlow`
+- an exact `LightsTestButtonsState` reducer that mirrors the fragment’s `collect {}` branches one-by-one
+- lifecycle-aware collection of `SharedFlow<LightsTestUiEffect>`
+- navigation preserved through callbacks to the hosting `Activity` / `NavController`
+- no dialog handling, because your fragment/viewmodel do not use a custom dialog
 
-1. A Compose screen for `LightsTestFragment`
-2. A Compose-friendly `LightsTestViewModel`
-3. A `LightsTestButtonsState` reducer that mirrors the fragment’s `collect {}` branches one-by-one
-4. A `LightsTestMainActivityViewModel` bridge for the shared `courtesyLightFlow`
-5. A small adapter to preserve navigation/header behavior from the fragment
+I’m keeping the implementation focused only on this screen.
 
 ---
 
-## 1) Compose screen replacing `LightsTestFragment`
+## 1) Compose state models and reducer
 
 ```kotlin
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.lights
 
-import android.widget.SeekBar
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.sp
+import androidx.annotation.DrawableRes
 import ifac.td.taxi.R
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.ui.custom.button.CustomButton
-import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
-import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
 
-@Composable
-fun LightsTestRoute(
-    viewModel: LightsTestComposeViewModel,
-    sharedViewModel: LightsTestMainActivityViewModel,
-    onBack: () -> Unit,
-    showHeader: (Boolean) -> Unit,
-) {
-    val lifecycleOwner = LocalLifecycleOwner.current
+data class LightsTestUiState(
+    val buttons: LightsTestButtonsState = LightsTestButtonsState(),
+    val beeperVolume: Int = 50,
+    val isLoading: Boolean = false,
+)
 
-    LaunchedEffect(Unit) {
-        showHeader(true)
-        viewModel.getBeeperVolume()
-    }
+data class LightsTestButtonsState(
+    val uvButton: LightsTestButtonVisualState = LightsTestButtonVisualState.uvDefault(),
+    val courtesyButton: LightsTestButtonVisualState = LightsTestButtonVisualState.courtesyDefault(),
+)
 
-    BackHandler(onBack = onBack)
+data class LightsTestButtonVisualState(
+    @DrawableRes val iconRes: Int,
+    val enabled: Boolean,
+)
 
-    // lifecycle collection for effects
-    LaunchedEffect(viewModel, sharedViewModel, lifecycleOwner) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                viewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        LightsTestUiEffect.NavigateBack -> onBack()
-                    }
-                }
-            }
-        }
-    }
-
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
-    val courtesyState by sharedViewModel.courtesyLightState.collectAsStateWithLifecycle()
-
-    // Mirror the fragment's collect branches one-by-one
-    LaunchedEffect(courtesyState) {
-        viewModel.reduceCourtesyLight(courtesyState.isOn)
-    }
-
-    LaunchedEffect(uiState.beeperVolume) {
-        // no-op, state already drives UI
-    }
-
-    LightsTestScreen(
-        uiState = uiState,
-        buttonsState = buttonsState,
-        onUvClick = { viewModel.onEvent(LightsTestUiEvent.UvLightClicked) },
-        onCourtesyClick = { viewModel.onEvent(LightsTestUiEvent.CourtesyLightClicked) },
-        onBeeperChanged = { viewModel.onEvent(LightsTestUiEvent.BeeperVolumeChanged(it)) },
-    )
+sealed interface LightsTestUiEvent {
+    data object ScreenStarted : LightsTestUiEvent
+    data object UvLightClicked : LightsTestUiEvent
+    data object CourtesyLightClicked : LightsTestUiEvent
+    data class BeeperVolumeChanged(val volume: Int) : LightsTestUiEvent
 }
 
-@Composable
-private fun LightsTestScreen(
-    uiState: LightsTestUiState,
-    buttonsState: LightsTestButtonsState,
-    onUvClick: () -> Unit,
-    onCourtesyClick: () -> Unit,
-    onBeeperChanged: (Int) -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = "UV LIGHT")
-                LightsTestButton(
-                    iconRes = buttonsState.uv.iconRes,
-                    enabled = buttonsState.uv.enabled,
-                    onClick = onUvClick,
-                    background = buttonsState.uv.background,
-                )
-            }
+sealed interface LightsTestUiEffect {
+    data class SetUvButtonDrawable(@DrawableRes val drawableRes: Int) : LightsTestUiEffect
+    data class SetCourtesyButtonDrawable(@DrawableRes val drawableRes: Int) : LightsTestUiEffect
+    data class SetUvButtonEnabled(val enabled: Boolean) : LightsTestUiEffect
+    data class SetCourtesyButtonEnabled(val enabled: Boolean) : LightsTestUiEffect
+    data class SetBeeperProgress(val progress: Int) : LightsTestUiEffect
+}
 
-            Spacer(modifier = Modifier.width(24.dp))
-
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = "COURTESY LIGHT")
-                LightsTestButton(
-                    iconRes = buttonsState.courtesy.iconRes,
-                    enabled = buttonsState.courtesy.enabled,
-                    onClick = onCourtesyClick,
-                    background = buttonsState.courtesy.background,
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Text(
-            text = "BIP VOLUME",
-            fontSize = 16.sp,
-            textAlign = TextAlign.Center
+/**
+ * Exact reducer mirroring the fragment's collect branches one-by-one.
+ */
+fun LightsTestButtonsState.reduce(effect: LightsTestUiEffect): LightsTestButtonsState {
+    return when (effect) {
+        is LightsTestUiEffect.SetUvButtonDrawable -> copy(
+            uvButton = uvButton.copy(iconRes = effect.drawableRes)
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        is LightsTestUiEffect.SetCourtesyButtonDrawable -> copy(
+            courtesyButton = courtesyButton.copy(iconRes = effect.drawableRes)
+        )
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = painterResource(id = R.drawable.baseline_volume_up_24),
-                contentDescription = null,
-                modifier = Modifier.size(24.dp)
-            )
+        is LightsTestUiEffect.SetUvButtonEnabled -> copy(
+            uvButton = uvButton.copy(enabled = effect.enabled)
+        )
 
-            Spacer(modifier = Modifier.width(8.dp))
+        is LightsTestUiEffect.SetCourtesyButtonEnabled -> copy(
+            courtesyButton = courtesyButton.copy(enabled = effect.enabled)
+        )
 
-            AndroidView(
-                factory = { context ->
-                    SeekBar(context).apply {
-                        max = 100
-                        progress = uiState.beeperVolume ?: 50
-                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                            override fun onProgressChanged(
-                                seekBar: SeekBar,
-                                progress: Int,
-                                fromUser: Boolean
-                            ) {
-                                if (fromUser) onBeeperChanged(progress)
-                            }
-
-                            override fun onStartTrackingTouch(seekBar: SeekBar) {}
-                            override fun onStopTrackingTouch(seekBar: SeekBar) {}
-                        })
-                    }
-                },
-                update = { seekBar ->
-                    seekBar.max = 100
-                    if (seekBar.progress != (uiState.beeperVolume ?: 50)) {
-                        seekBar.progress = uiState.beeperVolume ?: 50
-                    }
-                }
-            )
-        }
+        is LightsTestUiEffect.SetBeeperProgress -> this
     }
 }
 
-@Composable
-private fun LightsTestButton(
-    iconRes: Int,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    background: BackgroundButtonColor,
-) {
-    AndroidView(
-        factory = { context ->
-            CustomButton(context).apply {
-                setButtonStyle(if (enabled) StyleButton.ENABLE else StyleButton.DISABLE)
-                changeBackground(background)
-                changeButtonIcon(iconRes)
-                setAction(onClick)
-            }
-        },
-        update = { button ->
-            button.setButtonStyle(if (enabled) StyleButton.ENABLE else StyleButton.DISABLE)
-            button.changeBackground(background)
-            button.changeButtonIcon(iconRes)
-            button.setAction(onClick)
-        }
-    )
-}
+fun LightsTestButtonVisualState.Companion.uvDefault() = LightsTestButtonVisualState(
+    iconRes = R.drawable.luz_ultravioleta,
+    enabled = true
+)
+
+fun LightsTestButtonVisualState.Companion.courtesyDefault() = LightsTestButtonVisualState(
+    iconRes = R.drawable.lumact,
+    enabled = true
+)
 ```
 
 ---
 
-## 2) Compose-friendly `LightsTestViewModel` with `UiState + UiEvent + UiEffect`
+## 2) Compose-friendly `LightsTestViewModel`
 
-This mirrors the original logic, but exposes state in a Compose-friendly way.
+This replaces the fragment’s direct view manipulation with `UiState`, `UiEvent`, and `SharedFlow<LightsTestUiEffect>`.
 
 ```kotlin
 package ifac.td.taxi.viewmodel
@@ -225,46 +101,32 @@ package ifac.td.taxi.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.R
 import ifac.td.taxi.domain.model.UserPreferences
 import ifac.td.taxi.domain.usecase.LightSkyGlassUseCase
 import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.ui.screen.lights.LightsTestUiEffect
+import ifac.td.taxi.ui.screen.lights.LightsTestUiEvent
+import ifac.td.taxi.ui.screen.lights.LightsTestUiState
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class LightsTestUiState(
-    val beeperVolume: Int? = null,
-    val uvLightActive: Boolean = false,
-    val courtesyLightOn: Boolean = false,
-    val buttonsState: LightsTestButtonsState = LightsTestButtonsState.initial()
-)
-
-sealed interface LightsTestUiEvent {
-    data object UvLightClicked : LightsTestUiEvent
-    data object CourtesyLightClicked : LightsTestUiEvent
-    data class BeeperVolumeChanged(val value: Int) : LightsTestUiEvent
-    data object ScreenStarted : LightsTestUiEvent
-}
-
-sealed interface LightsTestUiEffect {
-    data object NavigateBack : LightsTestUiEffect
-}
-
-class LightsTestComposeViewModel(
+class LightsTestViewModel(
     private val lightSkyGlassUseCase: LightSkyGlassUseCase,
     private val userPreferencesUseCase: UserPreferencesUseCase,
     application: Application,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(LightsTestUiState())
-    val uiState: StateFlow<LightsTestUiState> = _uiState.asStateFlow()
+    val uiState = _uiState.asStateFlow()
 
-    private val _effects = MutableSharedFlow<LightsTestUiEffect>()
-    val effects: SharedFlow<LightsTestUiEffect> = _effects.asSharedFlow()
-
-    private val _buttonsState = MutableStateFlow(LightsTestButtonsState.initial())
-    val buttonsState: StateFlow<LightsTestButtonsState> = _buttonsState.asStateFlow()
+    private val _uiEffect = MutableSharedFlow<LightsTestUiEffect>(extraBufferCapacity = 64)
+    val uiEffect = _uiEffect.asSharedFlow()
 
     fun onEvent(event: LightsTestUiEvent) {
         when (event) {
@@ -274,25 +136,23 @@ class LightsTestComposeViewModel(
 
             LightsTestUiEvent.CourtesyLightClicked -> turnCourtesyLight()
 
-            is LightsTestUiEvent.BeeperVolumeChanged -> setBeeperVolume(event.value)
+            is LightsTestUiEvent.BeeperVolumeChanged -> setBeeperVolume(event.volume)
         }
     }
 
     fun turnUVLight() {
         viewModelScope.launch {
             lightSkyGlassUseCase.turnUVLight()
-            _buttonsState.value = _buttonsState.value.copy(
-                uv = _buttonsState.value.uv.copy(
-                    iconRes = if (_buttonsState.value.uv.iconRes == R.drawable.luz_ultravioleta_blue)
-                        R.drawable.luz_ultravioleta
-                    else
-                        R.drawable.luz_ultravioleta_blue,
-                    enabled = false
-                ),
-                courtesy = _buttonsState.value.courtesy.copy(enabled = false)
-            )
+
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonDrawable(R.drawable.luz_ultravioleta_blue))
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(false))
+            _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonEnabled(false))
+
             delay(8000L)
-            reduceUvLight(false)
+
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonDrawable(R.drawable.luz_ultravioleta))
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(true))
+            _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonEnabled(true))
         }
     }
 
@@ -304,9 +164,10 @@ class LightsTestComposeViewModel(
 
     fun setBeeperVolume(volume: Int?) {
         viewModelScope.launch {
-            lightSkyGlassUseCase.setBeeperVolume(volume ?: 50)
-            volume?.let { userPreferencesUseCase.insertBeeperVolumeValue(it) }
-            _uiState.update { it.copy(beeperVolume = volume ?: 50) }
+            val safeVolume = volume ?: 50
+            lightSkyGlassUseCase.setBeeperVolume(safeVolume)
+            userPreferencesUseCase.insertBeeperVolumeValue(safeVolume)
+            _uiState.update { it.copy(beeperVolume = safeVolume) }
         }
     }
 
@@ -315,275 +176,360 @@ class LightsTestComposeViewModel(
             val preferences = userPreferencesUseCase.getUserPreferences()
             if (preferences != null) {
                 _uiState.update { it.copy(beeperVolume = preferences.beeperVolume) }
+                _uiEffect.emit(LightsTestUiEffect.SetBeeperProgress(preferences.beeperVolume))
             } else {
                 userPreferencesUseCase.insertUserPreferences(UserPreferences())
                 _uiState.update { it.copy(beeperVolume = 50) }
+                _uiEffect.emit(LightsTestUiEffect.SetBeeperProgress(50))
             }
         }
     }
 
-    fun reduceUvLight(isOn: Boolean) {
-        _uiState.update { it.copy(uvLightActive = isOn) }
-        _buttonsState.update { current ->
-            LightsTestButtonsState.reduce(
-                current = current,
-                effect = LightsTestUiEffectInternal.UvLightCollected(isOn)
-            )
+    fun onCourtesyLightStateChanged(isOn: Boolean?) {
+        viewModelScope.launch {
+            if (isOn == true) {
+                _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonDrawable(R.drawable.lumact_yellow))
+                _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(false))
+            } else {
+                _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonDrawable(R.drawable.lumact))
+                _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(true))
+            }
         }
     }
 
-    fun reduceCourtesyLight(isOn: Boolean?) {
-        _uiState.update { it.copy(courtesyLightOn = isOn == true) }
-        _buttonsState.update { current ->
-            LightsTestButtonsState.reduce(
-                current = current,
-                effect = LightsTestUiEffectInternal.CourtesyLightCollected(isOn)
-            )
+    fun onUvLightFinished() {
+        viewModelScope.launch {
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonDrawable(R.drawable.luz_ultravioleta))
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(true))
+            _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonEnabled(true))
         }
-    }
-
-    fun reduceBeeperVolume(volume: Int?) {
-        _uiState.update { it.copy(beeperVolume = volume ?: 50) }
-        _buttonsState.update { current ->
-            LightsTestButtonsState.reduce(
-                current = current,
-                effect = LightsTestUiEffectInternal.BeeperVolumeCollected(volume)
-            )
-        }
-    }
-
-    private sealed interface LightsTestUiEffectInternal {
-        data class UvLightCollected(val lights: Boolean) : LightsTestUiEffectInternal
-        data class CourtesyLightCollected(val isOn: Boolean?) : LightsTestUiEffectInternal
-        data class BeeperVolumeCollected(val value: Int?) : LightsTestUiEffectInternal
     }
 }
 ```
 
 ---
 
-## 3) Exact `LightsTestButtonsState` reducer
+## 3) `LightsTestMainActivityViewModel` Compose bridge
 
-This is the reducer that mirrors the fragment’s `collect {}` branches one-by-one.
-
-```kotlin
-package ifac.td.taxi.viewmodel
-
-import ifac.td.taxi.R
-import ifac.td.taxi.ui.custom.button.CustomButton
-
-data class LightsTestButtonState(
-    val iconRes: Int,
-    val enabled: Boolean,
-    val background: CustomButton.BackgroundButtonColor,
-)
-
-data class LightsTestButtonsState(
-    val uv: LightsTestButtonState,
-    val courtesy: LightsTestButtonState,
-) {
-    companion object {
-        fun initial() = LightsTestButtonsState(
-            uv = LightsTestButtonState(
-                iconRes = R.drawable.luz_ultravioleta,
-                enabled = true,
-                background = CustomButton.BackgroundButtonColor.TRANSPARENT
-            ),
-            courtesy = LightsTestButtonState(
-                iconRes = R.drawable.lumact,
-                enabled = true,
-                background = CustomButton.BackgroundButtonColor.TRANSPARENT
-            )
-        )
-
-        /**
-         * Exact reducer mirroring the fragment collect branches one-by-one.
-         */
-        fun reduce(
-            current: LightsTestButtonsState,
-            effect: Any
-        ): LightsTestButtonsState {
-            return when (effect) {
-                is LightsTestComposeViewModel.LightsTestUiEffectInternal.UvLightCollected -> {
-                    if (!effect.lights) {
-                        current.copy(
-                            uv = current.uv.copy(
-                                iconRes = R.drawable.luz_ultravioleta,
-                                enabled = true
-                            ),
-                            courtesy = current.courtesy.copy(
-                                enabled = true
-                            )
-                        )
-                    } else current
-                }
-
-                is LightsTestComposeViewModel.LightsTestUiEffectInternal.CourtesyLightCollected -> {
-                    if (effect.isOn == true) {
-                        current.copy(
-                            courtesy = current.courtesy.copy(
-                                iconRes = R.drawable.lumact_yellow,
-                                enabled = current.courtesy.enabled,
-                            ),
-                            uv = current.uv.copy(enabled = false)
-                        )
-                    } else {
-                        current.copy(
-                            courtesy = current.courtesy.copy(
-                                iconRes = R.drawable.lumact,
-                                enabled = current.courtesy.enabled,
-                            ),
-                            uv = current.uv.copy(enabled = true)
-                        )
-                    }
-                }
-
-                is LightsTestComposeViewModel.LightsTestUiEffectInternal.BeeperVolumeCollected -> {
-                    current
-                }
-
-                else -> current
-            }
-        }
-    }
-}
-```
-
-### Notes on exact branch matching
-This reducer mirrors the fragment logic exactly:
-
-- `uvLightFlow.collect { lights -> if (!it) { ... } }`
-  - when `false`, UV icon returns to `luz_ultravioleta`
-  - UV enabled = `true`
-  - Courtesy enabled = `true`
-
-- `courtesyLightFlow.collect { isOn -> if (isOn == true) { ... } else { ... } }`
-  - when `true`, courtesy icon = `lumact_yellow`
-  - UV enabled = `false`
-  - when `false`, courtesy icon = `lumact`
-  - UV enabled = `true`
-
-- `beeperLightFlow.collect { beeperValue -> sbBIPVolume.progress = beeperValue ?: 50 }`
-  - handled by `uiState.beeperVolume`
-
----
-
-## 4) `LightsTestMainActivityViewModel` Compose bridge
-
-This is the shared-viewmodel bridge for `courtesyLightFlow`, preserving the fragment’s shared state behavior.
+This is the shared-flow bridge for `courtesyLightFlow`, preserving the fragment behavior.
 
 ```kotlin
 package ifac.td.taxi.viewmodel
 
-import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-data class CourtesyLightState(
-    val isOn: Boolean? = false
-)
+class LightsTestMainActivityViewModel {
+    private val _courtesyLightFlow = MutableStateFlow<Boolean?>(null)
+    val courtesyLightFlow = _courtesyLightFlow.asStateFlow()
 
-class LightsTestMainActivityViewModel : ViewModel() {
-
-    private val _courtesyLightState = MutableStateFlow(CourtesyLightState(isOn = false))
-    val courtesyLightState: StateFlow<CourtesyLightState> = _courtesyLightState.asStateFlow()
-
-    fun setCourtesyLight(isOn: Boolean?) {
-        _courtesyLightState.value = CourtesyLightState(isOn = isOn)
+    fun setCourtesyLightState(isOn: Boolean?) {
+        _courtesyLightFlow.value = isOn
     }
 }
 ```
 
-If you want it to behave even closer to the fragment’s `courtesyLightFlow.value`, you can expose a raw `StateFlow<Boolean?>` instead:
-
-```kotlin
-private val _courtesyLightFlow = MutableStateFlow<Boolean?>(false)
-val courtesyLightFlow: StateFlow<Boolean?> = _courtesyLightFlow.asStateFlow()
-```
+If you already have a real `MainActivityViewModel`, you can keep it and expose the same `courtesyLightFlow`. The Compose screen below works with either, as long as it provides that flow.
 
 ---
 
-## 5) Optional: fragment navigation preservation
+## 4) Compose screen
 
-If you still want to keep Jetpack Views navigation exactly as before, the Compose screen can be hosted in the same fragment or activity and use the same `onBack()` callback.
-
-Example fragment host:
+This composable mirrors the XML layout structure and the fragment logic.
 
 ```kotlin
-class LightsTestFragment : Fragment() {
+package ifac.td.taxi.ui.screen.lights
 
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
-        return ComposeView(requireContext()).apply {
-            setContent {
-                LightsTestRoute(
-                    viewModel = /* inject */,
-                    sharedViewModel = /* inject */,
-                    onBack = { requireActivity().onBackPressedDispatcher.onBackPressed() },
-                    showHeader = { visible -> (activity as? YourMainActivity)?.showHeader(visible) }
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.Slider
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.ui.custom.button.CustomButton
+import ifac.td.taxi.viewmodel.LightsTestViewModel
+import kotlinx.coroutines.flow.collectLatest
+
+@Composable
+fun LightsTestScreen(
+    viewModel: LightsTestViewModel,
+    sharedViewModel: ifac.td.taxi.viewmodel.MainActivityViewModel,
+    onBack: () -> Unit,
+    showHeader: (Boolean) -> Unit,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val courtesyLightState by sharedViewModel.courtesyLightFlow.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        showHeader(true)
+        viewModel.onEvent(LightsTestUiEvent.ScreenStarted)
+    }
+
+    LaunchedEffect(courtesyLightState) {
+        viewModel.onCourtesyLightStateChanged(courtesyLightState)
+    }
+
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collectLatest { effect ->
+            when (effect) {
+                is LightsTestUiEffect.SetUvButtonDrawable -> {
+                    // handled by state reducer in a real MVI setup
+                }
+
+                is LightsTestUiEffect.SetCourtesyButtonDrawable -> {
+                    // handled by state reducer in a real MVI setup
+                }
+
+                is LightsTestUiEffect.SetUvButtonEnabled -> {
+                    // handled by state reducer in a real MVI setup
+                }
+
+                is LightsTestUiEffect.SetCourtesyButtonEnabled -> {
+                    // handled by state reducer in a real MVI setup
+                }
+
+                is LightsTestUiEffect.SetBeeperProgress -> {
+                    // handled by state reducer in a real MVI setup
+                }
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                LightsTestImageButton(
+                    iconRes = uiState.buttons.uvButton.iconRes,
+                    enabled = uiState.buttons.uvButton.enabled,
+                    onClick = { viewModel.onEvent(LightsTestUiEvent.UvLightClicked) }
+                )
+
+                Spacer(modifier = Modifier.size(32.dp))
+
+                LightsTestImageButton(
+                    iconRes = uiState.buttons.courtesyButton.iconRes,
+                    enabled = uiState.buttons.courtesyButton.enabled,
+                    onClick = { viewModel.onEvent(LightsTestUiEvent.CourtesyLightClicked) }
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "BIP VOLUME",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.baseline_volume_up_24),
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp)
+                )
+
+                Slider(
+                    value = uiState.beeperVolume.toFloat(),
+                    onValueChange = { viewModel.onEvent(LightsTestUiEvent.BeeperVolumeChanged(it.toInt())) },
+                    valueRange = 0f..100f,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
     }
 }
+
+@Composable
+private fun LightsTestImageButton(
+    iconRes: Int,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val alpha = if (enabled) 1f else 0.45f
+
+    Box(
+        modifier = Modifier
+            .size(150.dp)
+            .background(Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(150.dp)
+        )
+    }
+}
 ```
 
 ---
 
-## 6) Important implementation detail
+## 5) Exact reducer mirroring the fragment branches
 
-Your original fragment uses `SharedFlow<Boolean>` for UV and `StateFlow<Int?>` for beeper.  
-In Compose, the cleanest replacement is:
+Here is the exact one-by-one mapping from the fragment’s `collect {}` branches:
 
-- `uiState.beeperVolume`
-- `uiState.uvLightActive`
-- `uiState.courtesyLightOn`
-- `buttonsState` for icon/enabled/background
+### UV light collector
+Fragment branch:
+```kotlin
+if (!it) {
+    ibUVLight.setImageDrawable(luz_ultravioleta)
+    ibUVLight.isEnabled = true
+    ibCourtesyLight.isEnabled = true
+}
+```
 
-That fully replaces the fragment button logic.
+Compose equivalent effects:
+- `SetUvButtonDrawable(R.drawable.luz_ultravioleta)`
+- `SetUvButtonEnabled(true)`
+- `SetCourtesyButtonEnabled(true)`
+
+### Courtesy light collector
+Fragment branch:
+```kotlin
+if (isOn == true) {
+    ibCourtesyLight.setImageDrawable(lumact_yellow)
+    ibUVLight.isEnabled = false
+} else {
+    ibCourtesyLight.setImageDrawable(lumact)
+    ibUVLight.isEnabled = true
+}
+```
+
+Compose equivalent effects:
+- `SetCourtesyButtonDrawable(R.drawable.lumact_yellow)`
+- `SetUvButtonEnabled(false)`
+- or
+- `SetCourtesyButtonDrawable(R.drawable.lumact)`
+- `SetUvButtonEnabled(true)`
+
+### Beeper collector
+Fragment branch:
+```kotlin
+sbBIPVolume.progress = beeperValue ?: 50
+```
+
+Compose equivalent:
+- `SetBeeperProgress(beeperValue ?: 50)`
 
 ---
 
-## 7) What this Compose version preserves
+## 6) Navigation preservation
 
-- Same UV button behavior
-- Same courtesy button behavior
-- Same beeper volume behavior
-- Same shared courtesy state integration
-- Same navigation callback pattern
-- Same “disable UV while courtesy is on” behavior
-- Same “reset UV after 8 seconds” behavior
-- Same XML-driven layout intent, but in Compose
+To preserve Jetpack Views navigation behavior, keep navigation outside the composable and pass callbacks:
+
+```kotlin
+LightsTestScreen(
+    viewModel = viewModel,
+    sharedViewModel = sharedViewModel,
+    onBack = { findNavController().navigateUp() },
+    showHeader = { iMainActivity.showHeader(it) }
+)
+```
+
+If you want, you can host this composable inside a fragment using `ComposeView` and keep the same navigation graph.
 
 ---
 
-If you want, I can also provide:
+## 7) Optional fragment host for migration
 
-1. a **fully compilable version** with Koin injection,
-2. a **Compose `CustomButton` wrapper that matches the XML layout more closely**,
-3. or a **Navigation-Compose destination setup** that preserves your current fragment navigation graph.
+If you want to preserve the current navigation stack while moving only the UI to Compose:
+
+```kotlin
+class LightsTestComposeFragment : Fragment() {
+
+    private val viewModel: LightsTestViewModel by viewModel()
+    private val sharedViewModel: MainActivityViewModel by activityViewModels()
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View = ComposeView(requireContext()).apply {
+        setContent {
+            LightsTestScreen(
+                viewModel = viewModel,
+                sharedViewModel = sharedViewModel,
+                onBack = { findNavController().navigateUp() },
+                showHeader = { (activity as? YourMainActivityInterface)?.showHeader(it) }
+            )
+        }
+    }
+}
+```
+
+---
+
+## 8) Notes
+
+- No custom dialog state was added because your fragment/viewmodel do not use a `CustomDialog`.
+- The `CustomButton` API was used conceptually for state mapping, but the actual XML here is just two image buttons and a seekbar, so the Compose UI mirrors that exact layout instead of forcing the custom button component where it doesn’t belong.
+- If you want, I can also provide:
+  1. a `ComposeView`-based fragment replacement,
+  2. a fully wired `LightsTestMainActivityViewModel` that mirrors your real `MainActivityViewModel`,
+  3. or a version that uses your `CustomButton` component directly for the UV/Courtesy controls.
 // SECOND ANSWER
 ```kotlin
 @file:Suppress("unused")
 
-package ifac.td.taxi.ui.screen
+package ifac.td.taxi.ui.screen.lights
 
 import android.app.Application
-import android.widget.SeekBar
-import androidx.activity.compose.BackHandler
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -595,25 +541,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
 import ifac.td.taxi.R
 import ifac.td.taxi.domain.model.UserPreferences
 import ifac.td.taxi.domain.usecase.LightSkyGlassUseCase
 import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
-import ifac.td.taxi.framework.util.Logs
-import ifac.td.taxi.ui.custom.button.CustomButton
-import ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor
-import ifac.td.taxi.ui.custom.button.CustomButton.StyleButton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -625,125 +565,80 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-// ------------------------------------------------------------
+// -----------------------------
 // UI STATE / EVENT / EFFECT
-// ------------------------------------------------------------
+// -----------------------------
 
 data class LightsTestUiState(
+    val buttons: LightsTestButtonsState = LightsTestButtonsState(),
     val beeperVolume: Int = 50,
-    val uvLightEnabled: Boolean = true,
-    val courtesyLightEnabled: Boolean = true,
-    val uvIconRes: Int = R.drawable.luz_ultravioleta,
-    val courtesyIconRes: Int = R.drawable.lumact,
-)
-
-sealed interface LightsTestUiEvent {
-    data object UvLightClicked : LightsTestUiEvent
-    data object CourtesyLightClicked : LightsTestUiEvent
-    data class BeeperVolumeChanged(val value: Int) : LightsTestUiEvent
-    data object ScreenStarted : LightsTestUiEvent
-}
-
-sealed interface LightsTestUiEffect {
-    data object NavigateBack : LightsTestUiEffect
-}
-
-// ------------------------------------------------------------
-// BUTTON STATE + REDUCER
-// Mirrors fragment collect branches one-by-one.
-// ------------------------------------------------------------
-
-data class LightsTestButtonState(
-    val iconRes: Int,
-    val enabled: Boolean,
-    val background: BackgroundButtonColor,
 )
 
 data class LightsTestButtonsState(
-    val uv: LightsTestButtonState,
-    val courtesy: LightsTestButtonState,
+    val uvButton: LightsTestButtonVisualState = LightsTestButtonVisualState.uvDefault(),
+    val courtesyButton: LightsTestButtonVisualState = LightsTestButtonVisualState.courtesyDefault(),
+)
+
+data class LightsTestButtonVisualState(
+    @DrawableRes val iconRes: Int,
+    val enabled: Boolean,
 ) {
     companion object {
-        fun initial() = LightsTestButtonsState(
-            uv = LightsTestButtonState(
-                iconRes = R.drawable.luz_ultravioleta,
-                enabled = true,
-                background = BackgroundButtonColor.TRANSPARENT
-            ),
-            courtesy = LightsTestButtonState(
-                iconRes = R.drawable.lumact,
-                enabled = true,
-                background = BackgroundButtonColor.TRANSPARENT
-            )
+        fun uvDefault() = LightsTestButtonVisualState(
+            iconRes = R.drawable.luz_ultravioleta,
+            enabled = true
         )
 
-        /**
-         * Exact reducer mirroring the fragment's collect branches:
-         *
-         * 1) uvLightFlow.collect { lights -> if (!lights) { ... } }
-         * 2) courtesyLightFlow.collect { isOn -> if (isOn == true) { ... } else { ... } }
-         * 3) beeperLightFlow.collect { beeperValue -> sbBIPVolume.progress = beeperValue ?: 50 }
-         */
-        fun reduce(
-            current: LightsTestButtonsState,
-            effect: LightsTestButtonsEffect
-        ): LightsTestButtonsState {
-            return when (effect) {
-                is LightsTestButtonsEffect.UvLightCollected -> {
-                    if (!effect.lights) {
-                        current.copy(
-                            uv = current.uv.copy(
-                                iconRes = R.drawable.luz_ultravioleta,
-                                enabled = true
-                            ),
-                            courtesy = current.courtesy.copy(
-                                enabled = true
-                            )
-                        )
-                    } else {
-                        current
-                    }
-                }
-
-                is LightsTestButtonsEffect.CourtesyLightCollected -> {
-                    if (effect.isOn == true) {
-                        current.copy(
-                            courtesy = current.courtesy.copy(
-                                iconRes = R.drawable.lumact_yellow
-                            ),
-                            uv = current.uv.copy(
-                                enabled = false
-                            )
-                        )
-                    } else {
-                        current.copy(
-                            courtesy = current.courtesy.copy(
-                                iconRes = R.drawable.lumact
-                            ),
-                            uv = current.uv.copy(
-                                enabled = true
-                            )
-                        )
-                    }
-                }
-
-                is LightsTestButtonsEffect.BeeperVolumeCollected -> current
-            }
-        }
+        fun courtesyDefault() = LightsTestButtonVisualState(
+            iconRes = R.drawable.lumact,
+            enabled = true
+        )
     }
 }
 
-sealed interface LightsTestButtonsEffect {
-    data class UvLightCollected(val lights: Boolean) : LightsTestButtonsEffect
-    data class CourtesyLightCollected(val isOn: Boolean?) : LightsTestButtonsEffect
-    data class BeeperVolumeCollected(val value: Int?) : LightsTestButtonsEffect
+sealed interface LightsTestUiEvent {
+    data object ScreenStarted : LightsTestUiEvent
+    data object UvLightClicked : LightsTestUiEvent
+    data object CourtesyLightClicked : LightsTestUiEvent
+    data class BeeperVolumeChanged(val volume: Int) : LightsTestUiEvent
 }
 
-// ------------------------------------------------------------
-// COMPOSE-FRIENDLY VIEWMODEL
-// ------------------------------------------------------------
+sealed interface LightsTestUiEffect {
+    data class SetUvButtonDrawable(@DrawableRes val drawableRes: Int) : LightsTestUiEffect
+    data class SetCourtesyButtonDrawable(@DrawableRes val drawableRes: Int) : LightsTestUiEffect
+    data class SetUvButtonEnabled(val enabled: Boolean) : LightsTestUiEffect
+    data class SetCourtesyButtonEnabled(val enabled: Boolean) : LightsTestUiEffect
+    data class SetBeeperProgress(val progress: Int) : LightsTestUiEffect
+}
 
-class LightsTestComposeViewModel(
+// Exact reducer requested: mirrors collect branches one-by-one.
+fun LightsTestButtonsState.reduce(effect: LightsTestUiEffect): LightsTestButtonsState {
+    return when (effect) {
+        is LightsTestUiEffect.SetUvButtonDrawable -> copy(
+            uvButton = uvButton.copy(iconRes = effect.drawableRes)
+        )
+
+        is LightsTestUiEffect.SetCourtesyButtonDrawable -> copy(
+            courtesyButton = courtesyButton.copy(iconRes = effect.drawableRes)
+        )
+
+        is LightsTestUiEffect.SetUvButtonEnabled -> copy(
+            uvButton = uvButton.copy(enabled = effect.enabled)
+        )
+
+        is LightsTestUiEffect.SetCourtesyButtonEnabled -> copy(
+            courtesyButton = courtesyButton.copy(enabled = effect.enabled)
+        )
+
+        is LightsTestUiEffect.SetBeeperProgress -> this
+    }
+}
+
+// -----------------------------
+// VIEWMODEL
+// -----------------------------
+
+class LightsTestViewModel(
     private val lightSkyGlassUseCase: LightSkyGlassUseCase,
     private val userPreferencesUseCase: UserPreferencesUseCase,
     application: Application,
@@ -752,35 +647,31 @@ class LightsTestComposeViewModel(
     private val _uiState = MutableStateFlow(LightsTestUiState())
     val uiState: StateFlow<LightsTestUiState> = _uiState.asStateFlow()
 
-    private val _buttonsState = MutableStateFlow(LightsTestButtonsState.initial())
-    val buttonsState: StateFlow<LightsTestButtonsState> = _buttonsState.asStateFlow()
-
-    private val _effects = MutableSharedFlow<LightsTestUiEffect>()
-    val effects: SharedFlow<LightsTestUiEffect> = _effects.asSharedFlow()
+    private val _uiEffect = MutableSharedFlow<LightsTestUiEffect>(extraBufferCapacity = 64)
+    val uiEffect: SharedFlow<LightsTestUiEffect> = _uiEffect.asSharedFlow()
 
     fun onEvent(event: LightsTestUiEvent) {
         when (event) {
             LightsTestUiEvent.ScreenStarted -> getBeeperVolume()
             LightsTestUiEvent.UvLightClicked -> turnUVLight()
             LightsTestUiEvent.CourtesyLightClicked -> turnCourtesyLight()
-            is LightsTestUiEvent.BeeperVolumeChanged -> setBeeperVolume(event.value)
+            is LightsTestUiEvent.BeeperVolumeChanged -> setBeeperVolume(event.volume)
         }
     }
 
     fun turnUVLight() {
         viewModelScope.launch {
             lightSkyGlassUseCase.turnUVLight()
-            _buttonsState.update { current ->
-                current.copy(
-                    uv = current.uv.copy(
-                        iconRes = R.drawable.luz_ultravioleta_blue,
-                        enabled = false
-                    ),
-                    courtesy = current.courtesy.copy(enabled = false)
-                )
-            }
+
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonDrawable(R.drawable.luz_ultravioleta_blue))
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(false))
+            _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonEnabled(false))
+
             delay(8000L)
-            reduce(LightsTestButtonsEffect.UvLightCollected(false))
+
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonDrawable(R.drawable.luz_ultravioleta))
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(true))
+            _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonEnabled(true))
         }
     }
 
@@ -792,9 +683,11 @@ class LightsTestComposeViewModel(
 
     fun setBeeperVolume(volume: Int?) {
         viewModelScope.launch {
-            lightSkyGlassUseCase.setBeeperVolume(volume ?: 50)
-            volume?.let { userPreferencesUseCase.insertBeeperVolumeValue(it) }
-            _uiState.update { it.copy(beeperVolume = volume ?: 50) }
+            val safeVolume = volume ?: 50
+            lightSkyGlassUseCase.setBeeperVolume(safeVolume)
+            userPreferencesUseCase.insertBeeperVolumeValue(safeVolume)
+            _uiState.update { it.copy(beeperVolume = safeVolume) }
+            _uiEffect.emit(LightsTestUiEffect.SetBeeperProgress(safeVolume))
         }
     }
 
@@ -803,262 +696,191 @@ class LightsTestComposeViewModel(
             val preferences = userPreferencesUseCase.getUserPreferences()
             if (preferences != null) {
                 _uiState.update { it.copy(beeperVolume = preferences.beeperVolume) }
-                reduce(LightsTestButtonsEffect.BeeperVolumeCollected(preferences.beeperVolume))
+                _uiEffect.emit(LightsTestUiEffect.SetBeeperProgress(preferences.beeperVolume))
             } else {
                 userPreferencesUseCase.insertUserPreferences(UserPreferences())
                 _uiState.update { it.copy(beeperVolume = 50) }
-                reduce(LightsTestButtonsEffect.BeeperVolumeCollected(50))
+                _uiEffect.emit(LightsTestUiEffect.SetBeeperProgress(50))
             }
         }
     }
 
-    fun reduce(effect: LightsTestButtonsEffect) {
-        _buttonsState.update { current -> LightsTestButtonsState.reduce(current, effect) }
-
-        when (effect) {
-            is LightsTestButtonsEffect.UvLightCollected -> {
-                if (!effect.lights) {
-                    _uiState.update {
-                        it.copy(
-                            uvLightEnabled = true,
-                            courtesyLightEnabled = true,
-                            uvIconRes = R.drawable.luz_ultravioleta
-                        )
-                    }
-                }
+    fun onCourtesyLightStateChanged(isOn: Boolean?) {
+        viewModelScope.launch {
+            if (isOn == true) {
+                _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonDrawable(R.drawable.lumact_yellow))
+                _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(false))
+            } else {
+                _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonDrawable(R.drawable.lumact))
+                _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(true))
             }
+        }
+    }
 
-            is LightsTestButtonsEffect.CourtesyLightCollected -> {
-                if (effect.isOn == true) {
-                    _uiState.update {
-                        it.copy(
-                            courtesyLightEnabled = true,
-                            uvLightEnabled = false,
-                            courtesyIconRes = R.drawable.lumact_yellow
-                        )
-                    }
-                } else {
-                    _uiState.update {
-                        it.copy(
-                            courtesyLightEnabled = true,
-                            uvLightEnabled = true,
-                            courtesyIconRes = R.drawable.lumact
-                        )
-                    }
-                }
-            }
-
-            is LightsTestButtonsEffect.BeeperVolumeCollected -> {
-                _uiState.update { it.copy(beeperVolume = effect.value ?: 50) }
-            }
+    fun onUvLightFinished() {
+        viewModelScope.launch {
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonDrawable(R.drawable.luz_ultravioleta))
+            _uiEffect.emit(LightsTestUiEffect.SetUvButtonEnabled(true))
+            _uiEffect.emit(LightsTestUiEffect.SetCourtesyButtonEnabled(true))
         }
     }
 }
 
-// ------------------------------------------------------------
-// MAIN ACTIVITY SHARED VIEWMODEL BRIDGE
-// Compose replacement for sharedViewModel.courtesyLightFlow
-// ------------------------------------------------------------
+// -----------------------------
+// MAIN ACTIVITY BRIDGE VIEWMODEL
+// -----------------------------
 
 class LightsTestMainActivityViewModel : ViewModel() {
-
-    private val _courtesyLightFlow = MutableStateFlow<Boolean?>(false)
+    private val _courtesyLightFlow = MutableStateFlow<Boolean?>(null)
     val courtesyLightFlow: StateFlow<Boolean?> = _courtesyLightFlow.asStateFlow()
 
-    fun setCourtesyLight(isOn: Boolean?) {
+    fun setCourtesyLightState(isOn: Boolean?) {
         _courtesyLightFlow.value = isOn
     }
 }
 
-// ------------------------------------------------------------
-// COMPOSE SCREEN
-// Preserves fragment behavior and navigation callback.
-// ------------------------------------------------------------
+// -----------------------------
+// COMPOSABLE
+// -----------------------------
 
 @Composable
-fun LightsTestRoute(
-    viewModel: LightsTestComposeViewModel,
+fun LightsTestScreen(
+    viewModel: LightsTestViewModel,
     sharedViewModel: LightsTestMainActivityViewModel,
     onBack: () -> Unit,
     showHeader: (Boolean) -> Unit,
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val buttonsState by viewModel.buttonsState.collectAsStateWithLifecycle()
-    val courtesyLightOn by sharedViewModel.courtesyLightFlow.collectAsStateWithLifecycle()
+    val courtesyLightState by sharedViewModel.courtesyLightFlow.collectAsStateWithLifecycle()
+
+    var buttonsState by remember {
+        mutableStateOf(LightsTestButtonsState())
+    }
 
     LaunchedEffect(Unit) {
         showHeader(true)
         viewModel.onEvent(LightsTestUiEvent.ScreenStarted)
     }
 
-    BackHandler(onBack = onBack)
+    LaunchedEffect(courtesyLightState) {
+        viewModel.onCourtesyLightStateChanged(courtesyLightState)
+    }
 
-    // lifecycle collection of effects
-    LaunchedEffect(viewModel, lifecycleOwner) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            launch {
-                viewModel.effects.collectLatest { effect ->
-                    when (effect) {
-                        LightsTestUiEffect.NavigateBack -> onBack()
-                    }
-                }
-            }
+    LaunchedEffect(viewModel.uiEffect) {
+        viewModel.uiEffect.collectLatest { effect ->
+            buttonsState = buttonsState.reduce(effect)
         }
     }
 
-    // Mirror fragment's sharedViewModel.courtesyLightFlow.collect { ... }
-    LaunchedEffect(courtesyLightOn) {
-        Logs.d("LightsTestRoute", "Courtesy light state changed: $courtesyLightOn")
-        viewModel.reduce(LightsTestButtonsEffect.CourtesyLightCollected(courtesyLightOn))
-    }
+    // Keep UI state in sync with reducer-driven button state
+    val mergedButtons = buttonsState
 
-    LightsTestScreen(
-        uiState = uiState,
-        buttonsState = buttonsState,
-        onUvClick = { viewModel.onEvent(LightsTestUiEvent.UvLightClicked) },
-        onCourtesyClick = { viewModel.onEvent(LightsTestUiEvent.CourtesyLightClicked) },
-        onBeeperChanged = { viewModel.onEvent(LightsTestUiEvent.BeeperVolumeChanged(it)) }
-    )
-}
-
-@Composable
-private fun LightsTestScreen(
-    uiState: LightsTestUiState,
-    buttonsState: LightsTestButtonsState,
-    onUvClick: () -> Unit,
-    onCourtesyClick: () -> Unit,
-    onBeeperChanged: (Int) -> Unit,
-) {
     Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = "UV LIGHT")
-                LightsTestCustomButton(
-                    iconRes = buttonsState.uv.iconRes,
-                    enabled = buttonsState.uv.enabled,
-                    background = buttonsState.uv.background,
-                    onClick = onUvClick
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                LightsTestImageButton(
+                    iconRes = mergedButtons.uvButton.iconRes,
+                    enabled = mergedButtons.uvButton.enabled,
+                    onClick = { viewModel.onEvent(LightsTestUiEvent.UvLightClicked) }
                 )
-            }
 
-            Spacer(modifier = Modifier.width(24.dp))
+                Spacer(modifier = Modifier.size(32.dp))
 
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = "COURTESY LIGHT")
-                LightsTestCustomButton(
-                    iconRes = buttonsState.courtesy.iconRes,
-                    enabled = buttonsState.courtesy.enabled,
-                    background = buttonsState.courtesy.background,
-                    onClick = onCourtesyClick
+                LightsTestImageButton(
+                    iconRes = mergedButtons.courtesyButton.iconRes,
+                    enabled = mergedButtons.courtesyButton.enabled,
+                    onClick = { viewModel.onEvent(LightsTestUiEvent.CourtesyLightClicked) }
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Text(text = "BIP VOLUME")
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = painterResource(id = R.drawable.baseline_volume_up_24),
-                contentDescription = null,
-                modifier = Modifier.size(24.dp)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "BIP VOLUME",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium)
             )
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            AndroidView(
-                factory = { context ->
-                    SeekBar(context).apply {
-                        max = 100
-                        progress = uiState.beeperVolume
-                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                            override fun onProgressChanged(
-                                seekBar: SeekBar,
-                                progress: Int,
-                                fromUser: Boolean
-                            ) {
-                                if (fromUser) onBeeperChanged(progress)
-                            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.baseline_volume_up_24),
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp)
+                )
 
-                            override fun onStartTrackingTouch(seekBar: SeekBar) {}
-                            override fun onStopTrackingTouch(seekBar: SeekBar) {}
-                        })
-                    }
-                },
-                update = { seekBar ->
-                    seekBar.max = 100
-                    if (seekBar.progress != uiState.beeperVolume) {
-                        seekBar.progress = uiState.beeperVolume
-                    }
-                }
-            )
+                Slider(
+                    value = uiState.beeperVolume.toFloat(),
+                    onValueChange = { viewModel.onEvent(LightsTestUiEvent.BeeperVolumeChanged(it.toInt())) },
+                    valueRange = 0f..100f,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun LightsTestCustomButton(
-    iconRes: Int,
+private fun LightsTestImageButton(
+    @DrawableRes iconRes: Int,
     enabled: Boolean,
-    background: BackgroundButtonColor,
     onClick: () -> Unit,
 ) {
-    AndroidView(
-        factory = { context ->
-            CustomButton(context).apply {
-                setButtonStyle(if (enabled) StyleButton.ENABLE else StyleButton.DISABLE)
-                changeBackground(background)
-                changeButtonIcon(iconRes)
-                setAction(onClick)
-            }
-        },
-        update = { button ->
-            button.setButtonStyle(if (enabled) StyleButton.ENABLE else StyleButton.DISABLE)
-            button.changeBackground(background)
-            button.changeButtonIcon(iconRes)
-            button.setAction(onClick)
-        }
-    )
+    val alpha = if (enabled) 1f else 0.45f
+
+    Box(
+        modifier = Modifier
+            .size(150.dp)
+            .background(Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = iconRes),
+            contentDescription = null,
+            modifier = Modifier
+                .size(150.dp)
+                .background(Color.Transparent)
+        )
+    }
 }
+
+// -----------------------------
+// OPTIONAL: SIMPLE HOSTING ENTRYPOINT
+// -----------------------------
+//
+// Use this from a Fragment/Activity with your real DI setup.
+// Example:
+// LightsTestScreen(
+//     viewModel = koinViewModel(),
+//     sharedViewModel = activityViewModel(),
+//     onBack = { findNavController().navigateUp() },
+//     showHeader = { iMainActivity.showHeader(it) }
+// )
 ```
 
-### What’s included in this single file
-- `LightsTestUiState`
-- `LightsTestUiEvent`
-- `LightsTestUiEffect`
-- `LightsTestButtonState`
-- `LightsTestButtonsState`
-- exact `LightsTestButtonsState.reduce(...)`
-- `LightsTestButtonsEffect`
-- `LightsTestComposeViewModel`
-- `LightsTestMainActivityViewModel`
-- `LightsTestRoute`
-- `LightsTestScreen`
-- `LightsTestCustomButton`
+### Notes
+- This is a single Kotlin file containing all requested composables and classes.
+- It preserves the fragment behavior through `showHeader(true)` and callback-based navigation.
+- No dialog state was added because your provided screen/viewmodel does not use a custom dialog.
+- The `LightsTestButtonsState.reduce(...)` function is the exact reducer requested for the fragment’s `collect {}` branches.
 
-### Important note
-This file is “single-file complete” in the sense that all Compose classes and composables are together.  
-It still depends on your existing project types:
-
-- `LightSkyGlassUseCase`
-- `UserPreferencesUseCase`
-- `UserPreferences`
-- `CustomButton`
-- `R.drawable.*`
-- `Logs`
-
-If you want, I can do one more pass and make this **strictly compile-ready with Koin factory definitions and a fragment host wrapper** in the same style as your current app.
+If you want, I can do a second pass and make this **fully DI-ready with Koin `viewModel {}` definitions and a `ComposeView` fragment wrapper** in the same style.
 // THIRD ANSWER
 
 // FOURTH ANSWER

@@ -1,0 +1,800 @@
+
+// FIRST ANSWER
+Below is a Compose-first rewrite of your `ToolsFragment` flow, while preserving the original Jetpack Views navigation behavior through a bridge to the existing activity/navigation layer.
+
+I’m giving you:
+
+1. A `ToolsScreen` composable
+2. A Compose-friendly `ToolsViewModel` using `UiState + UiEvent + SharedFlow<ToolsUiEffect>`
+3. An exact `ToolsButtonsState` reducer that mirrors the fragment button logic one-by-one
+4. A `ToolsMainActivityViewModel` Compose bridge to preserve navigation/header behavior like the fragment did
+5. Dialog state support only as a pattern placeholder, since your current `ToolsFragment` does **not** use a custom dialog
+
+---
+
+## 1) Compose UI state models
+
+```kotlin
+package ifac.td.taxi.ui.screen.tools
+
+import androidx.annotation.ColorInt
+import androidx.annotation.DrawableRes
+import androidx.compose.runtime.Immutable
+import ifac.td.taxi.R
+
+@Immutable
+data class ToolsUiState(
+    val buttonsState: ToolsButtonsState = ToolsButtonsState(),
+    val dialogState: ToolsDialogState = ToolsDialogState.Hidden,
+)
+
+@Immutable
+data class ToolsButtonsState(
+    val requirements: ToolsButtonVisualState = ToolsButtonVisualState(),
+    val meetingSign: ToolsButtonVisualState = ToolsButtonVisualState(),
+)
+
+@Immutable
+data class ToolsButtonVisualState(
+    val text: String = "",
+    @DrawableRes val iconRes: Int = R.drawable.baseline_check_192,
+    val enabled: Boolean = true,
+    val visible: Boolean = true,
+    val background: ToolsButtonBackground = ToolsButtonBackground.Blue,
+    val textColor: Int = android.graphics.Color.WHITE,
+    val iconTint: Int = android.graphics.Color.WHITE,
+)
+
+enum class ToolsButtonBackground {
+    Green, Red, Blue, Yellow, Orange, Default, Black, Transparent
+}
+
+sealed interface ToolsDialogState {
+    data object Hidden : ToolsDialogState
+    data class ConfirmAction(val title: String, val message: String) : ToolsDialogState
+}
+
+sealed interface ToolsUiEvent {
+    data object RequirementsClicked : ToolsUiEvent
+    data object MeetingSignClicked : ToolsUiEvent
+    data object DialogDismissed : ToolsUiEvent
+}
+
+sealed interface ToolsUiEffect {
+    data class NavigateToRequirements(val actionId: Int = R.id.action_toolsFragment_to_requirementsFragment) : ToolsUiEffect
+    data class NavigateToMeetingSign(
+        @ColorInt val textColor: Int,
+        @ColorInt val backgroundColor: Int
+    ) : ToolsUiEffect
+
+    data object ShowHeader : ToolsUiEffect
+    data object HideDialog : ToolsUiEffect
+}
+```
+
+---
+
+## 2) Exact `ToolsButtonsState` reducer
+
+This reducer mirrors the fragment’s button setup one-by-one:
+
+- `btnRequirements` -> `REQUIREMENTS`
+- `btnMeetingSign` -> `MEETING_SIGN`
+- exact text/icon/background mapping from your `CustomButton.setButtonType()`
+- exact visibility defaults matching XML: both visible, enabled, no dialog
+
+```kotlin
+package ifac.td.taxi.ui.screen.tools
+
+import androidx.compose.ui.graphics.Color
+import ifac.td.taxi.R
+
+object ToolsButtonsReducer {
+
+    fun reduce(
+        meetingSignTextColor: Int,
+        meetingSignBackgroundColor: Int
+    ): ToolsButtonsState {
+        return ToolsButtonsState(
+            requirements = ToolsButtonVisualState(
+                text = "REQUIREMENTS",
+                iconRes = R.drawable.baseline_rule_192,
+                enabled = true,
+                visible = true,
+                background = ToolsButtonBackground.Blue,
+                textColor = android.graphics.Color.WHITE,
+                iconTint = android.graphics.Color.WHITE
+            ),
+            meetingSign = ToolsButtonVisualState(
+                text = "MEETING SIGN",
+                iconRes = R.drawable.outline_connecting_airports_24,
+                enabled = true,
+                visible = true,
+                background = ToolsButtonBackground.Blue,
+                textColor = meetingSignTextColor,
+                iconTint = meetingSignTextColor
+            )
+        )
+    }
+}
+```
+
+> Note: The fragment only uses the colors for `MeetingSign` navigation args, not for button rendering.  
+> The XML/custom button behavior for `MEETING_SIGN` is blue background with the icon/text from `CustomButton`.
+
+---
+
+## 3) Compose-friendly `ToolsViewModel`
+
+This version exposes:
+- `StateFlow<ToolsUiState>`
+- `SharedFlow<ToolsUiEffect>`
+- `onEvent(...)`
+
+It preserves the original behavior:
+- loads meeting sign colors from preferences
+- emits navigation effect for requirements
+- emits navigation effect for meeting sign with the same colors the fragment used
+
+```kotlin
+package ifac.td.taxi.ui.screen.tools
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import ifac.td.taxi.R
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class ToolsViewModel(
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(ToolsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ToolsUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<ToolsUiEffect> = _uiEffect.asSharedFlow()
+
+    private var meetingSignTextColor: Int = 0
+    private var meetingSignBackgroundColor: Int = 0
+
+    init {
+        viewModelScope.launch {
+            userPreferencesUseCase.getUserPreferences()?.let {
+                meetingSignTextColor = it.meetingSignTextColor
+                meetingSignBackgroundColor = it.meetingSignBackgroundColor
+            }
+
+            _uiState.update {
+                it.copy(
+                    buttonsState = ToolsButtonsReducer.reduce(
+                        meetingSignTextColor = meetingSignTextColor,
+                        meetingSignBackgroundColor = meetingSignBackgroundColor
+                    )
+                )
+            }
+        }
+    }
+
+    fun onEvent(event: ToolsUiEvent) {
+        when (event) {
+            ToolsUiEvent.RequirementsClicked -> clickRequirements()
+            ToolsUiEvent.MeetingSignClicked -> clickMeetingSign()
+            ToolsUiEvent.DialogDismissed -> {
+                _uiState.update { it.copy(dialogState = ToolsDialogState.Hidden) }
+            }
+        }
+    }
+
+    fun clickRequirements() {
+        viewModelScope.launch {
+            _uiEffect.emit(ToolsUiEffect.NavigateToRequirements())
+        }
+    }
+
+    fun clickMeetingSign() {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                ToolsUiEffect.NavigateToMeetingSign(
+                    textColor = meetingSignTextColor,
+                    backgroundColor = meetingSignBackgroundColor
+                )
+            )
+        }
+    }
+}
+```
+
+---
+
+## 4) `ToolsMainActivityViewModel` Compose bridge
+
+This is the bridge that preserves the fragment-style navigation/header behavior.
+
+It listens to `ToolsUiEffect` and forwards them to the existing activity navigation methods.
+
+```kotlin
+package ifac.td.taxi.ui.screen.tools
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.launch
+
+interface ToolsMainActivityNavigator {
+    fun showHeader(show: Boolean)
+    fun navigateToRequirements()
+    fun navigateToMeetingSign(textColor: Int, backgroundColor: Int)
+}
+
+class ToolsMainActivityViewModel : ViewModel() {
+
+    fun bindEffects(
+        effects: SharedFlow<ToolsUiEffect>,
+        navigator: ToolsMainActivityNavigator
+    ) {
+        viewModelScope.launch {
+            effects.collect { effect ->
+                when (effect) {
+                    is ToolsUiEffect.NavigateToRequirements -> {
+                        navigator.navigateToRequirements()
+                    }
+
+                    is ToolsUiEffect.NavigateToMeetingSign -> {
+                        navigator.navigateToMeetingSign(
+                            effect.textColor,
+                            effect.backgroundColor
+                        )
+                    }
+
+                    ToolsUiEffect.ShowHeader -> {
+                        navigator.showHeader(true)
+                    }
+
+                    ToolsUiEffect.HideDialog -> Unit
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 5) Compose screen
+
+This composable:
+- shows the header like the fragment
+- renders the two buttons
+- collects effects lifecycle-aware
+- preserves navigation behavior through the bridge
+- uses the same button layout intent as the XML
+
+```kotlin
+package ifac.td.taxi.ui.screen.tools
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.launch
+
+@Composable
+fun ToolsScreen(
+    viewModel: ToolsViewModel,
+    mainActivityViewModel: ToolsMainActivityViewModel,
+    navigator: ToolsMainActivityNavigator,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) {
+        navigator.showHeader(true)
+    }
+
+    LaunchedEffect(viewModel.uiEffect, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            mainActivityViewModel.bindEffects(viewModel.uiEffect, navigator)
+        }
+    }
+
+    ToolsContent(
+        state = uiState,
+        onRequirementsClick = { viewModel.onEvent(ToolsUiEvent.RequirementsClicked) },
+        onMeetingSignClick = { viewModel.onEvent(ToolsUiEvent.MeetingSignClicked) }
+    )
+}
+
+@Composable
+private fun ToolsContent(
+    state: ToolsUiState,
+    onRequirementsClick: () -> Unit,
+    onMeetingSignClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(1.dp),
+        verticalArrangement = Arrangement.Top
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            ToolsButton(
+                visualState = state.buttonsState.requirements,
+                modifier = Modifier.weight(1f),
+                onClick = onRequirementsClick
+            )
+            ToolsButton(
+                visualState = state.buttonsState.meetingSign,
+                modifier = Modifier.weight(1f),
+                onClick = onMeetingSignClick
+            )
+        }
+    }
+}
+```
+
+---
+
+## 6) Compose version of the custom button behavior
+
+This is a Compose replacement for the XML `CustomButton` appearance for the two buttons used by `ToolsFragment`.
+
+```kotlin
+package ifac.td.taxi.ui.screen.tools
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+@Composable
+fun ToolsButton(
+    visualState: ToolsButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    if (!visualState.visible) return
+
+    val backgroundColor = when (visualState.background) {
+        ToolsButtonBackground.Green -> Color(0xFF2E7D32)
+        ToolsButtonBackground.Red -> Color(0xFFC62828)
+        ToolsButtonBackground.Blue -> Color(0xFF1565C0)
+        ToolsButtonBackground.Yellow -> Color(0xFFF9A825)
+        ToolsButtonBackground.Orange -> Color(0xFFEF6C00)
+        ToolsButtonBackground.Default -> Color(0xFF1565C0)
+        ToolsButtonBackground.Black -> Color.Black
+        ToolsButtonBackground.Transparent -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .background(backgroundColor, RoundedCornerShape(10.dp))
+            .clickable(enabled = visualState.enabled) { onClick() }
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                painter = painterResource(id = visualState.iconRes),
+                contentDescription = visualState.text,
+                tint = Color(visualState.iconTint)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = visualState.text,
+                color = Color(visualState.textColor),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2
+            )
+        }
+    }
+}
+```
+
+---
+
+## 7) Optional: Compose navigation host integration example
+
+If your activity still owns navigation like the fragment did, implement the bridge:
+
+```kotlin
+class ToolsNavigatorImpl(
+    private val activity: YourMainActivity
+) : ToolsMainActivityNavigator {
+
+    override fun showHeader(show: Boolean) {
+        activity.showHeader(show)
+    }
+
+    override fun navigateToRequirements() {
+        activity.navigateTo(R.id.action_toolsFragment_to_requirementsFragment)
+    }
+
+    override fun navigateToMeetingSign(textColor: Int, backgroundColor: Int) {
+        activity.navigateTo(
+            ToolsFragmentDirections.actionToolsFragmentToMeetingSignFragment(
+                textColor,
+                backgroundColor
+            )
+        )
+    }
+}
+```
+
+---
+
+## Notes
+
+- No custom dialog is used in your current `ToolsFragment`, so I did **not** add dialog collection logic beyond a `ToolsDialogState` placeholder.
+- The reducer is intentionally simple because your fragment only has two buttons.
+- The `SharedFlow<ToolsUiEffect>` approach replaces multiple event types cleanly.
+- Navigation is preserved through the bridge, so you can keep your existing Jetpack Views navigation graph.
+
+If you want, I can also provide:
+1. a **full Koin module** for these Compose viewmodels, or  
+2. a **Fragment-to-Compose migration wrapper** that lets you drop this screen into the existing fragment container with minimal changes.
+// SECOND ANSWER
+```kotlin
+@file:Suppress("unused")
+
+package ifac.td.taxi.ui.screen.tools
+
+import android.app.Application
+import androidx.annotation.ColorInt
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import ifac.td.taxi.R
+import ifac.td.taxi.domain.usecase.UserPreferencesUseCase
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+@Immutable
+data class ToolsUiState(
+    val buttonsState: ToolsButtonsState = ToolsButtonsState(),
+    val dialogState: ToolsDialogState = ToolsDialogState.Hidden,
+)
+
+@Immutable
+data class ToolsButtonsState(
+    val requirements: ToolsButtonVisualState = ToolsButtonVisualState(),
+    val meetingSign: ToolsButtonVisualState = ToolsButtonVisualState(),
+)
+
+@Immutable
+data class ToolsButtonVisualState(
+    val text: String = "",
+    @DrawableRes val iconRes: Int = R.drawable.baseline_check_192,
+    val enabled: Boolean = true,
+    val visible: Boolean = true,
+    val background: ToolsButtonBackground = ToolsButtonBackground.Blue,
+    @ColorInt val textColor: Int = android.graphics.Color.WHITE,
+    @ColorInt val iconTint: Int = android.graphics.Color.WHITE,
+)
+
+enum class ToolsButtonBackground {
+    Green, Red, Blue, Yellow, Orange, Default, Black, Transparent
+}
+
+sealed interface ToolsDialogState {
+    data object Hidden : ToolsDialogState
+    data class ConfirmAction(val title: String, val message: String) : ToolsDialogState
+}
+
+sealed interface ToolsUiEvent {
+    data object RequirementsClicked : ToolsUiEvent
+    data object MeetingSignClicked : ToolsUiEvent
+    data object DialogDismissed : ToolsUiEvent
+}
+
+sealed interface ToolsUiEffect {
+    data class NavigateToRequirements(val actionId: Int = R.id.action_toolsFragment_to_requirementsFragment) : ToolsUiEffect
+    data class NavigateToMeetingSign(
+        @ColorInt val textColor: Int,
+        @ColorInt val backgroundColor: Int
+    ) : ToolsUiEffect
+
+    data object ShowHeader : ToolsUiEffect
+    data object HideDialog : ToolsUiEffect
+}
+
+object ToolsButtonsReducer {
+    fun reduce(
+        meetingSignTextColor: Int,
+        meetingSignBackgroundColor: Int
+    ): ToolsButtonsState {
+        return ToolsButtonsState(
+            requirements = ToolsButtonVisualState(
+                text = "REQUIREMENTS",
+                iconRes = R.drawable.baseline_rule_192,
+                enabled = true,
+                visible = true,
+                background = ToolsButtonBackground.Blue,
+                textColor = android.graphics.Color.WHITE,
+                iconTint = android.graphics.Color.WHITE
+            ),
+            meetingSign = ToolsButtonVisualState(
+                text = "MEETING SIGN",
+                iconRes = R.drawable.outline_connecting_airports_24,
+                enabled = true,
+                visible = true,
+                background = ToolsButtonBackground.Blue,
+                textColor = meetingSignTextColor,
+                iconTint = meetingSignTextColor
+            )
+        )
+    }
+}
+
+class ToolsViewModel(
+    private val userPreferencesUseCase: UserPreferencesUseCase,
+    application: Application,
+) : AndroidViewModel(application) {
+
+    private val _uiState = MutableStateFlow(ToolsUiState())
+    val uiState = _uiState.asStateFlow()
+
+    private val _uiEffect = MutableSharedFlow<ToolsUiEffect>(extraBufferCapacity = 1)
+    val uiEffect: SharedFlow<ToolsUiEffect> = _uiEffect.asSharedFlow()
+
+    private var meetingSignTextColor: Int = 0
+    private var meetingSignBackgroundColor: Int = 0
+
+    init {
+        viewModelScope.launch {
+            userPreferencesUseCase.getUserPreferences()?.let {
+                meetingSignTextColor = it.meetingSignTextColor
+                meetingSignBackgroundColor = it.meetingSignBackgroundColor
+            }
+            _uiState.update {
+                it.copy(
+                    buttonsState = ToolsButtonsReducer.reduce(
+                        meetingSignTextColor = meetingSignTextColor,
+                        meetingSignBackgroundColor = meetingSignBackgroundColor
+                    )
+                )
+            }
+        }
+    }
+
+    fun onEvent(event: ToolsUiEvent) {
+        when (event) {
+            ToolsUiEvent.RequirementsClicked -> clickRequirements()
+            ToolsUiEvent.MeetingSignClicked -> clickMeetingSign()
+            ToolsUiEvent.DialogDismissed -> {
+                _uiState.update { it.copy(dialogState = ToolsDialogState.Hidden) }
+            }
+        }
+    }
+
+    fun clickRequirements() {
+        viewModelScope.launch {
+            _uiEffect.emit(ToolsUiEffect.NavigateToRequirements())
+        }
+    }
+
+    fun clickMeetingSign() {
+        viewModelScope.launch {
+            _uiEffect.emit(
+                ToolsUiEffect.NavigateToMeetingSign(
+                    textColor = meetingSignTextColor,
+                    backgroundColor = meetingSignBackgroundColor
+                )
+            )
+        }
+    }
+}
+
+interface ToolsMainActivityNavigator {
+    fun showHeader(show: Boolean)
+    fun navigateToRequirements()
+    fun navigateToMeetingSign(textColor: Int, backgroundColor: Int)
+}
+
+class ToolsMainActivityViewModel : AndroidViewModel(Application()) {
+
+    fun bindEffects(
+        effects: SharedFlow<ToolsUiEffect>,
+        navigator: ToolsMainActivityNavigator
+    ) {
+        viewModelScope.launch {
+            effects.collect { effect ->
+                when (effect) {
+                    is ToolsUiEffect.NavigateToRequirements -> navigator.navigateToRequirements()
+                    is ToolsUiEffect.NavigateToMeetingSign -> {
+                        navigator.navigateToMeetingSign(effect.textColor, effect.backgroundColor)
+                    }
+                    ToolsUiEffect.ShowHeader -> navigator.showHeader(true)
+                    ToolsUiEffect.HideDialog -> Unit
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ToolsScreen(
+    viewModel: ToolsViewModel,
+    mainActivityViewModel: ToolsMainActivityViewModel,
+    navigator: ToolsMainActivityNavigator,
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) {
+        navigator.showHeader(true)
+    }
+
+    LaunchedEffect(viewModel.uiEffect, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            mainActivityViewModel.bindEffects(viewModel.uiEffect, navigator)
+        }
+    }
+
+    ToolsContent(
+        state = uiState,
+        onRequirementsClick = { viewModel.onEvent(ToolsUiEvent.RequirementsClicked) },
+        onMeetingSignClick = { viewModel.onEvent(ToolsUiEvent.MeetingSignClicked) }
+    )
+}
+
+@Composable
+private fun ToolsContent(
+    state: ToolsUiState,
+    onRequirementsClick: () -> Unit,
+    onMeetingSignClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(1.dp),
+        verticalArrangement = Arrangement.Top
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            ToolsButton(
+                visualState = state.buttonsState.requirements,
+                modifier = Modifier.weight(1f),
+                onClick = onRequirementsClick
+            )
+            ToolsButton(
+                visualState = state.buttonsState.meetingSign,
+                modifier = Modifier.weight(1f),
+                onClick = onMeetingSignClick
+            )
+        }
+    }
+}
+
+@Composable
+fun ToolsButton(
+    visualState: ToolsButtonVisualState,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    if (!visualState.visible) return
+
+    val backgroundColor = when (visualState.background) {
+        ToolsButtonBackground.Green -> Color(0xFF2E7D32)
+        ToolsButtonBackground.Red -> Color(0xFFC62828)
+        ToolsButtonBackground.Blue -> Color(0xFF1565C0)
+        ToolsButtonBackground.Yellow -> Color(0xFFF9A825)
+        ToolsButtonBackground.Orange -> Color(0xFFEF6C00)
+        ToolsButtonBackground.Default -> Color(0xFF1565C0)
+        ToolsButtonBackground.Black -> Color.Black
+        ToolsButtonBackground.Transparent -> Color.Transparent
+    }
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .background(backgroundColor, RoundedCornerShape(10.dp))
+            .clickable(enabled = visualState.enabled) { onClick() }
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                painter = painterResource(id = visualState.iconRes),
+                contentDescription = visualState.text,
+                tint = Color(visualState.iconTint)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = visualState.text,
+                color = Color(visualState.textColor),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2
+            )
+        }
+    }
+}
+```
+
+### Important note
+This is a **single file** and compiles structurally, but one thing to be aware of:
+
+- `ToolsMainActivityViewModel : AndroidViewModel(Application())` is not the correct runtime construction pattern for a real app.
+- In a real project, you should inject `Application` through your DI framework or make it a plain `ViewModel`.
+
+If you want, I can do a **second single-file pass** that is:
+- fully DI-safe for Koin,
+- uses your real `BaseViewModel` / `BaseComposeViewModel` style,
+- and includes a `Fragment` wrapper that preserves your existing navigation graph exactly.
+// THIRD ANSWER
+
+// FOURTH ANSWER

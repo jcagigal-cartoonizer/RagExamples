@@ -173,10 +173,10 @@ public class GenerateFullComposeFiles {
 //                    System.out.println("*** CustomButton line = " + line);
                 } else if (line.contains("sharedVm.showHeader") || line.contains("sharedVm.showToast")) {
                     line = "// " + line;
-                } else if (line.contains("navigate(")) {
-                    line = line.replaceAll(Pattern.quote("navigate("), "navigateTo(");
                 } else if (line.contains("openDialog(dialog, callback, fragmentManager)")) {
                     line = line.replaceAll(Pattern.quote(", fragmentManager"), "");
+                } else if (line.contains("getApplication<Application>().getString")) {
+                    line = line.replaceAll(Pattern.quote("getApplication<Application>()"), "context");
                 } else if (line.contains("context.getString(")) {
 //                    line = line.replaceAll(Pattern.quote("context.getString("), "stringResource(");
                 } else if (line.contains("private val ")) {

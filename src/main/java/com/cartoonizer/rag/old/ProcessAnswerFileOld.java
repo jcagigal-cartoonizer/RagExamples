@@ -2,8 +2,8 @@ package com.cartoonizer.rag.old;
 
 import com.cartoonizer.rag.utils.ContactCentralBlocks;
 import com.cartoonizer.rag.utils.DashboardBlocks;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.*;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.*;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
 import com.cartoonizer.rag.utils.GeneralBlocks;
 import com.cartoonizer.rag.utils.InfoDispatchBlocks;
 import com.cartoonizer.rag.utils.ReadFile;

@@ -1,7 +1,10 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.rag.questions;
 
 import com.cartoonizer.rag.openai.OpenAiChat;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.*;
+import com.cartoonizer.rag.utils.ApiKeys;
+import com.cartoonizer.rag.utils.ModelNames;
+import com.cartoonizer.rag.utils.Utils;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.*;
 import java.io.File;
 
 public class SharedViewModelQuestionsProcessor {

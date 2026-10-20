@@ -5,8 +5,8 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.utils.ApiKeys;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.cartoonizer.rag.utils.Utils;
 import java.io.File;

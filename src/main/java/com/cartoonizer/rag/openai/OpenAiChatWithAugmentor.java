@@ -20,12 +20,12 @@ import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import com.cartoonizer.rag.shared.Assistant;
 import com.cartoonizer.rag.utils.ApiKeys;
-import com.cartoonizer.rag.utils.GeneralAnswerProcessor;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.SUFFIX;
+import com.cartoonizer.rag.answers.GeneralAnswerProcessor;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.SUFFIX;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.cartoonizer.rag.utils.Utils;
 
@@ -91,25 +91,25 @@ public class OpenAiChatWithAugmentor {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-"ScannerQr",
-"SecurePin",
-"Settings",
-"ShiftDetail",
-"Shifts",
-"Signature",
-"SplashScreen",
-"Statistics",
-"SubscriberPayment",
-"Tcc",
-"Tools",
-"Totalizers",
-"TripHistory",
-"UserPreferences",
-"WebView",
-"Welcome",
-"ZoningCars",
-"Zoning",
-"ZoningServices",
+//"ScannerQr",
+//"SecurePin",
+//"Settings",
+//"ShiftDetail",
+//"Shifts",
+//"Signature",
+//"SplashScreen",
+//"Statistics",
+//"SubscriberPayment",
+//"Tcc",
+//"Tools",
+//"Totalizers",
+//"TripHistory",
+//"UserPreferences",
+//"WebView",
+//"Welcome",
+//"ZoningCars",
+//"Zoning",
+//"ZoningServices",
     };
     private static String[] LAYOUTS_AUGMENTOR = {
 //            "fragment_dashboard.xml",
@@ -163,25 +163,25 @@ public class OpenAiChatWithAugmentor {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-"fragment_scanner_qr.xml",
-"fragment_secure_pin.xml",
-"fragment_settings.xml",
-"fragment_shift_detail.xml",
-"fragment_shifts.xml",
-"fragment_signature.xml",
-"fragment_splash_screen.xml",
-"fragment_statistics.xml",
-"fragment_subscriber_payment.xml",
-"fragment_tcc.xml",
-"fragment_tools.xml",
-"fragment_totalizers.xml",
-"fragment_trip_history.xml",
-"fragment_user_preferences.xml",
-"fragment_web_view.xml",
-"fragment_welcome.xml",
-"fragment_zoning.xml",
-"fragment_zoning_cars.xml",
-"fragment_zoning_services.xml",
+//"fragment_scanner_qr.xml",
+//"fragment_secure_pin.xml",
+//"fragment_settings.xml",
+//"fragment_shift_detail.xml",
+//"fragment_shifts.xml",
+//"fragment_signature.xml",
+//"fragment_splash_screen.xml",
+//"fragment_statistics.xml",
+//"fragment_subscriber_payment.xml",
+//"fragment_tcc.xml",
+//"fragment_tools.xml",
+//"fragment_totalizers.xml",
+//"fragment_trip_history.xml",
+//"fragment_user_preferences.xml",
+//"fragment_web_view.xml",
+//"fragment_welcome.xml",
+//"fragment_zoning.xml",
+//"fragment_zoning_cars.xml",
+//"fragment_zoning_services.xml",
     };
 
     public static void main(String[] args) {

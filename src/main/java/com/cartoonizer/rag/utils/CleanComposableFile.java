@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.GENERATED_FILES;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.HashMap;

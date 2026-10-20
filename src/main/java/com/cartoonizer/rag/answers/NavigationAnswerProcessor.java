@@ -1,14 +1,15 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.rag.answers;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
+import com.cartoonizer.rag.utils.ReadFile;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FILE_NAME;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.GENERATED_FILES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUTS;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.shouldSkip;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Map;

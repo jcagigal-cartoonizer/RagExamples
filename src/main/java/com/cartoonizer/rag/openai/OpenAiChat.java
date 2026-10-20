@@ -92,7 +92,6 @@ public class OpenAiChat {
         variables.put("question", question);
         variables.put("information", information);
 
-        PrompterViewToCompose prompter = new PrompterViewToCompose(relevantEmbeddings, chatModel, documents, answerPath, processedAnswerPath, this.save);
 //        AiMessage aiMessage = chatModel.chat(prompt.toUserMessage()).aiMessage();
 //        String answer = aiMessage.text();
         
@@ -101,10 +100,13 @@ public class OpenAiChat {
 //        System.out.println(information);
 //        System.out.println("===============================");
 //        String answer = assistant.answerWithInfo(prompt.toUserMessage().singleText(), information);
-        String answer = prompter.getPrompt(question);
+        String answer = getPrompt(question);
         return answer;
     }
-
+    protected String getPrompt(String question) {
+        PrompterViewToCompose prompter = new PrompterViewToCompose(relevantEmbeddings, chatModel, documents, answerPath, processedAnswerPath, this.save);
+        return prompter.getPrompt(question);
+    }
     private OpenAiChat() {
 
     }

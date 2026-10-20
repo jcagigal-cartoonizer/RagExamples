@@ -66,10 +66,15 @@ public class PrompterViewToCompose {
         Prompt prompt = promptTemplate.apply(variables);
         AiMessage aiMessage = chatModel.chat(prompt.toUserMessage()).aiMessage();
         String answer = aiMessage.text();
-        saveAnswer(answerPath, answer);
-        if (answerPath != null && !answerPath.isEmpty() && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
-            AnswerProcessor reader = new AnswerProcessor(answerPath, processedAnswerPath, save);
-            reader.load();
+        if (save) {
+            saveAnswer(answerPath, answer);
+            if (answerPath != null && !answerPath.isEmpty() && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
+                AnswerProcessor reader = new AnswerProcessor(answerPath, processedAnswerPath, save);
+                reader.load();
+            }
+        } else {
+            System.out.println("ANSWER:");
+            System.out.println(answer);
         }
         return answer;
     }

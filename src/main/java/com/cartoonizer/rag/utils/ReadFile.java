@@ -7,9 +7,9 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 
 public abstract class ReadFile {
-	protected File origen;
+	public File origen;
 	protected BufferedReader dataIn;
-        protected int numLiniesLlegides = 0;
+        public int numLiniesLlegides = 0;
 
 	public ReadFile(String pathOrigen) {
 		origen = new File(pathOrigen);

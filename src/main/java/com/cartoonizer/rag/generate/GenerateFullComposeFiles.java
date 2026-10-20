@@ -1,16 +1,15 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.rag.generate;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FULL_FILES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
+import com.cartoonizer.rag.utils.ReadFile;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.GENERATED_FULL_FILES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentor.PREFIXES_AUGMENTOR;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FILE_NAME;
 import java.util.Map;
 import java.util.regex.Pattern;
 

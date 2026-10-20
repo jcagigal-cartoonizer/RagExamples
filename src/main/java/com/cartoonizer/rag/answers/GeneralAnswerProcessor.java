@@ -1,5 +1,14 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.rag.answers;
 
+import com.cartoonizer.rag.utils.CommonDialogBlocks;
+import com.cartoonizer.rag.utils.ContactCentralBlocks;
+import com.cartoonizer.rag.utils.DashboardBlocks;
+import com.cartoonizer.rag.utils.GeneralBlocks;
+import com.cartoonizer.rag.utils.IGeneralBlocks;
+import com.cartoonizer.rag.utils.InfoDispatchBlocks;
+import com.cartoonizer.rag.utils.LoginUserBlocks;
+import com.cartoonizer.rag.utils.MessageDetailBlocks;
+import com.cartoonizer.rag.utils.ReadFile;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Map;
@@ -42,7 +51,7 @@ public class GeneralAnswerProcessor extends ReadFile {
     public static String PREFIX = "ContactCentral";
     public static String SUFFIX = "Fragment";
     public static String LAYOUT = "fragment_contact_central.xml";
-    public static String ONLY_THIS = "";
+    public static String ONLY_THIS = "SplashScreen";
 //    public static String ONLY_THIS = "";
     public static int FIRST_PREFIX = -1;
     public static int LAST_PREFIX = -1;

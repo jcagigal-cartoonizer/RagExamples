@@ -1,7 +1,8 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.rag.generate;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
+import com.cartoonizer.rag.utils.ReadFile;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.GENERATED_FILES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ONLY_THIS;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;

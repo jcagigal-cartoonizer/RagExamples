@@ -1,19 +1,20 @@
-package com.cartoonizer.rag.utils;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.SUFFIX;
+package com.cartoonizer.rag.questions;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.SUFFIX;
 
 public class ComponentsQuestionsProcessor extends FragmentQuestionsProcessor {
 
     public static void main(String[] args) {
-        LAYOUT = "custom_dialog.xml";
-        PREFIX = "Shared";
-        SUFFIX = "CommonDialog";
-        new ComponentsQuestionsProcessor("./example-files").askQuestions();
-        try {
-            Thread.sleep(5000);
-        } catch (InterruptedException ex) {
-        }
+        System.out.println("NOT NEEDED");
+//        LAYOUT = "custom_dialog.xml";
+//        PREFIX = "Shared";
+//        SUFFIX = "CommonDialog";
+//        new ComponentsQuestionsProcessor("./example-files").askQuestions();
+//        try {
+//            Thread.sleep(5000);
+//        } catch (InterruptedException ex) {
+//        }
     }
 
     public ComponentsQuestionsProcessor(String documentsPath) {

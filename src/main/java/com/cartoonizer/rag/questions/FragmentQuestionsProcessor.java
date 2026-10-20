@@ -1,18 +1,22 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.rag.questions;
 
 import com.cartoonizer.rag.openai.OpenAiChat;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FILE_NAME;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.FIRST_PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAST_PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUT;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.LAYOUTS;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PREFIXES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.PROCESSED_FOLDER;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.SUFFIX;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.shouldSkip;
+import com.cartoonizer.rag.openai.OpenAiChat;
+import com.cartoonizer.rag.utils.ApiKeys;
+import com.cartoonizer.rag.utils.ModelNames;
+import com.cartoonizer.rag.utils.Utils;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FILE_NAME;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FIRST_PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAST_PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUTS;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ONLY_THIS;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIXES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.SUFFIX;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.shouldSkip;
 import java.io.File;
 
 public class FragmentQuestionsProcessor {

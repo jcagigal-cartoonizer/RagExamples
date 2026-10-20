@@ -1,25 +1,18 @@
 
 // FIRST ANSWER
-Below is a Compose-first rewrite that preserves the fragment behavior, keeps the same navigation decisions, and replaces the button logic with state holders + reducers.
+Below is a Compose-first rewrite that preserves the fragment behavior, keeps the same navigation decisions, and replaces the button logic with state holders + reducer-based UI state.
 
-I’m giving you 3 pieces:
+I’m giving you:
 
-1. `SignatureScreen` composable  
-2. `SignatureViewModel` with `UiState + UiEvent + SharedFlow<SignatureUiEffect>`  
-3. `SignatureMainActivityViewModel` Compose bridge to preserve the fragment-style shared-flow integration
-
-I also include the exact `SignatureButtonsState` reducer that mirrors the fragment branches one-by-one.
+1. A `SignatureScreen` composable
+2. A Compose-friendly `SignatureViewModel` with `UiState + UiEvent + SharedFlow<SignatureUiEffect>`
+3. A `SignatureMainActivityViewModel` Compose bridge to preserve the shared-flow behavior from the fragment
+4. An exact `SignatureButtonsState` reducer mirroring the fragment branches one-by-one
+5. A dialog state holder only if needed; here it is included as requested, but it is not used unless you later add a custom dialog
 
 ---
 
 ## 1) Compose screen
-
-> Notes:
-> - Uses the same XML layout structure: title, signature pad area, bottom 2-button menu.
-> - Uses `AndroidView` for `SignaturePad` because there is no native Compose equivalent here.
-> - Uses `CustomButton` via `AndroidView` so the exact custom button API is preserved.
-> - Uses lifecycle collection for effects.
-> - No dialog state is added because your fragment does not use a `CustomDialog`.
 
 ```kotlin
 package ifac.td.taxi.ui.screen
@@ -27,52 +20,63 @@ package ifac.td.taxi.ui.screen
 import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import com.github.gcacace.signaturepad.views.SignaturePad
 import ifac.td.taxi.R
 import ifac.td.taxi.domain.utils.StaticConfiguration
 import ifac.td.taxi.ui.custom.button.CustomButton
-import kotlinx.coroutines.launch
+import ifac.td.taxi.viewmodel.SignatureMainActivityViewModel
+import ifac.td.taxi.viewmodel.SignatureViewModel
+import ifac.td.taxi.viewmodel.model.SignatureUiEffect
+import kotlinx.coroutines.flow.collectLatest
 
 @Composable
 fun SignatureScreen(
-    uiState: SignatureUiState,
-    onEvent: (SignatureUiEvent) -> Unit,
+    viewModel: SignatureViewModel,
     sharedViewModel: SignatureMainActivityViewModel,
-    serviceId: String,
+    serviceId: String?,
+    onShowToast: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val sharedState by sharedViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
 
+    var signaturePadBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var signaturePadRef by remember { mutableStateOf<SignaturePad?>(null) }
 
     LaunchedEffect(Unit) {
-        lifecycleOwner.lifecycleScope.launch {
-            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch {
-                    sharedViewModel.effects.collect { effect ->
-                        when (effect) {
-                            is SignatureUiEffect.ShowToast -> {
-                                // bridge to activity/host toast
-                                sharedViewModel.showToast(effect.messageResId)
+        viewModel.effects.collectLatest { effect ->
+            when (effect) {
+                is SignatureUiEffect.ShowToast -> onShowToast(effect.messageResId)
+
+                is SignatureUiEffect.HandleSignatureResult -> {
+                    if (effect.success) {
+                        if (serviceId == sharedState.dispatchFlow?.longDispatchNumber) {
+                            sharedState.dispatchFlow?.let { dispatch ->
+                                sharedState.tripFlow?.let { trip ->
+                                    viewModel.dispatchSubscriberNextStep(dispatch, trip)
+                                }
                             }
+                        } else {
+                            viewModel.sendSubscriberAuth(serviceId, sharedState.tripFlow?.id)
                         }
+                    } else {
+                        StaticConfiguration.subscriberFailPin = true
                     }
+
+                    onShowToast(
+                        if (effect.success) R.string.dialog_signature_valid_desc
+                        else R.string.dialog_signature_invalid_desc
+                    )
                 }
+
+                SignatureUiEffect.None -> Unit
             }
         }
     }
@@ -82,85 +86,62 @@ fun SignatureScreen(
             .fillMaxSize()
             .background(Color.White)
     ) {
-        Box(
+        androidx.compose.ui.viewinterop.AndroidView(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = stringResource(R.string.customer_signature),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                AndroidView(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(24.dp),
-                    factory = { ctx ->
-                        SignaturePad(ctx).apply {
-                            setPenColor(android.graphics.Color.BLACK)
-                            setOnSignedListener(object : SignaturePad.OnSignedListener {
-                                override fun onStartSigning() {
-                                    onEvent(SignatureUiEvent.OnStartSigning)
-                                }
-
-                                override fun onSigned() {
-                                    onEvent(SignatureUiEvent.OnSigned)
-                                }
-
-                                override fun onClear() {
-                                    onEvent(SignatureUiEvent.OnCleared)
-                                }
-                            })
-                            signaturePadRef = this
+                .fillMaxWidth(),
+            factory = { ctx ->
+                SignaturePad(ctx).apply {
+                    setBackgroundResource(R.drawable.bg_signature)
+                    penColor = android.graphics.Color.BLACK
+                    setOnSignedListener(object : SignaturePad.OnSignedListener {
+                        override fun onStartSigning() = Unit
+                        override fun onSigned() {
+                            viewModel.onSignedChanged(true)
                         }
-                    },
-                    update = { pad ->
-                        signaturePadRef = pad
-                    }
-                )
+                        override fun onClear() {
+                            viewModel.onSignedChanged(false)
+                        }
+                    })
+                    signaturePadRef = this
+                }
+            },
+            update = { pad ->
+                signaturePadBitmap = pad.signatureBitmap
             }
-        }
+        )
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(5f / 2f)
+                .height(120.dp)
                 .background(Color.Black)
-                .padding(0.dp),
+                .padding(1.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             SignatureCustomButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(1.dp),
-                customFunction = CustomButton.ButtonType.CLEAR,
-                style = uiState.buttons.clear.style,
-                enabled = uiState.buttons.clear.enabled,
+                modifier = Modifier.weight(1f),
+                buttonState = uiState.clearButton,
                 onClick = {
-                    onEvent(SignatureUiEvent.OnClearClicked)
                     signaturePadRef?.clear()
+                    viewModel.onClearClicked()
                 }
             )
 
             SignatureCustomButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(1.dp),
-                customFunction = CustomButton.ButtonType.ACCEPT,
-                style = uiState.buttons.accept.style,
-                enabled = uiState.buttons.accept.enabled,
+                modifier = Modifier.weight(1f),
+                buttonState = uiState.acceptButton,
                 onClick = {
-                    val bitmap = signaturePadRef?.signatureBitmap
-                    onEvent(SignatureUiEvent.OnAcceptClicked(bitmap, serviceId))
+                    if (uiState.hasSigned) {
+                        viewModel.onAcceptClicked(
+                            signatureBitmap = signaturePadBitmap,
+                            serviceId = serviceId,
+                            fromDispatch = sharedState.tripFlow?.fromDispatch == true &&
+                                sharedState.dispatchFlow?.requireSignature == true
+                        )
+                    } else {
+                        onShowToast(R.string.toast_sign_first)
+                    }
                 }
             )
         }
@@ -170,35 +151,40 @@ fun SignatureScreen(
 @Composable
 private fun SignatureCustomButton(
     modifier: Modifier = Modifier,
-    customFunction: CustomButton.ButtonType,
-    style: CustomButton.StyleButton,
-    enabled: Boolean,
+    buttonState: SignatureButtonsState,
     onClick: () -> Unit,
 ) {
-    AndroidView(
-        modifier = modifier,
+    // This assumes your existing CustomButton is still a View-based custom view.
+    // If you already have a Compose wrapper, use that instead.
+    androidx.compose.ui.viewinterop.AndroidView(
+        modifier = modifier.fillMaxHeight(),
         factory = { ctx ->
             CustomButton(ctx).apply {
-                setButtonType(customFunction.value)
-                setButtonStyle(style)
-                setAction { onClick() }
+                setButtonType(buttonState.buttonTypeValue)
+                setButtonStyle(buttonState.style.toLegacyStyle())
+                changeBackground(buttonState.backgroundColor.toLegacyBackground())
+                changeText(buttonState.text)
+                setAction(onClick)
             }
         },
         update = { button ->
-            button.setButtonType(customFunction.value)
-            button.setButtonStyle(style)
-            button.setAction { onClick() }
+            button.setButtonType(buttonState.buttonTypeValue)
+            button.setButtonStyle(buttonState.style.toLegacyStyle())
+            button.changeBackground(buttonState.backgroundColor.toLegacyBackground())
+            button.changeText(buttonState.text)
+            button.setAction(onClick)
         }
     )
 }
+
+private fun CustomButton.StyleButton.toLegacyStyle(): CustomButton.StyleButton = this
+
+private fun CustomButton.BackgroundButtonColor.toLegacyBackground(): CustomButton.BackgroundButtonColor = this
 ```
 
 ---
 
-## 2) Compose ViewModel with `UiState + UiEvent + SharedFlow<SignatureUiEffect>`
-
-This is a Compose-friendly replacement for the fragment ViewModel.  
-It preserves the same business logic and navigation decisions.
+## 2) Compose-friendly ViewModel with `UiState + UiEvent + SharedFlow<SignatureUiEffect>`
 
 ```kotlin
 package ifac.td.taxi.viewmodel
@@ -217,60 +203,71 @@ import ifac.td.taxi.domain.usecase.SubscriberUseCase
 import ifac.td.taxi.domain.usecase.TripUseCase
 import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
 import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import ifac.td.taxi.viewmodel.model.SignatureUiEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 data class SignatureUiState(
     val hasSigned: Boolean = false,
-    val serviceId: String? = null,
-    val buttons: SignatureButtonsState = SignatureButtonsState()
-)
-
-data class SignatureButtonsState(
-    val clear: SignatureButtonVisualState = SignatureButtonVisualState(
-        style = ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.ENABLE,
-        enabled = true,
-        visible = true,
-        background = ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor.RED,
-        textRes = R.string.clear,
-        iconRes = R.drawable.trash,
-        textVisible = true,
-        iconVisible = true
-    ),
-    val accept: SignatureButtonVisualState = SignatureButtonVisualState(
-        style = ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.ENABLE,
-        enabled = true,
-        visible = true,
-        background = ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor.GREEN,
-        textRes = R.string.btn_accept,
-        iconRes = R.drawable.baseline_check_192,
-        textVisible = true,
-        iconVisible = true
-    )
-)
-
-data class SignatureButtonVisualState(
-    val style: ifac.td.taxi.ui.custom.button.CustomButton.StyleButton,
-    val enabled: Boolean,
-    val visible: Boolean,
-    val background: ifac.td.taxi.ui.custom.button.CustomButton.BackgroundButtonColor,
-    val textRes: Int,
-    val iconRes: Int,
-    val textVisible: Boolean,
-    val iconVisible: Boolean
+    val buttons: SignatureButtonsState = SignatureButtonsState.default(),
+    val dialogState: SignatureDialogState = SignatureDialogState.Hidden,
 )
 
 sealed interface SignatureUiEvent {
-    data object OnStartSigning : SignatureUiEvent
-    data object OnSigned : SignatureUiEvent
-    data object OnCleared : SignatureUiEvent
-    data class OnAcceptClicked(val bitmap: Bitmap?, val serviceId: String) : SignatureUiEvent
-    data object OnClearClicked : SignatureUiEvent
+    data object AcceptClicked : SignatureUiEvent
+    data object ClearClicked : SignatureUiEvent
+    data class SignedChanged(val signed: Boolean) : SignatureUiEvent
+    data class SignatureResult(val success: Boolean) : SignatureUiEvent
 }
+
+sealed interface SignatureDialogState {
+    data object Hidden : SignatureDialogState
+    data class Visible(
+        val titleResId: Int,
+        val descriptionResId: Int,
+    ) : SignatureDialogState
+}
+
+data class SignatureButtonsState(
+    val accept: SignatureButtonVisualState,
+    val clear: SignatureButtonVisualState,
+) {
+    companion object {
+        fun default() = SignatureButtonsState(
+            accept = SignatureButtonVisualState(
+                text = "ACCEPT",
+                buttonTypeValue = 1, // ACCEPT
+                style = CustomButtonStyle.ENABLE,
+                backgroundColor = CustomButtonBackground.GREEN,
+                visible = true,
+            ),
+            clear = SignatureButtonVisualState(
+                text = "CLEAR",
+                buttonTypeValue = 2, // CLEAR
+                style = CustomButtonStyle.ENABLE,
+                backgroundColor = CustomButtonBackground.RED,
+                visible = true,
+            )
+        )
+    }
+}
+
+data class SignatureButtonVisualState(
+    val text: String,
+    val buttonTypeValue: Int?,
+    val style: CustomButtonStyle,
+    val backgroundColor: CustomButtonBackground,
+    val visible: Boolean = true,
+)
+
+enum class CustomButtonStyle { ENABLE, DISABLE, LOADING }
+enum class CustomButtonBackground { GREEN, RED, BLUE, YELLOW, ORANGE, DEFAULT, BLACK, TRANSPARENT }
 
 sealed interface SignatureUiEffect {
     data class ShowToast(val messageResId: Int) : SignatureUiEffect
+    data class HandleSignatureResult(val success: Boolean) : SignatureUiEffect
+    data object None : SignatureUiEffect
 }
 
 class SignatureViewModel(
@@ -286,49 +283,58 @@ class SignatureViewModel(
     val uiState: StateFlow<SignatureUiState> = _uiState.asStateFlow()
 
     private val _effects = MutableSharedFlow<SignatureUiEffect>()
-    val effects: SharedFlow<SignatureUiEffect> = _effects.asSharedFlow()
+    val effects = _effects.asSharedFlow()
 
-    private val _signatureResponseFlow = MutableSharedFlow<Boolean>()
-    val signatureResponseFlow = _signatureResponseFlow.asSharedFlow()
+    private var serviceId: String? = null
 
-    fun onEvent(event: SignatureUiEvent) {
-        when (event) {
-            SignatureUiEvent.OnStartSigning -> Unit
-            SignatureUiEvent.OnSigned -> {
-                _uiState.update { it.copy(hasSigned = true) }
+    fun onSignedChanged(signed: Boolean) {
+        _uiState.update { it.copy(hasSigned = signed) }
+    }
+
+    fun onClearClicked() {
+        _uiState.update { it.copy(hasSigned = false) }
+    }
+
+    fun onAcceptClicked(
+        signatureBitmap: Bitmap?,
+        serviceId: String?,
+        fromDispatch: Boolean,
+    ) {
+        if (!_uiState.value.hasSigned) {
+            viewModelScope.launch {
+                _effects.emit(SignatureUiEffect.ShowToast(R.string.toast_sign_first))
             }
-            SignatureUiEvent.OnCleared -> {
-                _uiState.update { it.copy(hasSigned = false) }
-            }
-            SignatureUiEvent.OnClearClicked -> {
-                _uiState.update { it.copy(hasSigned = false) }
-            }
-            is SignatureUiEvent.OnAcceptClicked -> {
-                if (_uiState.value.hasSigned) {
-                    val fromDispatch = false
-                    _uiState.update {
-                        it.copy(
-                            serviceId = event.serviceId,
-                            buttons = it.buttons.copy(
-                                accept = it.buttons.accept.copy(
-                                    style = ifac.td.taxi.ui.custom.button.CustomButton.StyleButton.LOADING
-                                )
-                            )
-                        )
-                    }
-                    sendSignature(event.bitmap, event.serviceId, fromDispatch)
-                } else {
+            return
+        }
+
+        this.serviceId = serviceId
+        _uiState.update {
+            it.copy(
+                buttons = it.buttons.copy(
+                    accept = it.buttons.accept.copy(style = CustomButtonStyle.LOADING)
+                )
+            )
+        }
+
+        viewModelScope.launch {
+            signatureUseCase.sendSignature(
+                signatureBitmap = signatureBitmap,
+                dispatchId = serviceId,
+                responseFlow = MutableSharedFlow<Boolean>().also { flow ->
                     viewModelScope.launch {
-                        _effects.emit(SignatureUiEffect.ShowToast(R.string.toast_sign_first))
+                        flow.collect { success ->
+                            _effects.emit(SignatureUiEffect.HandleSignatureResult(success))
+                        }
                     }
-                }
-            }
+                },
+                fromDispatch = fromDispatch
+            )
         }
     }
 
-    fun sendSignature(signatureBitmap: Bitmap?, dispatchId: String?, fromDispatch: Boolean) {
+    fun onSignatureResult(success: Boolean, dispatchFlow: InfoDispatchModel?, trip: Trip?) {
         viewModelScope.launch {
-            signatureUseCase.sendSignature(signatureBitmap, dispatchId, _signatureResponseFlow, fromDispatch)
+            _effects.emit(SignatureUiEffect.HandleSignatureResult(success))
         }
     }
 
@@ -358,37 +364,8 @@ class SignatureViewModel(
                 }
 
                 val status = shiftStatusUseCase.checkForSubStateModifications(ifConstants.STATE_FOR_HIRE)
-                status?.let { statusWithSubStatus ->
-                    shiftStatusUseCase.setStatus(statusWithSubStatus, true)
-                }
+                status?.let { shiftStatusUseCase.setStatus(it, true) }
             }
-        }
-    }
-
-    fun onSignatureValidationResult(
-        value: Boolean,
-        serviceId: String?,
-        dispatchFlow: InfoDispatchModel?,
-        trip: Trip?
-    ) {
-        viewModelScope.launch {
-            if (value) {
-                if (serviceId == dispatchFlow?.longDispatchNumber) {
-                    if (dispatchFlow != null && trip != null) {
-                        dispatchSubscriberNextStep(dispatchFlow, trip)
-                    }
-                } else {
-                    sendSubscriberAuth(serviceId, trip?.id)
-                }
-            } else {
-                StaticConfiguration.subscriberFailPin = true
-            }
-
-            _effects.emit(
-                SignatureUiEffect.ShowToast(
-                    if (value) R.string.dialog_signature_valid_desc else R.string.dialog_signature_invalid_desc
-                )
-            )
         }
     }
 }
@@ -396,147 +373,124 @@ class SignatureViewModel(
 
 ---
 
-## 3) Exact `SignatureButtonsState` reducer mirroring the fragment branches
+## 3) Exact `SignatureButtonsState` reducer mirroring the fragment logic
 
-This reducer mirrors the fragment logic one-by-one:
-
-- `btnAccept.setAction { ... }`
-- `btnClear.setAction { ... }`
-- `btnAccept.setButtonStyle(LOADING)` when signing starts
-- toast when no signature
-- clear resets signature flag
-- signature response branch:
-  - `true` -> dispatch subscriber or send auth
-  - `false` -> set `StaticConfiguration.subscriberFailPin = true`
-  - toast message chosen exactly by result
+This reducer is intentionally one-to-one with the fragment branches:
 
 ```kotlin
 package ifac.td.taxi.viewmodel
 
 import ifac.td.taxi.R
-import ifac.td.taxi.ui.custom.button.CustomButton
 
 fun SignatureButtonsState.reduce(
     hasSigned: Boolean,
-    acceptLoading: Boolean = false
+    acceptLoading: Boolean,
 ): SignatureButtonsState {
     return copy(
-        clear = clear.copy(
-            style = CustomButton.StyleButton.ENABLE,
-            enabled = true,
-            visible = true,
-            background = CustomButton.BackgroundButtonColor.RED,
-            textRes = R.string.clear,
-            iconRes = R.drawable.trash,
-            textVisible = true,
-            iconVisible = true
-        ),
         accept = accept.copy(
-            style = if (acceptLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
-            enabled = hasSigned,
+            style = when {
+                acceptLoading -> CustomButtonStyle.LOADING
+                else -> CustomButtonStyle.ENABLE
+            },
+            backgroundColor = CustomButtonBackground.GREEN,
             visible = true,
-            background = CustomButton.BackgroundButtonColor.GREEN,
-            textRes = R.string.btn_accept,
-            iconRes = R.drawable.baseline_check_192,
-            textVisible = true,
-            iconVisible = true
+            text = "ACCEPT",
+            buttonTypeValue = 1
+        ),
+        clear = clear.copy(
+            style = CustomButtonStyle.ENABLE,
+            backgroundColor = CustomButtonBackground.RED,
+            visible = true,
+            text = "CLEAR",
+            buttonTypeValue = 2
         )
     )
 }
 ```
 
-### Branch-by-branch mapping to the fragment
-
-#### `btnAccept.setAction { ... }`
-- If `hasSigned == true`:
-  - set `serviceId = args.serviceId`
-  - set accept button to loading
-  - compute `fromDispatch`
-  - call `sendSignature(...)`
-- Else:
-  - show toast `toast_sign_first`
-
-#### `btnClear.setAction { ... }`
-- clear signature pad
-- set signed flag false
-
-#### `signatureResponseFlow.collect { value -> ... }`
-- If `value == true`:
-  - if `serviceId == dispatchFlow.longDispatchNumber`:
-    - call `dispatchSubscriberNextStep(dispatch, trip)`
-  - else:
-    - call `sendSubscriberAuth(serviceId, trip.id)`
-- Else:
-  - `StaticConfiguration.subscriberFailPin = true`
-- show toast:
-  - valid -> `dialog_signature_valid_desc`
-  - invalid -> `dialog_signature_invalid_desc`
+### Exact branch mapping from the fragment
+- `btnAccept.setAction { ... }` → `onAcceptClicked(...)`
+- `if (vModel.hasSigned())` → `uiState.hasSigned`
+- `btnAccept.setButtonStyle(LOADING)` → `accept.style = LOADING`
+- `btnClear.setAction { clearSignature(); signedFlag(false) }` → `onClearClicked()`
+- `signatureResponseFlow.collect { value -> ... }` → `SignatureUiEffect.HandleSignatureResult(success)`
+- `if (value)` → success branch in effect handler
+- `else` → `StaticConfiguration.subscriberFailPin = true`
+- toast selection → `ShowToast(...)`
 
 ---
 
-## 4) Full `SignatureMainActivityViewModel` Compose bridge
+## 4) Compose bridge for the shared MainActivity ViewModel
 
-This is the shared-flow bridge that preserves the fragment-style integration with the host activity.
+This preserves the fragment’s shared-flow behavior in Compose.
 
 ```kotlin
 package ifac.td.taxi.viewmodel
 
-import android.app.Application
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.launch
+import ifac.td.taxi.viewmodel.model.InfoDispatchModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-class SignatureMainActivityViewModel(
-    context: Application
-) : BaseViewModel(context) {
+data class SignatureMainActivityUiState(
+    val tripFlow: Trip? = null,
+    val dispatchFlow: InfoDispatchModel? = null,
+)
 
-    private val _toastEvents = MutableSharedFlow<Int>()
-    val toastEvents = _toastEvents.asSharedFlow()
+class SignatureMainActivityViewModel : ViewModel() {
 
-    fun showToast(messageResId: Int) {
-        viewModelScope.launch {
-            _toastEvents.emit(messageResId)
-        }
+    private val _uiState = MutableStateFlow(SignatureMainActivityUiState())
+    val uiState: StateFlow<SignatureMainActivityUiState> = _uiState.asStateFlow()
+
+    fun setTrip(trip: Trip?) {
+        _uiState.value = _uiState.value.copy(tripFlow = trip)
+    }
+
+    fun setDispatch(dispatch: InfoDispatchModel?) {
+        _uiState.value = _uiState.value.copy(dispatchFlow = dispatch)
     }
 }
 ```
 
 ---
 
-## 5) Optional host-side Compose usage
+## 5) Notes on navigation preservation
 
-If you want the screen wired like the fragment, your host can do:
-
-```kotlin
-@Composable
-fun SignatureRoute(
-    viewModel: SignatureViewModel,
-    sharedViewModel: SignatureMainActivityViewModel,
-    serviceId: String
-) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-
-    SignatureScreen(
-        uiState = uiState,
-        onEvent = viewModel::onEvent,
-        sharedViewModel = sharedViewModel,
-        serviceId = serviceId
-    )
-}
-```
+- The fragment’s `navigateTo(PaymentDirections.goToCropImageViewFragment(...))` and `navigateTo(PaymentDirections.goToScannerQRFragment(...))` are preserved inside `dispatchSubscriberNextStep(...)`.
+- If your `BaseViewModel.navigateTo(...)` already emits navigation commands, keep that implementation unchanged.
+- The Compose screen should observe those navigation commands in the same way your app already does for other screens.
 
 ---
 
-## Important implementation note
+## 6) About dialog state
 
-Your original fragment uses `sharedViewModel.tripFlow` and `sharedViewModel.dispatchFlow`.  
-In Compose, to preserve that exactly, your `SignatureMainActivityViewModel` should expose those same flows if they already exist in your app. I did not invent unrelated state here; I only added the toast bridge because that is the only shared-flow behavior explicitly needed for this screen.
+You asked to use dialog state only if the ViewModel uses a `CustomDialog`.  
+This implementation includes `SignatureDialogState`, but it is not actively used because the fragment logic only shows toasts and does not open a custom dialog.
 
-If you want, I can provide a **second version** that:
-- uses your existing `MainActivityViewModel` directly,
-- collects `tripFlow` and `dispatchFlow`,
-- and mirrors the fragment’s `setupObservers()` line-for-line in Compose.
+---
+
+## 7) Important implementation detail
+
+Your original fragment uses:
+
+```kotlin
+vModel.signatureResponseFlow.collect { value -> ... }
+```
+
+In Compose, the clean equivalent is:
+- `SharedFlow<SignatureUiEffect>`
+- `LaunchedEffect { effects.collectLatest { ... } }`
+
+That is what the screen above does.
+
+---
+
+If you want, I can also provide:
+1. a **fully compiling version** adapted to your exact `CustomButton` API and `ButtonType` enum,
+2. a **Navigation Compose route wrapper** for this screen,
+3. or a **strictly minimal version** with only the signature screen and no extra state classes.
 // SECOND ANSWER
 ```kotlin
 @file:Suppress("unused")
@@ -546,21 +500,26 @@ package ifac.td.taxi.ui.screen
 import android.app.Application
 import android.graphics.Bitmap
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import com.github.gcacace.signaturepad.views.SignaturePad
 import com.interfacom.sdk.taximeter.bravocomm.ifConstants
 import ifac.td.taxi.PaymentDirections
@@ -571,6 +530,7 @@ import ifac.td.taxi.domain.usecase.ShiftStatusUseCase
 import ifac.td.taxi.domain.usecase.SignatureUseCase
 import ifac.td.taxi.domain.usecase.SubscriberUseCase
 import ifac.td.taxi.domain.usecase.TripUseCase
+import ifac.td.taxi.domain.utils.StaticConfiguration
 import ifac.td.taxi.framework.sdk.usecase.TicketUseCase
 import ifac.td.taxi.framework.util.Logs
 import ifac.td.taxi.ui.custom.button.CustomButton
@@ -585,103 +545,119 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-// -----------------------------------------------------------------------------
-// UI STATE / EVENTS / EFFECTS
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------------------------
+// Compose UI state / effects
+// ---------------------------------------------------------------------------------------------
 
 data class SignatureUiState(
     val hasSigned: Boolean = false,
-    val serviceId: String? = null,
-    val buttons: SignatureButtonsState = SignatureButtonsState()
-)
-
-data class SignatureButtonsState(
-    val clear: SignatureSignatureButtonVisualState = SignatureSignatureButtonVisualState(
-        style = CustomButton.StyleButton.ENABLE,
-        enabled = true,
-        visible = true,
-        background = CustomButton.BackgroundButtonColor.RED,
-        textRes = R.string.clear,
-        iconRes = R.drawable.trash,
-        textVisible = true,
-        iconVisible = true
-    ),
-    val accept: SignatureSignatureButtonVisualState = SignatureSignatureButtonVisualState(
-        style = CustomButton.StyleButton.ENABLE,
-        enabled = true,
-        visible = true,
-        background = CustomButton.BackgroundButtonColor.GREEN,
-        textRes = R.string.btn_accept,
-        iconRes = R.drawable.baseline_check_192,
-        textVisible = true,
-        iconVisible = true
-    )
-)
-
-data class SignatureSignatureButtonVisualState(
-    val style: CustomButton.StyleButton,
-    val enabled: Boolean,
-    val visible: Boolean,
-    val background: CustomButton.BackgroundButtonColor,
-    val textRes: Int,
-    val iconRes: Int,
-    val textVisible: Boolean,
-    val iconVisible: Boolean
+    val buttons: SignatureButtonsState = SignatureButtonsState.default(),
+    val dialogState: SignatureDialogState = SignatureDialogState.Hidden,
 )
 
 sealed interface SignatureUiEvent {
-    data object OnStartSigning : SignatureUiEvent
-    data object OnSigned : SignatureUiEvent
-    data object OnCleared : SignatureUiEvent
-    data object OnClearClicked : SignatureUiEvent
-    data class OnAcceptClicked(
-        val bitmap: Bitmap?,
-        val serviceId: String
-    ) : SignatureUiEvent
+    data object AcceptClicked : SignatureUiEvent
+    data object ClearClicked : SignatureUiEvent
+    data object SignaturePadSigned : SignatureUiEvent
+    data object SignaturePadCleared : SignatureUiEvent
+    data class SignatureResult(val success: Boolean) : SignatureUiEvent
+}
+
+sealed interface SignatureDialogState {
+    data object Hidden : SignatureDialogState
+    data class Visible(
+        val titleResId: Int,
+        val descriptionResId: Int,
+    ) : SignatureDialogState
 }
 
 sealed interface SignatureUiEffect {
     data class ShowToast(val messageResId: Int) : SignatureUiEffect
+    data class SignatureValidated(val success: Boolean) : SignatureUiEffect
+    data object None : SignatureUiEffect
 }
 
-// -----------------------------------------------------------------------------
-// REDUCER
-// Mirrors the fragment button logic one-by-one.
-// -----------------------------------------------------------------------------
+data class SignatureButtonsState(
+    val accept: SignatureButtonVisualState,
+    val clear: SignatureButtonVisualState,
+) {
+    companion object {
+        fun default(): SignatureButtonsState = SignatureButtonsState(
+            accept = SignatureButtonVisualState(
+                text = "ACCEPT",
+                buttonTypeValue = 1, // ACCEPT
+                style = SignatureButtonStyle.ENABLE,
+                backgroundColor = SignatureButtonBackground.GREEN,
+                visible = true,
+            ),
+            clear = SignatureButtonVisualState(
+                text = "CLEAR",
+                buttonTypeValue = 2, // CLEAR
+                style = SignatureButtonStyle.ENABLE,
+                backgroundColor = SignatureButtonBackground.RED,
+                visible = true,
+            )
+        )
+    }
+}
 
+/**
+ * Exact reducer for the fragment button logic.
+ * This is intentionally simple because the fragment only had:
+ * - accept enabled by default
+ * - accept loading while sending
+ * - clear enabled always
+ */
 fun SignatureButtonsState.reduce(
     hasSigned: Boolean,
-    acceptLoading: Boolean = false
+    acceptLoading: Boolean,
 ): SignatureButtonsState {
     return copy(
-        clear = clear.copy(
-            style = CustomButton.StyleButton.ENABLE,
-            enabled = true,
-            visible = true,
-            background = CustomButton.BackgroundButtonColor.RED,
-            textRes = R.string.clear,
-            iconRes = R.drawable.trash,
-            textVisible = true,
-            iconVisible = true
-        ),
         accept = accept.copy(
-            style = if (acceptLoading) CustomButton.StyleButton.LOADING else CustomButton.StyleButton.ENABLE,
-            enabled = hasSigned,
+            text = "ACCEPT",
+            buttonTypeValue = 1,
+            style = if (acceptLoading) SignatureButtonStyle.LOADING else SignatureButtonStyle.ENABLE,
+            backgroundColor = SignatureButtonBackground.GREEN,
             visible = true,
-            background = CustomButton.BackgroundButtonColor.GREEN,
-            textRes = R.string.btn_accept,
-            iconRes = R.drawable.baseline_check_192,
-            textVisible = true,
-            iconVisible = true
+        ),
+        clear = clear.copy(
+            text = "CLEAR",
+            buttonTypeValue = 2,
+            style = SignatureButtonStyle.ENABLE,
+            backgroundColor = SignatureButtonBackground.RED,
+            visible = true,
         )
     )
 }
 
-// -----------------------------------------------------------------------------
-// VIEWMODEL
-// -----------------------------------------------------------------------------
+data class SignatureButtonVisualState(
+    val text: String,
+    val buttonTypeValue: Int?,
+    val style: SignatureButtonStyle,
+    val backgroundColor: SignatureButtonBackground,
+    val visible: Boolean = true,
+)
 
-open class BaseViewModel(private val app: Application)
+enum class SignatureButtonStyle {
+    ENABLE,
+    DISABLE,
+    LOADING,
+}
+
+enum class SignatureButtonBackground {
+    GREEN,
+    RED,
+    BLUE,
+    YELLOW,
+    ORANGE,
+    DEFAULT,
+    BLACK,
+    TRANSPARENT
+}
+
+// ---------------------------------------------------------------------------------------------
+// Compose-friendly ViewModel
+// ---------------------------------------------------------------------------------------------
 
 class SignatureViewModel(
     private val signatureUseCase: SignatureUseCase,
@@ -697,57 +673,8 @@ class SignatureViewModel(
     private val _uiState = MutableStateFlow(SignatureUiState())
     val uiState: StateFlow<SignatureUiState> = _uiState.asStateFlow()
 
-    private val _signatureResponseFlow = MutableSharedFlow<Boolean>()
-    val signatureResponseFlow: SharedFlow<Boolean> = _signatureResponseFlow.asSharedFlow()
-
-    private val _effects = MutableSharedFlow<SignatureUiEffect>()
+    private val _effects = MutableSharedFlow<SignatureUiEffect>(extraBufferCapacity = 1)
     val effects: SharedFlow<SignatureUiEffect> = _effects.asSharedFlow()
-
-    fun onEvent(event: SignatureUiEvent) {
-        when (event) {
-            SignatureUiEvent.OnStartSigning -> {
-                Logs.d(TAG, "onEvent: OnStartSigning")
-            }
-
-            SignatureUiEvent.OnSigned -> {
-                Logs.d(TAG, "onEvent: OnSigned")
-                _uiState.update { it.copy(hasSigned = true, buttons = it.buttons.reduce(hasSigned = true)) }
-            }
-
-            SignatureUiEvent.OnCleared -> {
-                Logs.d(TAG, "onEvent: OnCleared")
-                _uiState.update { it.copy(hasSigned = false, buttons = it.buttons.reduce(hasSigned = false)) }
-            }
-
-            SignatureUiEvent.OnClearClicked -> {
-                Logs.d(TAG, "onEvent: OnClearClicked")
-                _uiState.update { it.copy(hasSigned = false, buttons = it.buttons.reduce(hasSigned = false)) }
-            }
-
-            is SignatureUiEvent.OnAcceptClicked -> {
-                Logs.d(TAG, "onEvent: OnAcceptClicked")
-                if (hasSigned()) {
-                    _uiState.update {
-                        it.copy(
-                            serviceId = event.serviceId,
-                            buttons = it.buttons.copy(
-                                accept = it.buttons.accept.copy(style = CustomButton.StyleButton.LOADING)
-                            )
-                        )
-                    }
-                    sendSignature(
-                        signatureBitmap = event.bitmap,
-                        dispatchId = event.serviceId,
-                        fromDispatch = false
-                    )
-                } else {
-                    viewModelScope.launch {
-                        _effects.emit(SignatureUiEffect.ShowToast(R.string.toast_sign_first))
-                    }
-                }
-            }
-        }
-    }
 
     private var hasSigned = false
 
@@ -759,15 +686,67 @@ class SignatureViewModel(
     fun signedFlag(flag: Boolean) {
         Logs.d(TAG, "signedFlag: Setting hasSigned to $flag")
         hasSigned = flag
-        _uiState.update { it.copy(hasSigned = flag, buttons = it.buttons.reduce(hasSigned = flag)) }
+        _uiState.update { current ->
+            current.copy(
+                hasSigned = flag,
+                buttons = current.buttons.reduce(
+                    hasSigned = flag,
+                    acceptLoading = current.buttons.accept.style == SignatureButtonStyle.LOADING
+                )
+            )
+        }
     }
 
-    fun sendSignature(signatureBitmap: Bitmap?, dispatchId: String?, fromDispatch: Boolean) {
+    fun onSignaturePadSigned() {
+        Logs.d(TAG, "onSignaturePadSigned: Signature detected")
+        signedFlag(true)
+    }
+
+    fun onSignaturePadCleared() {
+        Logs.d(TAG, "onSignaturePadCleared: Signature pad cleared")
+        signedFlag(false)
+    }
+
+    fun onAcceptClicked(
+        signatureBitmap: Bitmap?,
+        dispatchId: String?,
+        fromDispatch: Boolean,
+    ) {
+        if (!hasSigned()) {
+            viewModelScope.launch {
+                _effects.emit(SignatureUiEffect.ShowToast(R.string.toast_sign_first))
+            }
+            return
+        }
+
+        _uiState.update { current ->
+            current.copy(
+                buttons = current.buttons.copy(
+                    accept = current.buttons.accept.copy(style = SignatureButtonStyle.LOADING)
+                )
+            )
+        }
+
         viewModelScope.launch {
             Logs.d(TAG, "sendSignature: Sending signature for dispatchId: $dispatchId, fromDispatch: $fromDispatch")
-            signatureUseCase.sendSignature(signatureBitmap, dispatchId, _signatureResponseFlow, fromDispatch)
+            signatureUseCase.sendSignature(
+                signatureBitmap = signatureBitmap,
+                dispatchId = dispatchId,
+                responseFlow = signatureResponseFlowBridge(),
+                fromDispatch = fromDispatch
+            )
             Logs.d(TAG, "sendSignature: Signature sent")
         }
+    }
+
+    private fun signatureResponseFlowBridge(): MutableSharedFlow<Boolean> {
+        val bridge = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
+        viewModelScope.launch {
+            bridge.collect { value ->
+                _effects.emit(SignatureUiEffect.SignatureValidated(value))
+            }
+        }
+        return bridge
     }
 
     fun sendSubscriberAuth(serviceId: String?, tripId: Long?) {
@@ -783,7 +762,10 @@ class SignatureViewModel(
 
     fun dispatchSubscriberNextStep(dispatchValue: InfoDispatchModel, trip: Trip) {
         viewModelScope.launch {
-            Logs.d(TAG, "dispatchSubscriberNextStep: Processing next step for dispatch: ${dispatchValue.longDispatchNumber}, tripId: ${trip.id}")
+            Logs.d(
+                TAG,
+                "dispatchSubscriberNextStep: Processing next step for dispatch: ${dispatchValue.longDispatchNumber}, tripId: ${trip.id}"
+            )
 
             if (dispatchValue.requireVoucher) {
                 Logs.d(TAG, "dispatchSubscriberNextStep: Dispatch requires voucher, navigating to CropImageView")
@@ -823,78 +805,85 @@ class SignatureViewModel(
         Logs.d(TAG, "dispatchRequireQR: Navigating to ScannerQRFragment for dispatch: ${dispatch.longDispatchNumber}")
         navigateTo(PaymentDirections.goToScannerQRFragment(dispatch.longDispatchNumber))
     }
+}
 
-    fun onSignatureValidationResult(
-        value: Boolean,
-        serviceId: String?,
-        dispatchFlow: InfoDispatchModel?,
-        trip: Trip?
-    ) {
-        viewModelScope.launch {
-            Logs.d(TAG, "onSignatureValidationResult: value=$value serviceId=$serviceId")
-            if (value) {
-                if (serviceId == dispatchFlow?.longDispatchNumber) {
-                    Logs.d(TAG, "onSignatureValidationResult: Dispatching subscriber for serviceId: $serviceId")
-                    if (dispatchFlow != null && trip != null) {
-                        dispatchSubscriberNextStep(dispatchFlow, trip)
-                    }
-                } else {
-                    Logs.d(TAG, "onSignatureValidationResult: Sending subscriber auth for serviceId: $serviceId")
-                    sendSubscriberAuth(serviceId, trip?.id)
-                }
-            } else {
-                Logs.d(TAG, "onSignatureValidationResult: Signature validation failed, setting subscriberFailPin to true")
-                ifac.td.taxi.domain.utils.StaticConfiguration.subscriberFailPin = true
-            }
+// ---------------------------------------------------------------------------------------------
+// Shared activity bridge for Compose
+// ---------------------------------------------------------------------------------------------
 
-            _effects.emit(
-                SignatureUiEffect.ShowToast(
-                    if (value) R.string.dialog_signature_valid_desc else R.string.dialog_signature_invalid_desc
-                )
-            )
-        }
+data class SignatureMainActivityUiState(
+    val tripFlow: Trip? = null,
+    val dispatchFlow: InfoDispatchModel? = null,
+)
+
+class SignatureMainActivityViewModel : ViewModel() {
+
+    private val _uiState = MutableStateFlow(SignatureMainActivityUiState())
+    val uiState: StateFlow<SignatureMainActivityUiState> = _uiState.asStateFlow()
+
+    fun setTrip(trip: Trip?) {
+        _uiState.update { it.copy(tripFlow = trip) }
+    }
+
+    fun setDispatch(dispatch: InfoDispatchModel?) {
+        _uiState.update { it.copy(dispatchFlow = dispatch) }
     }
 }
 
-// -----------------------------------------------------------------------------
-// SHARED / ACTIVITY VIEWMODEL BRIDGE
-// -----------------------------------------------------------------------------
-
-class SignatureMainActivityViewModel(
-    context: Application
-) : BaseViewModel(context) {
-
-    private val _toastEvents = MutableSharedFlow<Int>()
-    val toastEvents: SharedFlow<Int> = _toastEvents.asSharedFlow()
-
-    fun showToast(messageResId: Int) {
-        viewModelScope.launch {
-            _toastEvents.emit(messageResId)
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// COMPOSE SCREEN
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------------------------
+// Compose screen
+// ---------------------------------------------------------------------------------------------
 
 @Composable
 fun SignatureScreen(
-    uiState: SignatureUiState,
-    onEvent: (SignatureUiEvent) -> Unit,
+    viewModel: SignatureViewModel,
     sharedViewModel: SignatureMainActivityViewModel,
-    serviceId: String,
+    serviceId: String?,
+    onShowToast: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val sharedState by sharedViewModel.uiState.collectAsStateWithLifecycle()
+
     var signaturePadRef by remember { mutableStateOf<SignaturePad?>(null) }
+    var signatureBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(Unit) {
-        lifecycleOwner.lifecycleScope.launch {
-            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch {
-                    sharedViewModel.toastEvents.collect { /* host bridge only */ }
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                is SignatureUiEffect.ShowToast -> onShowToast(effect.messageResId)
+
+                is SignatureUiEffect.SignatureValidated -> {
+                    val value = effect.success
+                    Logs.d("SignatureScreen", "signatureResponseFlow: Received value: $value")
+
+                    if (value) {
+                        Logs.d("SignatureScreen", "signatureResponseFlow: Signature validation successful")
+                        if (serviceId == sharedState.dispatchFlow?.longDispatchNumber) {
+                            Logs.d("SignatureScreen", "signatureResponseFlow: Dispatching subscriber for serviceId: $serviceId")
+                            sharedState.dispatchFlow?.let { dispatch ->
+                                sharedState.tripFlow?.let { trip ->
+                                    viewModel.dispatchSubscriberNextStep(dispatch, trip)
+                                }
+                            }
+                        } else {
+                            Logs.d("SignatureScreen", "signatureResponseFlow: Sending subscriber auth for serviceId: $serviceId")
+                            viewModel.sendSubscriberAuth(serviceId, sharedState.tripFlow?.id)
+                        }
+                    } else {
+                        Logs.d("SignatureScreen", "signatureResponseFlow: Signature validation failed, setting subscriberFailPin to true")
+                        StaticConfiguration.subscriberFailPin = true
+                    }
+
+                    val descriptionResId =
+                        if (value) R.string.dialog_signature_valid_desc
+                        else R.string.dialog_signature_invalid_desc
+
+                    Logs.d("SignatureScreen", "signatureResponseFlow: Showing toast with message: $descriptionResId")
+                    onShowToast(descriptionResId)
                 }
+
+                SignatureUiEffect.None -> Unit
             }
         }
     }
@@ -904,84 +893,76 @@ fun SignatureScreen(
             .fillMaxSize()
             .background(Color.White)
     ) {
-        Box(
+        AndroidView(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = stringResource(R.string.customer_signature),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                AndroidView(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(24.dp),
-                    factory = { ctx ->
-                        SignaturePad(ctx).apply {
-                            setPenColor(android.graphics.Color.BLACK)
-                            setOnSignedListener(object : SignaturePad.OnSignedListener {
-                                override fun onStartSigning() {
-                                    onEvent(SignatureUiEvent.OnStartSigning)
-                                }
-
-                                override fun onSigned() {
-                                    onEvent(SignatureUiEvent.OnSigned)
-                                }
-
-                                override fun onClear() {
-                                    onEvent(SignatureUiEvent.OnCleared)
-                                }
-                            })
-                            signaturePadRef = this
+                .fillMaxWidth(),
+            factory = { context ->
+                SignaturePad(context).apply {
+                    setBackgroundResource(R.drawable.bg_signature)
+                    penColor = android.graphics.Color.BLACK
+                    setOnSignedListener(object : SignaturePad.OnSignedListener {
+                        override fun onStartSigning() {
+                            Logs.d("SignatureScreen", "setupSignatureView: User started signing")
                         }
-                    },
-                    update = { pad ->
-                        signaturePadRef = pad
-                    }
-                )
+
+                        override fun onSigned() {
+                            Logs.d("SignatureScreen", "setupSignatureView: Signature detected")
+                            viewModel.onSignaturePadSigned()
+                        }
+
+                        override fun onClear() {
+                            Logs.d("SignatureScreen", "setupSignatureView: Signature pad cleared")
+                            viewModel.onSignaturePadCleared()
+                        }
+                    })
+                    signaturePadRef = this
+                }
+            },
+            update = { pad ->
+                signatureBitmap = pad.signatureBitmap
             }
-        }
+        )
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(5f / 2f)
+                .height(120.dp)
                 .background(Color.Black)
+                .padding(1.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            SignatureCustomButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(1.dp),
-                customFunction = CustomButton.ButtonType.CLEAR,
-                style = uiState.buttons.clear.style,
-                enabled = uiState.buttons.clear.enabled,
+            SignatureButtonView(
+                modifier = Modifier.weight(1f),
+                state = uiState.buttons.clear,
                 onClick = {
-                    onEvent(SignatureUiEvent.OnClearClicked)
+                    Logs.d("SignatureScreen", "clearSignature: Clearing signature pad")
                     signaturePadRef?.clear()
+                    viewModel.onSignaturePadCleared()
                 }
             )
 
-            SignatureCustomButton(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(1.dp),
-                customFunction = CustomButton.ButtonType.ACCEPT,
-                style = uiState.buttons.accept.style,
-                enabled = uiState.buttons.accept.enabled,
+            SignatureButtonView(
+                modifier = Modifier.weight(1f),
+                state = uiState.buttons.accept,
                 onClick = {
-                    val bitmap = signaturePadRef?.signatureBitmap
-                    onEvent(SignatureUiEvent.OnAcceptClicked(bitmap, serviceId))
+                    if (viewModel.hasSigned()) {
+                        Logs.d("SignatureScreen", "setButtons: serviceId set to $serviceId")
+                        val fromDispatch =
+                            (sharedState.tripFlow?.fromDispatch == true &&
+                                    sharedState.dispatchFlow?.requireSignature == true)
+
+                        Logs.d("SignatureScreen", "setButtons: fromDispatch = $fromDispatch")
+
+                        viewModel.onAcceptClicked(
+                            signatureBitmap = signatureBitmap,
+                            dispatchId = serviceId,
+                            fromDispatch = fromDispatch
+                        )
+                    } else {
+                        Logs.d("SignatureScreen", "setButtons: No signature detected, showing toast")
+                        onShowToast(R.string.toast_sign_first)
+                    }
                 }
             )
         }
@@ -989,50 +970,53 @@ fun SignatureScreen(
 }
 
 @Composable
-private fun SignatureCustomButton(
+private fun SignatureButtonView(
     modifier: Modifier = Modifier,
-    customFunction: CustomButton.ButtonType,
-    style: CustomButton.StyleButton,
-    enabled: Boolean,
+    state: SignatureButtonVisualState,
     onClick: () -> Unit,
 ) {
+    if (!state.visible) return
+
     AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            CustomButton(ctx).apply {
-                setButtonType(customFunction.value)
-                setButtonStyle(style)
-                setAction { onClick() }
+        modifier = modifier.fillMaxSize(),
+        factory = { context ->
+            CustomButton(context).apply {
+                setButtonType(state.buttonTypeValue)
+                setButtonStyle(state.style.toLegacyStyle())
+                changeBackground(state.backgroundColor.toLegacyBackground())
+                changeText(state.text)
+                setAction(onClick)
             }
         },
         update = { button ->
-            button.setButtonType(customFunction.value)
-            button.setButtonStyle(style)
-            button.setAction { onClick() }
+            button.setButtonType(state.buttonTypeValue)
+            button.setButtonStyle(state.style.toLegacyStyle())
+            button.changeBackground(state.backgroundColor.toLegacyBackground())
+            button.changeText(state.text)
+            button.setAction(onClick)
         }
     )
 }
 
-// -----------------------------------------------------------------------------
-// OPTIONAL ROUTE
-// -----------------------------------------------------------------------------
+private fun SignatureButtonStyle.toLegacyStyle(): CustomButton.StyleButton = when (this) {
+    SignatureButtonStyle.ENABLE -> CustomButton.StyleButton.ENABLE
+    SignatureButtonStyle.DISABLE -> CustomButton.StyleButton.DISABLE
+    SignatureButtonStyle.LOADING -> CustomButton.StyleButton.LOADING
+}
 
-@Composable
-fun SignatureRoute(
-    viewModel: SignatureViewModel,
-    sharedViewModel: SignatureMainActivityViewModel,
-    serviceId: String
-) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-
-    SignatureScreen(
-        uiState = uiState,
-        onEvent = viewModel::onEvent,
-        sharedViewModel = sharedViewModel,
-        serviceId = serviceId
-    )
+private fun SignatureButtonBackground.toLegacyBackground(): CustomButton.BackgroundButtonColor = when (this) {
+    SignatureButtonBackground.GREEN -> CustomButton.BackgroundButtonColor.GREEN
+    SignatureButtonBackground.RED -> CustomButton.BackgroundButtonColor.RED
+    SignatureButtonBackground.BLUE -> CustomButton.BackgroundButtonColor.BLUE
+    SignatureButtonBackground.YELLOW -> CustomButton.BackgroundButtonColor.YELLOW
+    SignatureButtonBackground.ORANGE -> CustomButton.BackgroundButtonColor.ORANGE
+    SignatureButtonBackground.DEFAULT -> CustomButton.BackgroundButtonColor.DEFAULT
+    SignatureButtonBackground.BLACK -> CustomButton.BackgroundButtonColor.BLACK
+    SignatureButtonBackground.TRANSPARENT -> CustomButton.BackgroundButtonColor.TRANSPARENT
 }
 ```
+
+If you want, I can do a second pass and make this **strictly compile against your exact existing `SignatureUseCase.sendSignature(...)` signature** and your exact `BaseViewModel.navigateTo(...)` contract.
 // THIRD ANSWER
 
 // FOURTH ANSWER

@@ -1,8 +1,11 @@
 package com.cartoonizer.rag.utils;
 
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.COPY_TO_APP;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.GENERATED_FILES;
-import static com.cartoonizer.rag.utils.GeneralAnswerProcessor.ONLY_THIS;
+import com.cartoonizer.rag.generate.GenerateComposeFiles;
+import com.cartoonizer.rag.generate.GenerateNavigationFragment;
+import com.cartoonizer.rag.answers.GeneralAnswerProcessor;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.COPY_TO_APP;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.GENERATED_FILES;
+import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ONLY_THIS;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.CopyOption;

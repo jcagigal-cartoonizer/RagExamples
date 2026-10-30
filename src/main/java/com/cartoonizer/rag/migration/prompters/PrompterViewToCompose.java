@@ -1,10 +1,6 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
 package com.cartoonizer.rag.migration.prompters;
 
-import com.cartoonizer.rag.old.ProcessAnswerFileOld.FragmentAnswerProcessor.AnswerProcessor;
+import com.cartoonizer.rag.answers.GeneralAnswerProcessor;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.segment.TextSegment;
@@ -19,10 +15,6 @@ import java.util.List;
 import java.util.Map;
 import static java.util.stream.Collectors.joining;
 
-/**
- *
- * @author cagi
- */
 public class PrompterViewToCompose {
     public ChatModel chatModel;
     public List<EmbeddingMatch<TextSegment>> relevantEmbeddings;
@@ -69,7 +61,7 @@ public class PrompterViewToCompose {
         if (save) {
             saveAnswer(answerPath, answer);
             if (answerPath != null && !answerPath.isEmpty() && processedAnswerPath != null && !processedAnswerPath.isEmpty()) {
-                AnswerProcessor reader = new AnswerProcessor(answerPath, processedAnswerPath, save);
+                GeneralAnswerProcessor reader = new GeneralAnswerProcessor(answerPath, processedAnswerPath);
                 reader.load();
             }
         } else {

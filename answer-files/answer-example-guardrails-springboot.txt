@@ -1,0 +1,708 @@
+QUESTION
+Please  provide a second version that includes:
+- Spring Boot
+- LangChain4j
+- OpenAI
+- Vector store
+- Metadata allowlist
+- Guardrail service
+
+
+ANSWER
+Below is a **runnable Spring Boot version** of an enterprise-only RAG app using:
+
+- **Spring Boot**
+- **LangChain4j**
+- **OpenAI**
+- **Vector store**
+- **Metadata allowlist**
+- **Guardrail service**
+
+It is designed so the assistant can only answer from **approved enterprise documents** and will **refuse web/internet/authenticated remote access requests**.
+
+---
+
+# 1) Project structure
+
+```text
+enterprise-rag/
+├─ pom.xml
+└─ src/main/
+   ├─ java/com/example/enterprise/
+   │  ├─ RagWithGuardrails.java
+   │  ├─ config/LangChainConfig.java
+   │  ├─ controller/ChatController.java
+   │  ├─ guardrail/RequestGuardrailService.java
+   │  ├─ rag/EnterpriseAssistant.java
+   │  ├─ rag/EnterpriseRagService.java
+   │  ├─ rag/EnterpriseDocumentIngestor.java
+   │  └─ model/ChatRequest.java
+   └─ resources/
+      ├─ application.yml
+      └─ docs/
+         ├─ hr-policy.txt
+         ├─ it-policy.txt
+         └─ finance-policy.txt
+```
+
+---
+
+# 2) `pom.xml`
+
+> Version numbers may need adjustment depending on the exact LangChain4j release you use.
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>enterprise-rag</artifactId>
+    <version>1.0.0</version>
+    <name>enterprise-rag</name>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-boot.version>3.3.2</spring-boot.version>
+        <langchain4j.version>0.35.0</langchain4j.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Spring Boot -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- LangChain4j -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-easy-rag</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!-- Optional in-memory vector store -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-embedding-store-in-memory</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!-- Jackson -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Lombok optional -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Tests -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+---
+
+# 3) `application.yml`
+
+```yaml
+server:
+  port: 8080
+
+openai:
+  api-key: ${OPENAI_API_KEY}
+  model: gpt-4o-mini
+
+enterprise:
+  allowed-source-prefixes:
+    - "file://enterprise/"
+    - "https://intranet.company.local/"
+    - "https://docs.company.local/"
+```
+
+---
+
+# 4) Main application
+
+## `RagWithGuardrails.java`
+
+```java
+package com.example.enterprise;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class RagWithGuardrails {
+    public static void main(String[] args) {
+        SpringApplication.run(RagWithGuardrails.class, args);
+    }
+}
+```
+
+---
+
+# 5) Request model
+
+## `ChatRequest.java`
+
+```java
+package com.example.enterprise.model;
+
+public class ChatRequest {
+    private String question;
+
+    public ChatRequest() {
+    }
+
+    public ChatRequest(String question) {
+        this.question = question;
+    }
+
+    public String getQuestion() {
+        return question;
+    }
+
+    public void setQuestion(String question) {
+        this.question = question;
+    }
+}
+```
+
+---
+
+# 6) Guardrail service
+
+This blocks:
+- internet/web search requests
+- external URLs
+- authenticated remote access requests
+
+## `RequestGuardrailService.java`
+
+```java
+package com.example.enterprise.guardrail;
+
+import org.springframework.stereotype.Service;
+
+import java.util.Locale;
+
+@Service
+public class RequestGuardrailService {
+
+    public void validateUserQuestion(String question) {
+        if (question == null || question.isBlank()) {
+            throw new IllegalArgumentException("Question cannot be empty.");
+        }
+
+        String q = question.toLowerCase(Locale.ROOT);
+
+        if (containsUrl(q)) {
+            throw new IllegalArgumentException("External URLs are not allowed. Use approved enterprise resources only.");
+        }
+
+        if (q.contains("internet") || q.contains("web search") || q.contains("search the web")
+                || q.contains("browse") || q.contains("google") || q.contains("bing")) {
+            throw new IllegalArgumentException("Internet/web access is not allowed. Use approved enterprise resources only.");
+        }
+
+        if (q.contains("login") || q.contains("sign in") || q.contains("authenticated")
+                || q.contains("credentials") || q.contains("password protected")) {
+            throw new IllegalArgumentException("Access to authenticated remote sites is not allowed.");
+        }
+    }
+
+    private boolean containsUrl(String text) {
+        return text.contains("http://") || text.contains("https://") || text.contains("www.");
+    }
+}
+```
+
+---
+
+# 7) LangChain4j configuration
+
+This config creates:
+
+- OpenAI chat model
+- OpenAI embedding model
+- In-memory vector store
+- Retriever with metadata allowlist
+- Assistant service
+
+## `LangChainConfig.java`
+
+```java
+package com.example.enterprise.config;
+
+import com.example.enterprise.rag.EnterpriseAssistant;
+import com.example.enterprise.rag.EnterpriseRagService;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.Set;
+
+@Configuration
+public class LangChainConfig {
+
+    @Bean
+    public ChatLanguageModel chatLanguageModel(
+            @Value("${openai.api-key}") String apiKey,
+            @Value("${openai.model}") String modelName
+    ) {
+        return OpenAiChatModel.builder()
+                .apiKey(apiKey)
+                .modelName(modelName)
+                .temperature(0.0)
+                .build();
+    }
+
+    @Bean
+    public EmbeddingModel embeddingModel(@Value("${openai.api-key}") String apiKey) {
+        return OpenAiEmbeddingModel.builder()
+                .apiKey(apiKey)
+                .modelName("text-embedding-3-small")
+                .build();
+    }
+
+    @Bean
+    public EmbeddingStore<TextSegment> embeddingStore() {
+        return new InMemoryEmbeddingStore<>();
+    }
+
+    @Bean
+    public ContentRetriever contentRetriever(
+            EmbeddingStore<TextSegment> embeddingStore,
+            EmbeddingModel embeddingModel
+    ) {
+        return EmbeddingStoreContentRetriever.builder()
+                .embeddingStore(embeddingStore)
+                .embeddingModel(embeddingModel)
+                .maxResults(5)
+                .minScore(0.65)
+                .build();
+    }
+
+    @Bean
+    public EnterpriseAssistant enterpriseAssistant(EnterpriseRagService ragService) {
+        return ragService;
+    }
+}
+```
+
+---
+
+# 8) RAG assistant interface
+
+## `EnterpriseAssistant.java`
+
+```java
+package com.example.enterprise.rag;
+
+public interface EnterpriseAssistant {
+    String answer(String question);
+}
+```
+
+---
+
+# 9) RAG service
+
+This service:
+- retrieves only from approved enterprise docs
+- applies metadata allowlist
+- uses a strict system prompt
+- refuses if context is insufficient
+
+## `EnterpriseRagService.java`
+
+```java
+package com.example.enterprise.rag;
+
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+@Service
+public class EnterpriseRagService implements EnterpriseAssistant {
+
+    private final ChatLanguageModel chatLanguageModel;
+    private final ContentRetriever contentRetriever;
+
+    // Metadata allowlist
+    private final Set<String> allowedSourcePrefixes = Set.of(
+            "file://enterprise/",
+            "https://intranet.company.local/",
+            "https://docs.company.local/"
+    );
+
+    public EnterpriseRagService(ChatLanguageModel chatLanguageModel,
+                                ContentRetriever contentRetriever) {
+        this.chatLanguageModel = chatLanguageModel;
+        this.contentRetriever = contentRetriever;
+    }
+
+    @Override
+    public String answer(String question) {
+        List<Content> retrieved = contentRetriever.retrieve(UserMessage.from(question));
+
+        List<Content> allowed = retrieved.stream()
+                .filter(this::isAllowedContent)
+                .toList();
+
+        String context = allowed.stream()
+                .map(c -> {
+                    String source = String.valueOf(c.metadata().get("source"));
+                    String text = c.textSegment().text();
+                    return "[SOURCE: " + source + "]\n" + text;
+                })
+                .collect(Collectors.joining("\n\n"));
+
+        String systemPrompt = """
+                You are an enterprise-only assistant.
+
+                Rules:
+                - Answer ONLY from the provided context.
+                - Do NOT use the Internet.
+                - Do NOT browse websites.
+                - Do NOT access remote sites.
+                - Do NOT access authenticated resources.
+                - Do NOT invent facts.
+                - If the answer is not in the context, say:
+                  "I don't have enough approved enterprise information to answer that."
+                """;
+
+        String userPrompt = """
+                Question:
+                %s
+
+                Approved enterprise context:
+                %s
+                """.formatted(question, context.isBlank() ? "(no relevant approved context found)" : context);
+
+        String response = chatLanguageModel.generate(
+                List.of(
+                        dev.langchain4j.data.message.SystemMessage.from(systemPrompt),
+                        UserMessage.from(userPrompt)
+                )
+        ).content().text();
+
+        return response;
+    }
+
+    private boolean isAllowedContent(Content content) {
+        Object sourceObj = content.metadata().get("source");
+        if (sourceObj == null) {
+            return false;
+        }
+
+        String source = sourceObj.toString();
+        return allowedSourcePrefixes.stream().anyMatch(source::startsWith);
+    }
+}
+```
+
+---
+
+# 10) Document ingestion
+
+This loads local enterprise docs into the vector store with metadata.
+
+## `EnterpriseDocumentIngestor.java`
+
+```java
+package com.example.enterprise.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
+import dev.langchain4j.data.document.parser.TextDocumentParser;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.stereotype.Component;
+
+import java.io.File;
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class EnterpriseDocumentIngestor implements CommandLineRunner {
+
+    private final EmbeddingStore<TextSegment> embeddingStore;
+    private final EmbeddingModel embeddingModel;
+
+    public EnterpriseDocumentIngestor(EmbeddingStore<TextSegment> embeddingStore,
+                                     EmbeddingModel embeddingModel) {
+        this.embeddingStore = embeddingStore;
+        this.embeddingModel = embeddingModel;
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        List<EnterpriseDoc> docs = List.of(
+                new EnterpriseDoc("hr-policy.txt", "file://enterprise/hr-policy.txt"),
+                new EnterpriseDoc("it-policy.txt", "file://enterprise/it-policy.txt"),
+                new EnterpriseDoc("finance-policy.txt", "file://enterprise/finance-policy.txt")
+        );
+
+        EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
+                .embeddingStore(embeddingStore)
+                .embeddingModel(embeddingModel)
+                .build();
+
+        for (EnterpriseDoc doc : docs) {
+            File file = new ClassPathResource("docs/" + doc.fileName()).getFile();
+            Document document = FileSystemDocumentLoader.loadDocument(file.toPath(), new TextDocumentParser());
+
+            // Add metadata allowlist source
+            document.metadata().put("source", doc.source());
+
+            ingestor.ingest(document);
+        }
+    }
+
+    private record EnterpriseDoc(String fileName, String source) {}
+}
+```
+
+---
+
+# 11) REST controller
+
+## `ChatController.java`
+
+```java
+package com.example.enterprise.controller;
+
+import com.example.enterprise.guardrail.RequestGuardrailService;
+import com.example.enterprise.model.ChatRequest;
+import com.example.enterprise.rag.EnterpriseAssistant;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/chat")
+public class ChatController {
+
+    private final EnterpriseAssistant assistant;
+    private final RequestGuardrailService guardrailService;
+
+    public ChatController(EnterpriseAssistant assistant,
+                          RequestGuardrailService guardrailService) {
+        this.assistant = assistant;
+        this.guardrailService = guardrailService;
+    }
+
+    @PostMapping
+    public ResponseEntity<?> chat(@RequestBody ChatRequest request) {
+        try {
+            guardrailService.validateUserQuestion(request.getQuestion());
+            String answer = assistant.answer(request.getQuestion());
+            return ResponseEntity.ok(Map.of("answer", answer));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+        } catch (Exception ex) {
+            return ResponseEntity.internalServerError().body(Map.of("error", "Unexpected error"));
+        }
+    }
+}
+```
+
+---
+
+# 12) Example enterprise docs
+
+Put these in `src/main/resources/docs/`
+
+## `hr-policy.txt`
+
+```text
+HR Leave Policy: Employees are entitled to 20 days of annual leave. Requests must be approved by manager.
+```
+
+## `it-policy.txt`
+
+```text
+IT Password Policy: Passwords must be at least 14 characters and rotated every 90 days.
+```
+
+## `finance-policy.txt`
+
+```text
+Expense Policy: Receipts are required for expenses above $25.
+```
+
+---
+
+# 13) How to run
+
+## Set your API key
+
+```bash
+export OPENAI_API_KEY=your_key_here
+```
+
+## Run the app
+
+```bash
+mvn spring-boot:run
+```
+
+---
+
+# 14) Test with curl
+
+## Allowed question
+
+```bash
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the password policy?"}'
+```
+
+## Blocked question: internet
+
+```bash
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Search the internet for our vacation policy."}'
+```
+
+## Blocked question: external URL
+
+```bash
+curl -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Open https://example.com and summarize it."}'
+```
+
+---
+
+# 15) Notes on the metadata allowlist
+
+The allowlist is enforced in two places:
+
+1. **At ingestion time**
+   - only approved docs are loaded
+   - each doc gets a `source` metadata field
+
+2. **At retrieval/answer time**
+   - retrieved content is filtered by allowed source prefixes
+
+This is important because prompt instructions alone are not enough.
+
+---
+
+# 16) Production hardening recommendations
+
+If you want this to be truly enterprise-grade, add:
+
+- **Authentication/authorization** on the API
+- **Audit logging** of every question and retrieved source
+- **PII redaction**
+- **Document-level ACLs**
+- **Tenant isolation**
+- **Vector store persistence** instead of in-memory
+- **Source provenance tracking**
+- **Output citation requirement**
+- **Fallback refusal when no context is found**
+
+---
+
+# 17) One important improvement
+
+For stronger guardrails, you should also require the model to return **citations** and reject answers without them.
+
+Example system rule:
+
+```text
+Every factual statement must be supported by a cited source from the approved context.
+If no citation is available, refuse to answer.
+```
+
+---
+
+If you want, I can provide a **third version** that is even more production-ready with:
+
+- **PostgreSQL / pgvector**
+- **Spring Security**
+- **document ACLs**
+- **citations in the response**
+- **structured JSON output**
+- **unit tests**

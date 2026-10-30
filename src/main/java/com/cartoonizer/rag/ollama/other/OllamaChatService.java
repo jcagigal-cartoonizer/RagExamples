@@ -1,4 +1,6 @@
-package com.cartoonizer.rag.ollama;
+package com.cartoonizer.rag.ollama.other;
+
+import com.cartoonizer.rag.ollama.IInfoRepo;
 
 public class OllamaChatService {
   private final IChatRepo chatRepo;

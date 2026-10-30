@@ -1,5 +1,6 @@
-package com.cartoonizer.rag.ollama;
+package com.cartoonizer.rag.ollama.other;
 
+import com.cartoonizer.rag.ollama.OllamaAppConf;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;

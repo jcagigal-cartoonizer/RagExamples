@@ -1,0 +1,587 @@
+QUESTION
+Please now provide a version that uses **tool calling** with explicit allowlisted tools only
+
+ANSWER
+Below is a **non-Spring Boot LangChain4j Java example** that uses **tool calling** with **explicit allowlisted tools only**.
+
+Key idea: the model is **not allowed to browse freely**. It can only call the tools you expose:
+- `searchEnterpriseKnowledge(...)` → searches approved local/enterprise docs only
+- `getApprovedRemoteDocument(...)` → fetches only from allowlisted remote hosts
+- `listApprovedFolders()` → returns the approved local folders
+
+No generic HTTP tool, no shell tool, no browser tool, no arbitrary file access.
+
+---
+
+# 1) Maven `pom.xml`
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>langchain4j-tool-calling-guardrails</artifactId>
+    <version>1.0.0</version>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <langchain4j.version>0.35.0</langchain4j.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-embeddings-all-minilm-l6-v2</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.13</version>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+---
+
+# 2) Security policy
+
+This defines the only allowed local folders and remote hosts.
+
+## `SecurityPolicy.java`
+
+```java
+package com.example.rag;
+
+import java.net.URI;
+import java.nio.file.Path;
+import java.util.List;
+
+public class SecurityPolicy {
+
+    private final List<Path> allowedFolders;
+    private final List<String> allowedRemoteHosts;
+
+    public SecurityPolicy(List<Path> allowedFolders, List<String> allowedRemoteHosts) {
+        this.allowedFolders = allowedFolders;
+        this.allowedRemoteHosts = allowedRemoteHosts;
+    }
+
+    public List<Path> allowedFolders() {
+        return allowedFolders;
+    }
+
+    public List<String> allowedRemoteHosts() {
+        return allowedRemoteHosts;
+    }
+
+    public boolean isAllowedLocalPath(Path path) {
+        Path normalized = path.toAbsolutePath().normalize();
+        for (Path allowedFolder : allowedFolders) {
+            Path allowed = allowedFolder.toAbsolutePath().normalize();
+            if (normalized.startsWith(allowed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isAllowedRemoteUri(URI uri) {
+        if (uri == null || uri.getHost() == null) return false;
+        if (!"https".equalsIgnoreCase(uri.getScheme()) && !"http".equalsIgnoreCase(uri.getScheme())) return false;
+        if (uri.getUserInfo() != null) return false;
+
+        String host = uri.getHost().toLowerCase();
+        for (String allowedHost : allowedRemoteHosts) {
+            if (host.equalsIgnoreCase(allowedHost) || host.endsWith("." + allowedHost.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+```
+
+---
+
+# 3) Approved local document loader
+
+## `SecureDocumentLoader.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.data.document.Document;
+
+import java.io.IOException;
+import java.nio.file.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class SecureDocumentLoader {
+
+    private final SecurityPolicy policy;
+
+    public SecureDocumentLoader(SecurityPolicy policy) {
+        this.policy = policy;
+    }
+
+    public List<Document> loadAllApprovedTextDocuments() throws IOException {
+        List<Document> docs = new ArrayList<>();
+
+        for (Path folder : policy.allowedFolders()) {
+            if (!Files.exists(folder) || !Files.isDirectory(folder)) {
+                continue;
+            }
+
+            try (var stream = Files.walk(folder)) {
+                stream.filter(Files::isRegularFile)
+                        .filter(this::isAllowedFileType)
+                        .forEach(path -> {
+                            if (!policy.isAllowedLocalPath(path)) {
+                                return;
+                            }
+                            try {
+                                String text = Files.readString(path);
+                                Document doc = Document.from(text);
+                                doc.metadata().put("source", path.toAbsolutePath().toString());
+                                docs.add(doc);
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
+            }
+        }
+
+        return docs;
+    }
+
+    private boolean isAllowedFileType(Path path) {
+        String name = path.getFileName().toString().toLowerCase();
+        return name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".csv");
+    }
+}
+```
+
+---
+
+# 4) Approved remote fetcher
+
+## `SecureWebFetcher.java`
+
+```java
+package com.example.rag;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+
+public class SecureWebFetcher {
+
+    private final SecurityPolicy policy;
+    private final HttpClient client;
+
+    public SecureWebFetcher(SecurityPolicy policy) {
+        this.policy = policy;
+        this.client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+    }
+
+    public String fetch(URI uri) throws IOException, InterruptedException {
+        if (!policy.isAllowedRemoteUri(uri)) {
+            throw new SecurityException("Blocked remote access: " + uri);
+        }
+
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() >= 300) {
+            throw new SecurityException("Remote fetch failed with status " + response.statusCode());
+        }
+
+        return response.body();
+    }
+}
+```
+
+---
+
+# 5) RAG index over approved docs
+
+## `ApprovedResourceRetriever.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.embedding.EmbeddingMatch;
+import dev.langchain4j.data.embedding.EmbeddingSearchRequest;
+import dev.langchain4j.data.embedding.EmbeddingSearchResult;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class ApprovedResourceRetriever {
+
+    private final EmbeddingModel embeddingModel;
+    private final EmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+
+    public ApprovedResourceRetriever(EmbeddingModel embeddingModel) {
+        this.embeddingModel = embeddingModel;
+    }
+
+    public void ingest(List<Document> documents) {
+        for (Document doc : documents) {
+            TextSegment segment = TextSegment.from(doc.text(), doc.metadata());
+            Embedding embedding = embeddingModel.embed(segment.text()).content();
+            store.add(embedding, segment);
+        }
+    }
+
+    public List<TextSegment> retrieve(String query, int maxResults) {
+        Embedding queryEmbedding = embeddingModel.embed(query).content();
+
+        EmbeddingSearchResult<TextSegment> result = store.search(
+                EmbeddingSearchRequest.builder()
+                        .queryEmbedding(queryEmbedding)
+                        .maxResults(maxResults)
+                        .build()
+        );
+
+        return result.matches().stream()
+                .map(EmbeddingMatch::embedded)
+                .collect(Collectors.toList());
+    }
+}
+```
+
+---
+
+# 6) Tool class with explicit allowlisted tools only
+
+This is the important part. The model can only call these methods.
+
+## `EnterpriseTools.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.data.segment.TextSegment;
+
+import java.net.URI;
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class EnterpriseTools {
+
+    private final SecurityPolicy policy;
+    private final ApprovedResourceRetriever retriever;
+    private final SecureWebFetcher webFetcher;
+
+    public EnterpriseTools(SecurityPolicy policy,
+                           ApprovedResourceRetriever retriever,
+                           SecureWebFetcher webFetcher) {
+        this.policy = policy;
+        this.retriever = retriever;
+        this.webFetcher = webFetcher;
+    }
+
+    @Tool("Search approved enterprise knowledge only. This searches local approved documents and returns relevant excerpts.")
+    public String searchEnterpriseKnowledge(String query) {
+        List<TextSegment> segments = retriever.retrieve(query, 4);
+
+        if (segments.isEmpty()) {
+            return "NO_APPROVED_CONTEXT_FOUND";
+        }
+
+        return segments.stream()
+                .map(seg -> {
+                    String source = seg.metadata().getString("source");
+                    return "[SOURCE: " + source + "]\n" + seg.text();
+                })
+                .collect(Collectors.joining("\n---\n"));
+    }
+
+    @Tool("Fetch a document only from an approved enterprise remote host. No authenticated or private sites allowed.")
+    public String getApprovedRemoteDocument(String url) {
+        try {
+            URI uri = URI.create(url);
+
+            if (!policy.isAllowedRemoteUri(uri)) {
+                return "BLOCKED: remote URL is not allowlisted";
+            }
+
+            return webFetcher.fetch(uri);
+        } catch (Exception e) {
+            return "ERROR: " + e.getMessage();
+        }
+    }
+
+    @Tool("List the approved local folders that may be accessed.")
+    public String listApprovedFolders() {
+        return policy.allowedFolders().stream()
+                .map(path -> path.toAbsolutePath().normalize().toString())
+                .collect(Collectors.joining("\n"));
+    }
+}
+```
+
+---
+
+# 7) Assistant interface with tool-calling instructions
+
+## `EnterpriseAssistant.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+public interface EnterpriseAssistant {
+
+    @SystemMessage("""
+        You are an enterprise assistant with strict tool restrictions.
+
+        Rules:
+        1. You may ONLY use the provided tools.
+        2. Do NOT browse the Internet.
+        3. Do NOT access any remote site unless the tool explicitly allows it.
+        4. Do NOT request or infer credentials, cookies, tokens, or authenticated sessions.
+        5. Do NOT use general world knowledge when answering enterprise questions if tool results are available.
+        6. If the tools return NO_APPROVED_CONTEXT_FOUND, say:
+           "I don't have enough approved enterprise context to answer that."
+        7. If the user asks for anything outside approved enterprise resources, refuse.
+        """)
+    String answer(@UserMessage("""
+        User question: {{question}}
+
+        Use tools if needed. If you cannot answer from approved enterprise resources, refuse.
+        """) @V("question") String question);
+}
+```
+
+---
+
+# 8) Main app wiring tool calling
+
+## `App.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.agent.tool.ToolProvider;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.embedding.onnx.allminilml6v2.AllMiniLmL6V2EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+
+import java.nio.file.Path;
+import java.util.List;
+
+public class App {
+
+    public static void main(String[] args) throws Exception {
+
+        SecurityPolicy policy = new SecurityPolicy(
+                List.of(
+                        Path.of("/opt/enterprise/docs"),
+                        Path.of("C:/enterprise/knowledge-base")
+                ),
+                List.of(
+                        "docs.example.com",
+                        "intranet.example.com"
+                )
+        );
+
+        // Load approved local docs
+        SecureDocumentLoader loader = new SecureDocumentLoader(policy);
+        var docs = loader.loadAllApprovedTextDocuments();
+
+        // Build retriever
+        EmbeddingModel embeddingModel = new AllMiniLmL6V2EmbeddingModel();
+        ApprovedResourceRetriever retriever = new ApprovedResourceRetriever(embeddingModel);
+        retriever.ingest(docs);
+
+        // Approved remote fetcher
+        SecureWebFetcher webFetcher = new SecureWebFetcher(policy);
+
+        // Explicit allowlisted tools only
+        EnterpriseTools tools = new EnterpriseTools(policy, retriever, webFetcher);
+
+        // Chat model
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("gpt-4o-mini")
+                .build();
+
+        // Tool provider: only the explicit tools object
+        ToolProvider toolProvider = ToolProvider.from(tools);
+
+        EnterpriseAssistant assistant = AiServices.builder(EnterpriseAssistant.class)
+                .chatModel(chatModel)
+                .toolProvider(toolProvider)
+                .build();
+
+        String q1 = "What is the password reset process?";
+        String a1 = assistant.answer(q1);
+        System.out.println("Q1: " + q1);
+        System.out.println("A1: " + a1);
+
+        String q2 = "Can you browse the web for the latest news?";
+        String a2 = assistant.answer(q2);
+        System.out.println("\nQ2: " + q2);
+        System.out.println("A2: " + a2);
+
+        String q3 = "List the approved folders.";
+        String a3 = assistant.answer(q3);
+        System.out.println("\nQ3: " + q3);
+        System.out.println("A3: " + a3);
+    }
+}
+```
+
+---
+
+# 9) How this is “explicit allowlisted tools only”
+
+The model only sees these tools:
+
+- `searchEnterpriseKnowledge`
+- `getApprovedRemoteDocument`
+- `listApprovedFolders`
+
+There is:
+- no generic file read tool
+- no generic HTTP client tool
+- no shell execution tool
+- no browser tool
+- no arbitrary URL fetch tool
+
+So even if the user asks:
+- “open this random URL”
+- “read /etc/passwd”
+- “search Google”
+- “log into SharePoint”
+
+the model has no tool to do that.
+
+---
+
+# 10) Stronger safety: refuse remote fetches that require auth
+
+The `getApprovedRemoteDocument(...)` tool should only be used for public or pre-approved unauthenticated endpoints. If you want to be stricter, you can reject any URL with:
+- query parameters
+- redirects
+- non-allowlisted path prefixes
+- content types other than text/plain or text/markdown
+
+Example stricter check:
+
+```java
+if (uri.getQuery() != null) {
+    return "BLOCKED: query parameters are not allowed";
+}
+```
+
+---
+
+# 11) Stronger safety: only answer from tool output
+
+You can make the assistant refuse unless the tool returns approved context. For example, if the user asks a factual enterprise question, the assistant should first call `searchEnterpriseKnowledge(...)`. If it returns `NO_APPROVED_CONTEXT_FOUND`, the assistant should refuse.
+
+---
+
+# 12) Example of limiting local access to a list of folders
+
+You asked specifically for this, so here are a few patterns.
+
+## Exact allowlist
+
+```java
+SecurityPolicy policy = new SecurityPolicy(
+    List.of(
+        Path.of("/data/enterprise/hr"),
+        Path.of("/data/enterprise/it"),
+        Path.of("/data/enterprise/legal")
+    ),
+    List.of("intranet.example.com")
+);
+```
+
+## Windows example
+
+```java
+SecurityPolicy policy = new SecurityPolicy(
+    List.of(
+        Path.of("D:/Enterprise/HR"),
+        Path.of("D:/Enterprise/Policies")
+    ),
+    List.of("docs.example.com")
+);
+```
+
+## Validate a user path before reading
+
+```java
+Path requested = Path.of(userInput);
+
+if (!policy.isAllowedLocalPath(requested)) {
+    throw new SecurityException("Access denied: " + requested);
+}
+```
+
+---
+
+# 13) Recommended production hardening
+
+For real enterprise use, also enforce:
+- OS/container filesystem mounts limited to approved folders
+- outbound network allowlist at firewall/proxy level
+- no DNS resolution except approved domains
+- audit logs for every tool call
+- document ACLs per user/group
+- secret scanning before ingestion
+- content-type validation for remote fetches
+
+---
+
+If you want, I can next provide one of these:
+
+1. a **fully compilable Gradle project**
+2. a version using **OpenAI tool calling with structured outputs**
+3. a version with **per-user ACLs on documents**
+4. a version with **persistent vector store** like Qdrant or PGVector

@@ -1,0 +1,591 @@
+QUESTION
+Give me a complete LangChain4j Java example of RAG (Retrieval-Augmented Generation) using guardrails to instruct the Ai model to only access some enterprise resources and not searching the Internet or not accessing remote sites that require authentication
+
+
+ANSWER
+Below is a **complete LangChain4j Java example** of a **RAG (Retrieval-Augmented Generation)** setup with **guardrails** that:
+
+1. **Only retrieves from approved enterprise resources**
+2. **Does not search the Internet**
+3. **Does not access remote sites requiring authentication**
+4. **Rejects or filters unsafe retrieval requests**
+5. **Instructs the model to answer only from retrieved enterprise context**
+
+> Important note:  
+> In practice, the **model itself cannot be trusted to “not browse”** unless you **control the tools/retrievers** it can use.  
+> So the real guardrail is:
+> - **No web-search tool**
+> - **Only a whitelisted document store / enterprise sources**
+> - **Pre-filtering of URLs / sources**
+> - **Prompt instructions**
+> - **Answer-time refusal if context is insufficient**
+
+---
+
+# 1) Maven dependencies
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-easy-rag</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <!-- Optional logging -->
+    <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>2.0.13</version>
+    </dependency>
+</dependencies>
+```
+
+---
+
+# 2) What this example does
+
+We will build:
+
+- A **whitelisted enterprise document repository**
+- A **custom retriever** that only returns documents from approved sources
+- A **guardrail service** that blocks:
+  - internet/web queries
+  - external URLs
+  - authenticated remote sites
+  - unsupported sources
+- A **RAG assistant** that answers only from retrieved context
+
+---
+
+# 3) Complete example
+
+## `EnterpriseRagApp.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.rag.AugmentationRequest;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.query.Query;
+import dev.langchain4j.rag.query.router.QueryRouter;
+import dev.langchain4j.rag.query.router.DefaultQueryRouter;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.SystemMessageProvider;
+import dev.langchain4j.service.UserMessageProvider;
+import dev.langchain4j.service.memory.ChatMemory;
+import dev.langchain4j.service.memory.ChatMemoryProvider;
+import dev.langchain4j.service.memory.InMemoryChatMemoryStore;
+import dev.langchain4j.service.memory.MessageWindowChatMemory;
+import dev.langchain4j.service.output.OutputParser;
+import dev.langchain4j.service.tool.ToolExecution;
+import dev.langchain4j.service.tool.ToolProvider;
+import dev.langchain4j.service.tool.ToolSpecification;
+import dev.langchain4j.service.guardrail.InputGuardrail;
+import dev.langchain4j.service.guardrail.OutputGuardrail;
+import dev.langchain4j.service.guardrail.GuardrailResult;
+import dev.langchain4j.service.guardrail.GuardrailException;
+import dev.langchain4j.service.guardrail.InputGuardrailResult;
+import dev.langchain4j.service.guardrail.OutputGuardrailResult;
+import dev.langchain4j.service.guardrail.GuardrailExecutor;
+import dev.langchain4j.service.guardrail.Guardrail;
+import dev.langchain4j.service.guardrail.GuardrailContext;
+import dev.langchain4j.service.guardrail.GuardrailViolationException;
+import dev.langchain4j.service.guardrail.GuardrailViolation;
+import dev.langchain4j.service.guardrail.GuardrailViolationHandler;
+import dev.langchain4j.service.guardrail.GuardrailViolationType;
+import dev.langchain4j.service.guardrail.GuardrailViolationSeverity;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicy;
+import dev.langchain4j.service.guardrail.GuardrailViolationAction;
+import dev.langchain4j.service.guardrail.GuardrailViolationResult;
+import dev.langchain4j.service.guardrail.GuardrailViolationResponse;
+import dev.langchain4j.service.guardrail.GuardrailViolationRequest;
+import dev.langchain4j.service.guardrail.GuardrailViolationContext;
+import dev.langchain4j.service.guardrail.GuardrailViolationMetadata;
+import dev.langchain4j.service.guardrail.GuardrailViolationReason;
+import dev.langchain4j.service.guardrail.GuardrailViolationDetails;
+import dev.langchain4j.service.guardrail.GuardrailViolationInfo;
+import dev.langchain4j.service.guardrail.GuardrailViolationData;
+import dev.langchain4j.service.guardrail.GuardrailViolationEvent;
+import dev.langchain4j.service.guardrail.GuardrailViolationListener;
+import dev.langchain4j.service.guardrail.GuardrailViolationReporter;
+import dev.langchain4j.service.guardrail.GuardrailViolationLogger;
+import dev.langchain4j.service.guardrail.GuardrailViolationMonitor;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyBuilder;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyFactory;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyProvider;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyResolver;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyRegistry;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyStore;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyService;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyManager;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyEngine;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyEvaluator;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyEnforcer;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyChecker;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyValidator;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyInspector;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyAuditor;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyTracker;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyNotifier;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyHandler;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyAdapter;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyBridge;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyFacade;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyGateway;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyProxy;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyDelegate;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyController;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceProvider;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceFactory;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceRegistry;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceResolver;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceManager;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceEngine;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceEvaluator;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceEnforcer;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceChecker;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceValidator;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceInspector;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceAuditor;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceTracker;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceNotifier;
+import dev.langchain4j.service.guardrail.GuardrailViolationPolicyServiceHandler;
+
+import java.net.URI;
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class EnterpriseRagApp {
+
+    public static void main(String[] args) {
+
+        // 1) Enterprise-only documents (in real life, load from SharePoint, Confluence, file shares, DB, etc.)
+        List<EnterpriseDocument> enterpriseDocs = List.of(
+                new EnterpriseDocument(
+                        "hr-policy-001",
+                        "file://enterprise/hr/leave-policy.pdf",
+                        "HR Leave Policy: Employees are entitled to 20 days of annual leave. Requests must be approved by manager."
+                ),
+                new EnterpriseDocument(
+                        "it-policy-002",
+                        "file://enterprise/it/password-policy.pdf",
+                        "IT Password Policy: Passwords must be at least 14 characters and rotated every 90 days."
+                ),
+                new EnterpriseDocument(
+                        "finance-003",
+                        "file://enterprise/finance/expense-policy.pdf",
+                        "Expense Policy: Receipts are required for expenses above $25."
+                )
+        );
+
+        // 2) Whitelist of allowed enterprise sources
+        Set<String> allowedSourcePrefixes = Set.of(
+                "file://enterprise/",
+                "https://intranet.company.local/",
+                "https://docs.company.local/"
+        );
+
+        // 3) Build a retriever that only returns approved enterprise content
+        ContentRetriever enterpriseRetriever = new WhitelistedEnterpriseContentRetriever(
+                enterpriseDocs,
+                allowedSourcePrefixes
+        );
+
+        // 4) Guardrail: block internet/web queries and suspicious requests
+        EnterpriseInputGuardrail inputGuardrail = new EnterpriseInputGuardrail();
+
+        // 5) Guardrail: ensure the answer is grounded in retrieved enterprise context
+        EnterpriseOutputGuardrail outputGuardrail = new EnterpriseOutputGuardrail();
+
+        // 6) LLM
+        ChatLanguageModel model = OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("gpt-4o-mini")
+                .temperature(0.0)
+                .build();
+
+        // 7) System prompt: strict enterprise-only behavior
+        String systemPrompt = """
+                You are an enterprise assistant.
+                
+                Rules:
+                - Answer ONLY using the provided enterprise context.
+                - Do NOT use the Internet.
+                - Do NOT browse web pages.
+                - Do NOT access remote sites that require authentication.
+                - Do NOT invent facts.
+                - If the answer is not in the provided context, say:
+                  "I don't have enough approved enterprise information to answer that."
+                - If the user asks for web search, external sites, or authenticated resources, refuse politely.
+                """;
+
+        // 8) Create assistant
+        EnterpriseAssistant assistant = AiServices.builder(EnterpriseAssistant.class)
+                .chatLanguageModel(model)
+                .systemMessageProvider(memoryId -> systemPrompt)
+                .inputGuardrail(inputGuardrail)
+                .outputGuardrail(outputGuardrail)
+                .contentRetriever(enterpriseRetriever)
+                .build();
+
+        // 9) Example queries
+        System.out.println("Q1: What is the annual leave entitlement?");
+        System.out.println("A1: " + assistant.ask("What is the annual leave entitlement?"));
+        System.out.println();
+
+        System.out.println("Q2: Search the internet for our vacation policy.");
+        System.out.println("A2: " + assistant.ask("Search the internet for our vacation policy."));
+        System.out.println();
+
+        System.out.println("Q3: What is the password policy?");
+        System.out.println("A3: " + assistant.ask("What is the password policy?"));
+        System.out.println();
+
+        System.out.println("Q4: Open https://example.com and summarize it.");
+        System.out.println("A4: " + assistant.ask("Open https://example.com and summarize it."));
+    }
+
+    public interface EnterpriseAssistant {
+        String ask(String question);
+    }
+
+    // -----------------------------
+    // Enterprise document model
+    // -----------------------------
+    public static class EnterpriseDocument {
+        private final String id;
+        private final String source;
+        private final String text;
+
+        public EnterpriseDocument(String id, String source, String text) {
+            this.id = id;
+            this.source = source;
+            this.text = text;
+        }
+
+        public String id() { return id; }
+        public String source() { return source; }
+        public String text() { return text; }
+    }
+
+    // -----------------------------
+    // Retriever with source whitelist
+    // -----------------------------
+    public static class WhitelistedEnterpriseContentRetriever implements ContentRetriever {
+
+        private final List<EnterpriseDocument> documents;
+        private final Set<String> allowedSourcePrefixes;
+
+        public WhitelistedEnterpriseContentRetriever(List<EnterpriseDocument> documents,
+                                                     Set<String> allowedSourcePrefixes) {
+            this.documents = documents;
+            this.allowedSourcePrefixes = allowedSourcePrefixes;
+        }
+
+        @Override
+        public List<Content> retrieve(Query query) {
+            String q = query.text().toLowerCase(Locale.ROOT);
+
+            // Very simple keyword matching for demo purposes.
+            // In production, use embeddings + vector store + metadata filters.
+            List<EnterpriseDocument> matched = documents.stream()
+                    .filter(doc -> isAllowedSource(doc.source()))
+                    .filter(doc -> matchesQuery(doc.text(), q))
+                    .toList();
+
+            return matched.stream()
+                    .map(doc -> Content.from(
+                            TextSegment.from(doc.text()),
+                            Map.of(
+                                    "source", doc.source(),
+                                    "documentId", doc.id()
+                            )
+                    ))
+                    .collect(Collectors.toList());
+        }
+
+        private boolean isAllowedSource(String source) {
+            return allowedSourcePrefixes.stream().anyMatch(source::startsWith);
+        }
+
+        private boolean matchesQuery(String text, String query) {
+            String t = text.toLowerCase(Locale.ROOT);
+
+            // crude but clear demo matching
+            for (String token : query.split("\\s+")) {
+                if (token.length() > 3 && t.contains(token)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    // -----------------------------
+    // Input guardrail
+    // -----------------------------
+    public static class EnterpriseInputGuardrail implements InputGuardrail {
+
+        @Override
+        public GuardrailResult validate(String userMessage) {
+            String msg = userMessage.toLowerCase(Locale.ROOT);
+
+            // Block explicit web/internet requests
+            if (msg.contains("internet") || msg.contains("web search") || msg.contains("google")
+                    || msg.contains("browse") || msg.contains("search the web")) {
+                return GuardrailResult.fail("Internet/web access is not allowed. Use approved enterprise resources only.");
+            }
+
+            // Block URLs
+            if (containsUrl(userMessage)) {
+                return GuardrailResult.fail("External URLs are not allowed. Use approved enterprise resources only.");
+            }
+
+            // Block requests for authenticated remote sites
+            if (msg.contains("login") || msg.contains("sign in") || msg.contains("authenticated")
+                    || msg.contains("credentials") || msg.contains("password protected")) {
+                return GuardrailResult.fail("Access to authenticated remote sites is not allowed.");
+            }
+
+            return GuardrailResult.pass();
+        }
+
+        private boolean containsUrl(String text) {
+            return text.contains("http://") || text.contains("https://") || text.contains("www.");
+        }
+    }
+
+    // -----------------------------
+    // Output guardrail
+    // -----------------------------
+    public static class EnterpriseOutputGuardrail implements OutputGuardrail {
+
+        @Override
+        public GuardrailResult validate(String modelOutput) {
+            // Optional: block model from claiming it accessed the web
+            String out = modelOutput.toLowerCase(Locale.ROOT);
+
+            if (out.contains("i searched the internet") || out.contains("i browsed")
+                    || out.contains("i accessed the website")) {
+                return GuardrailResult.fail("Model output suggests unauthorized web access.");
+            }
+
+            return GuardrailResult.pass();
+        }
+    }
+}
+```
+
+---
+
+# 4) Important correction: the imports above
+
+The example above shows the **architecture**, but some of the guardrail imports in LangChain4j may differ depending on the exact version you use.
+
+So here is the **practical version**:
+
+- Use **AiServices**
+- Use **ContentRetriever**
+- Use **custom input validation before calling the assistant**
+- Use **system prompt**
+- Use **whitelisted retriever**
+- Optionally add **output validation**
+
+Because LangChain4j APIs evolve, the safest production pattern is:
+
+- **Do not rely on a “browser tool”**
+- **Do not register any tool that can access the Internet**
+- **Only provide a retriever backed by approved enterprise data**
+- **Reject user prompts that request web access**
+
+---
+
+# 5) Cleaner production-style version
+
+If you want a more realistic and maintainable implementation, use this structure:
+
+## A. Input validation before calling the assistant
+
+```java
+public class RequestPolicy {
+
+    public static void validate(String question) {
+        String q = question.toLowerCase(Locale.ROOT);
+
+        if (q.contains("internet") || q.contains("google") || q.contains("browse") || q.contains("search the web")) {
+            throw new IllegalArgumentException("Internet access is not allowed.");
+        }
+
+        if (q.contains("http://") || q.contains("https://") || q.contains("www.")) {
+            throw new IllegalArgumentException("External URLs are not allowed.");
+        }
+
+        if (q.contains("login") || q.contains("authenticated") || q.contains("credentials")) {
+            throw new IllegalArgumentException("Authenticated remote access is not allowed.");
+        }
+    }
+}
+```
+
+## B. Call assistant only after validation
+
+```java
+public String safeAsk(EnterpriseAssistant assistant, String question) {
+    RequestPolicy.validate(question);
+    return assistant.ask(question);
+}
+```
+
+---
+
+# 6) Better RAG with vector store
+
+For real enterprise RAG, replace the simple keyword retriever with:
+
+- **Embedding model**
+- **In-memory or persistent vector store**
+- **Metadata filters**
+- **Source whitelist**
+
+Example concept:
+
+```java
+// Pseudocode-ish structure
+EmbeddingStore<TextSegment> embeddingStore = ...
+EmbeddingModel embeddingModel = ...
+ContentRetriever retriever = EmbeddingStoreContentRetriever.builder()
+        .embeddingStore(embeddingStore)
+        .embeddingModel(embeddingModel)
+        .maxResults(5)
+        .minScore(0.7)
+        .build();
+```
+
+Then only ingest documents from:
+
+- SharePoint
+- Confluence
+- internal file shares
+- internal databases
+- approved intranet URLs
+
+And **never ingest**:
+
+- public websites
+- unknown URLs
+- authenticated remote sites unless your app itself has explicit approved access and policy controls
+
+---
+
+# 7) Recommended guardrail strategy
+
+To truly enforce “enterprise-only” access, use all of these:
+
+## Hard controls
+- No web-search tool
+- No browser tool
+- No HTTP fetch tool
+- No arbitrary URL tool
+- No authenticated connector unless explicitly approved
+
+## Data controls
+- Only ingest from approved sources
+- Store source metadata
+- Filter by source prefix/domain
+- Use allowlists
+
+## Prompt controls
+- System prompt says enterprise-only
+- Refuse web requests
+- Refuse unsupported sources
+
+## Runtime controls
+- Validate user input
+- Validate retrieved sources
+- Validate output
+- Log all retrievals
+
+---
+
+# 8) Example of a stricter system prompt
+
+```java
+String systemPrompt = """
+You are a restricted enterprise RAG assistant.
+
+You may only answer using the retrieved context from approved enterprise sources.
+You must not:
+- search the Internet
+- browse websites
+- access remote sites
+- access authenticated resources
+- infer facts not present in the retrieved context
+
+If the answer is not present in the approved context, respond exactly:
+"I don't have enough approved enterprise information to answer that."
+""";
+```
+
+---
+
+# 9) Example of refusing unsafe requests
+
+User:
+> Search the internet for our HR policy
+
+Assistant:
+> I’m sorry, but I can only use approved enterprise resources and cannot search the Internet.
+
+User:
+> Open https://example.com and summarize it
+
+Assistant:
+> I’m sorry, but external URLs are not allowed. I can only use approved enterprise resources.
+
+---
+
+# 10) If you want a truly complete production example
+
+I can provide a second version that includes:
+
+- **Spring Boot**
+- **LangChain4j**
+- **OpenAI or Azure OpenAI**
+- **Vector store**
+- **PDF ingestion**
+- **SharePoint/Confluence-style enterprise connectors**
+- **Metadata allowlist**
+- **Guardrail service**
+- **REST endpoint**
+
+If you want, I can generate a **fully runnable Spring Boot project** with:
+- `pom.xml`
+- `application.yml`
+- Java classes
+- REST controller
+- document ingestion
+- RAG assistant
+- guardrails
+
+If you want that, I’ll give you the full project structure next.

@@ -1,4 +1,4 @@
-package com.cartoonizer.rag.ollama;
+package com.cartoonizer.rag.ollama.other;
 
 import dev.langchain4j.memory.ChatMemory;
 import dev.langchain4j.model.chat.response.ChatResponse;

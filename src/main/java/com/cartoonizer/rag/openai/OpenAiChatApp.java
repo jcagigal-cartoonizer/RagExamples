@@ -1,16 +1,12 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/GUIForms/JFrame.java to edit this template
- */
 package com.cartoonizer.rag.openai;
 
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.FOLDERS;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.URLS;
 import com.cartoonizer.rag.utils.ApiKeys;
-import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.cartoonizer.rag.utils.Utils;
 import java.io.File;
-import java.nio.file.Paths;
+import javax.swing.JFileChooser;
 import javax.swing.SwingUtilities;
 
 /**
@@ -27,89 +23,67 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     public OpenAiChatApp() {
         initComponents();
     }
-    private OpenAiChat chat;
-    private String savedViewClass;
-    private String savedViewModel;
-    private String dialogXml;
-    private String dialogClass;
-    private void initOpenAi() {
-        String documentsPath = Paths.get("./example-files").toAbsolutePath().normalize().toString();
-
-        String fileToGenerate = "HomeFragment";
-        String answerPath = Paths.get(ANSWER_FOLDER).toAbsolutePath().normalize().toString() + "/" + fileToGenerate + ".txt";
-        String processedAnswerPath = Paths.get(PROCESSED_FOLDER + "/processed-").toAbsolutePath().normalize().toString() + fileToGenerate + ".txt";
-        
-        String pathForViewClass = documentsPath  + "/" + fileToGenerate + ".kt";
-        String pathViewModel = documentsPath  + "/HomeViewModel.kt";
-        String pathLayout = documentsPath  + "/fragment_home.xml";
-        String pathSharedViewModel = documentsPath  + "/MainActivityViewModel.kt";
-        System.out.println("pathViewModel " + pathViewModel);
-        System.out.println("pathForViewClass " + pathForViewClass);
-        
-        dialogXml = Utils.readFullFile(documentsPath  + "/custom_dialog.xml");
-        dialogClass = Utils.readFullFile(documentsPath  + "/CustomDialog.kt");
-        savedViewClass = Utils.readFullFile(pathForViewClass);
-        savedViewModel = Utils.readFullFile(pathViewModel);
-        String savedLayout = Utils.readFullFile(pathLayout);
-        String savedSharedViewModel = Utils.readFullFile(pathSharedViewModel);
-        
-        File f = new File(documentsPath);
-        if (f.exists()) {
-            prepareQuestion();
-            chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
-        }
-        
+    private AiChatInterface chat;
+    private AiChatInterface createChat() {
+//        AiChatInterface chat = new OpenAiChatNoDocuments(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI);
+//        AiChatInterface chat = new RagWithGuardrails();
+        AiChatInterface chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
+        chat.init();
+        System.out.println("OpenAiChatApp createChat after init()");
+        return chat;
     }
     public void setupOpenAi() {
-        prepareQuestion();
+        labelMessages.setText("Starting session...");
         btnStart.setEnabled(false);
         btnAskQuestion.setEnabled(false);
+        btnSave.setEnabled(false);
         new Thread(){
             @Override
             public void run() {
-                initOpenAi();
-                chat.setup();
+                chat = createChat();
                 SwingUtilities.invokeLater(new Runnable() {
                     public void run() {
+                        labelMessages.setText("Session started");
                         btnAskQuestion.setEnabled(true);
+                        btnSave.setEnabled(true);
                     }
                 });
             }
             
         }.start();
     }
-    public void prepareQuestion() {
-        String question = 
-            "1. provide a jetpack Compose composable that implements the following jetpack views class class \n" +
-            savedViewClass +
-            "2. provide a Compose viewModel to be used by the composable based on the following Jetpack Views viewModel, exposing a Compose-friendly `UiState + UiEvent` architecture \n" +
-            savedViewModel +
-            "3. When implementing the composable and viewModel preserve Jetpack Views navigation  \n" +
-            "4. Use dialog state, lifecycle collection of state/events for dialog handling \n" +
-            "5. Use state holders/data classes to fully replace the fragment button logic. \n" +
-            "6. Provide a compose CustomDialog implementation based on this custom dialog xml file" +
-            dialogXml +
-            "and this dialog " +
-            dialogClass +
-            "\nUse only android and jetpack compose references";
-        textAreaQuestion.setText(question);
-    }
     public void ask() {
+        labelMessages.setText("Thinking...");
         textAreaAnswer.setText("");
         btnAskQuestion.setEnabled(false);
+        btnSave.setEnabled(true);
         new Thread(){
             @Override
             public void run() {
-                String answer = chat.askQuestion(textAreaQuestion.getText(), 3, 0.7);
+                String answer = chat.askQuestion(textAreaQuestion.getText());
                 SwingUtilities.invokeLater(new Runnable() {
                     public void run() {
                         textAreaAnswer.setText(answer);
-                        btnAskQuestion.setEnabled(false);
+                        btnAskQuestion.setEnabled(true);
+                        btnSave.setEnabled(true);
+                        labelMessages.setText("");
                     }
                 });
             }
             
         }.start();
+    }
+    public void save() {
+        String answer = textAreaAnswer.getText();
+        JFileChooser fileChooser = new JFileChooser("./answer-files");
+        int userSelection = fileChooser.showSaveDialog(this); 
+        if (userSelection == JFileChooser.APPROVE_OPTION) {
+            File fileToSave = fileChooser.getSelectedFile();
+            System.out.println("Save as file: " + fileToSave.getAbsolutePath());
+            StringBuilder sb = new StringBuilder("QUESTION\n");
+            sb.append(textAreaQuestion.getText()).append("\n\nANSWER\n").append(answer);
+            Utils.saveFile(fileToSave.getAbsolutePath(), sb.toString());
+        }
     }
 
     /**
@@ -130,6 +104,9 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         btnStart = new javax.swing.JButton();
         btnAskQuestion = new javax.swing.JButton();
         btnExit = new javax.swing.JButton();
+        btnSave = new javax.swing.JButton();
+        jLabel3 = new javax.swing.JLabel();
+        labelMessages = new javax.swing.JLabel();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
 
@@ -153,6 +130,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         });
 
         btnAskQuestion.setText("Ask question");
+        btnAskQuestion.setEnabled(false);
         btnAskQuestion.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 askQuestion(evt);
@@ -160,11 +138,24 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         });
 
         btnExit.setText("Exit");
+        btnExit.setEnabled(false);
         btnExit.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 btnExitActionPerformed(evt);
             }
         });
+
+        btnSave.setText("Save");
+        btnSave.setEnabled(false);
+        btnSave.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                save(evt);
+            }
+        });
+
+        labelMessages.setBackground(new java.awt.Color(255, 255, 255));
+        labelMessages.setText("Start session");
+        labelMessages.setToolTipText("");
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
@@ -174,6 +165,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                 .addContainerGap()
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addComponent(jScrollPane1)
+                    .addComponent(jLabel3, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                     .addGroup(layout.createSequentialGroup()
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                             .addComponent(jLabel1, javax.swing.GroupLayout.PREFERRED_SIZE, 226, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -182,18 +174,21 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                                 .addGap(18, 18, 18)
                                 .addComponent(btnAskQuestion, javax.swing.GroupLayout.PREFERRED_SIZE, 200, javax.swing.GroupLayout.PREFERRED_SIZE)
                                 .addGap(18, 18, 18)
+                                .addComponent(btnSave, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                .addGap(18, 18, 18)
                                 .addComponent(btnExit, javax.swing.GroupLayout.PREFERRED_SIZE, 200, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                        .addGap(0, 295, Short.MAX_VALUE)))
+                        .addGap(0, 207, Short.MAX_VALUE))
+                    .addComponent(labelMessages, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
                 .addContainerGap())
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                 .addGroup(layout.createSequentialGroup()
                     .addGap(16, 16, 16)
                     .addComponent(jLabel2, javax.swing.GroupLayout.PREFERRED_SIZE, 226, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addContainerGap(701, Short.MAX_VALUE)))
+                    .addContainerGap(793, Short.MAX_VALUE)))
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                 .addGroup(layout.createSequentialGroup()
                     .addContainerGap()
-                    .addComponent(jScrollPane2, javax.swing.GroupLayout.DEFAULT_SIZE, 931, Short.MAX_VALUE)
+                    .addComponent(jScrollPane2, javax.swing.GroupLayout.DEFAULT_SIZE, 1023, Short.MAX_VALUE)
                     .addContainerGap()))
         );
         layout.setVerticalGroup(
@@ -207,18 +202,23 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(btnStart)
                     .addComponent(btnAskQuestion)
-                    .addComponent(btnExit))
-                .addContainerGap(12, Short.MAX_VALUE))
+                    .addComponent(btnExit)
+                    .addComponent(btnSave))
+                .addGap(18, 18, 18)
+                .addComponent(labelMessages)
+                .addGap(50, 50, 50)
+                .addComponent(jLabel3)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                 .addGroup(layout.createSequentialGroup()
                     .addGap(16, 16, 16)
                     .addComponent(jLabel2)
-                    .addContainerGap(638, Short.MAX_VALUE)))
+                    .addContainerGap(728, Short.MAX_VALUE)))
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                 .addGroup(layout.createSequentialGroup()
                     .addGap(52, 52, 52)
                     .addComponent(jScrollPane2, javax.swing.GroupLayout.PREFERRED_SIZE, 261, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addContainerGap(359, Short.MAX_VALUE)))
+                    .addContainerGap(453, Short.MAX_VALUE)))
         );
 
         pack();
@@ -235,6 +235,10 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     private void askQuestion(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_askQuestion
         ask();
     }//GEN-LAST:event_askQuestion
+
+    private void save(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_save
+        save();
+    }//GEN-LAST:event_save
 
     /**
      * @param args the command line arguments
@@ -264,11 +268,14 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton btnAskQuestion;
     private javax.swing.JButton btnExit;
+    private javax.swing.JButton btnSave;
     private javax.swing.JButton btnStart;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel2;
+    private javax.swing.JLabel jLabel3;
     private javax.swing.JScrollPane jScrollPane1;
     private javax.swing.JScrollPane jScrollPane2;
+    private javax.swing.JLabel labelMessages;
     private javax.swing.JTextArea textAreaAnswer;
     private javax.swing.JTextArea textAreaQuestion;
     // End of variables declaration//GEN-END:variables

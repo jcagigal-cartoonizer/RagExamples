@@ -1,7 +1,6 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.migration.prompters.PrompterViewToCompose;
-import com.cartoonizer.rag.shared.Assistant;
 import com.cartoonizer.rag.shared.AssistantWithInfo;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
@@ -13,13 +12,11 @@ import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
 import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
 import dev.langchain4j.data.embedding.Embedding;
-import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.embedding.onnx.bgesmallenv15q.BgeSmallEnV15QuantizedEmbeddingModel;
-import dev.langchain4j.model.input.Prompt;
 import dev.langchain4j.model.input.PromptTemplate;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
@@ -41,7 +38,7 @@ import java.util.List;
 import java.util.Map;
 import static java.util.stream.Collectors.joining;
 
-public class OpenAiChat {
+public class OpenAiChat implements AiChatInterface {
 
     public int maxResults;
     public DocumentParser documentParser = new TextDocumentParser();
@@ -60,6 +57,11 @@ public class OpenAiChat {
     public List<EmbeddingMatch<TextSegment>> relevantEmbeddings;
     public boolean save;
     private long REQUEST_TIMEOUT_SECONDS = 120;
+    @Override
+    public String askQuestion(String question) {
+        return askQuestion(question, 5, 0.7, true);
+    }
+    
     public String askQuestion(String question, int maxResults, double minScore) {
         return askQuestion(question, maxResults, minScore, true);
     }
@@ -174,7 +176,8 @@ public class OpenAiChat {
 
     }
 
-    public void setup() {
+    @Override
+    public void init() {
         ingest();
         chatModel = OpenAiChatModel.builder()
                 .apiKey(theApiKey)

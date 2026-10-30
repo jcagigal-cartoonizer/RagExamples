@@ -1,5 +1,6 @@
 package com.cartoonizer.rag.ollama;
 
+import com.cartoonizer.rag.openai.AiChatInterface;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.model.Image;
 import dev.langchain4j.data.segment.TextSegment;
@@ -14,48 +15,58 @@ import org.testcontainers.ollama.OllamaContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 
-public class OllamaWithRetrievalAugmentor {
+public class OllamaWithRetrievalAugmentor implements AiChatInterface {
 
-    static final String OLLAMA_IMAGE = "ollama/ollama:latest";
-    static final String NOMIC_EMBED_MODEL = "nomic-embed-text";
-    static final String DOCKER_NOMIC_EMBED_IMAGE_NAME = "tc-ollama/ollama:latest-nomic-embed-text";
-    static final String TINY_DOLPHIN_MODEL = "tinydolphin";
-    static final String DOCKER_TINY_DOLPHIN_IMAGE_NAME = "tc-ollama/ollama:latest-tinydolphin";
+    public static final String TINY_DOLPHIN_MODEL = "tinydolphin";
+    public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
+    public static final String DOCKER_TINY_DOLPHIN_IMAGE_NAME = "tc-ollama/ollama:latest-tinydolphin";
 
     public OllamaContainer ollama;
     public ChatModel ollamaModel;
     public IInfoRepo infoRepo;
 
-//    public static void main(String[] args) {
-//        // Example usage
-//        String[] questions = {
-////            "Give me information about Joan Cagigal",
-////            "Who is Charlie",
-//            "Tell me about the dummy planet",
-//            "Is there life in the dummy planet",
-////            "When was Joan Cagigal born",
-//        };
-//        String[] answers = new String[questions.length];
-//        String model = NOMIC_EMBED_MODEL;
-//        String imageName = DOCKER_NOMIC_EMBED_IMAGE_NAME;
-//        OllamaWithRetrievalAugmentor usingOllama = new OllamaWithRetrievalAugmentor(model, imageName);
-//        usingOllama.start();
-//        usingOllama.chatSession(questions, answers);
-//        usingOllama.stop();
-//
-//    }
+    public static List folders = List.of(
+            //                        Path.of("./output-files"),
+            Path.of("./guardrails-files")
+    );
+    public static List urls = List.of(
+            "https://haikubarcelona.com/rest/catalogo_internal.php"
+    );
+    public static void main(String[] args) {
+        // Example usage
+        String[] questions = {
+            "Dame una lista de libros de Murakami con su descripcion y precio"
+        };
+        String[] answers = new String[questions.length];
+        String model = TINY_DOLPHIN_MODEL;
+        String imageName = DOCKER_TINY_DOLPHIN_IMAGE_NAME;
+        OllamaWithRetrievalAugmentor usingOllama = new OllamaWithRetrievalAugmentor(model, imageName, folders, urls);
+        usingOllama.start();
+        usingOllama.chatSession(questions, answers);
+        usingOllama.stop();
+
+    }
 
     public String model;
     public String imageName;
-    public OllamaWithRetrievalAugmentor(String model, String imageName) {
+    private List listOfFolders;
+    private List listOfUrls;
+    public OllamaWithRetrievalAugmentor(String model, String imageName, List listOfFolders, List listOfUrls) {
         this.model = model;
         this.imageName = imageName;
+        this.listOfFolders = listOfFolders;
+        this.listOfUrls = listOfUrls;
     }
     public void start() {
         startOllama();
-        setupOllamaRAG(0.1);
+        init();
+    }
+    @Override
+    public void init() {
+        setupOllamaRAG(0.7, listOfFolders, listOfUrls);
     }
     public void stop() {
             ollama.stop();
@@ -63,9 +74,13 @@ public class OllamaWithRetrievalAugmentor {
     public void chatSession(String[] questions, String[] answers) {
             for (int i = 0; i < questions.length; i++) {
                 String question = questions[i];
-                answers[i] = infoRepo.query(question);
+                answers[i] = askQuestion(question);
                 System.out.println("Answer = " + answers[i]);
             }
+    }
+    @Override
+    public String askQuestion(String question) {
+        return infoRepo.query(question);
     }
     public void startOllama() {
         System.out.println("Create and start the Ollama container");
@@ -92,16 +107,16 @@ public class OllamaWithRetrievalAugmentor {
         
     }
     public QueryTransformer queryTransformer;
-    public void setupOllamaRAG(double temperature) {
+    public void setupOllamaRAG(double temperature, List listOfFolders, List listOfUrls) {
         System.out.println("Build the ChatModel");
         ollamaModel = OllamaChatModel.builder()
                 .baseUrl(ollama.getEndpoint())
                 .temperature(temperature)
-                .logRequests(true)
-                .logResponses(true)
+                .logRequests(false)
+                .logResponses(false)
                 .modelName(model)
                 .build();
-        infoRepo = new SimpleInfoRepo(queryTransformer, ollamaModel);
+        infoRepo = new SimpleInfoRepo(queryTransformer, ollamaModel, listOfFolders, listOfUrls);
         System.out.println("ChatModel built " + model);
     }
 

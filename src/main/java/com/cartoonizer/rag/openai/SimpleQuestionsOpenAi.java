@@ -50,7 +50,7 @@ public class SimpleQuestionsOpenAi {
         if (f.exists() && questions.length > 0) {
             System.out.println("Before setup ");
             OpenAiChat chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, null, null);
-            chat.setup();
+            chat.init();
             String[] answers = new String[questions.length];
             for (int i = 0; i < questions.length; i++) {
                 System.out.println("\n\n****************************************************************************************");

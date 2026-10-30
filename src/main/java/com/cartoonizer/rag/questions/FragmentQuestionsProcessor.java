@@ -1,17 +1,12 @@
 package com.cartoonizer.rag.questions;
 
 import com.cartoonizer.rag.openai.OpenAiChat;
-import com.cartoonizer.rag.openai.OpenAiChat;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.cartoonizer.rag.utils.Utils;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
-import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FILE_NAME;
-import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FIRST_PREFIX;
-import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAST_PREFIX;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUTS;
-import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ONLY_THIS;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIXES;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
@@ -60,7 +55,7 @@ public class FragmentQuestionsProcessor {
         if (f.exists()) {
             System.out.println("Before setup ");
             OpenAiChat chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
-            chat.setup();
+            chat.init();
             String[] questions = getQuestions(savedViewModel, savedViewClass, savedLayout);
 //            - provide Jetpack Compose Modifier extensions that implement the properties of the android xml styles file styles.xml
 //            - provide a jetpack compose composable function that implements the following layout xml file used in Jetpack Views using those Compose Theme and Modifiers

@@ -20,7 +20,7 @@ public class SharedViewModelQuestionsProcessor {
         if (f.exists()) {
             System.out.println("Before setup ");
             OpenAiChat chat = new OpenAiChat(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, answerPath, processedAnswerPath);
-            chat.setup();
+            chat.init();
             String[] questions = {
             "provide a jetpack Compose viewModel that implements the following jetpack views shared viewModel \n" +
             savedSharedViewModel +

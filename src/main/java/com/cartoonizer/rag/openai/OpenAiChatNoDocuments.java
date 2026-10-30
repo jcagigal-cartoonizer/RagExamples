@@ -8,7 +8,7 @@ import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 
-public class OpenAiChatNoDocuments {
+public class OpenAiChatNoDocuments implements AiChatInterface {
 
     public static void main(String[] args) {
         // For migration to compose this costs 10 times more OpenAi credits
@@ -25,6 +25,11 @@ public class OpenAiChatNoDocuments {
         assistant = createAssistant();
     }
 
+    public String askQuestion(String question) {
+        String answer = this.assistant.answer(question);
+        return answer;
+    }
+
     public void askQuestions() {
         String[] questions = this.getQuestions();
         String[] answers = new String[questions.length];
@@ -33,7 +38,7 @@ public class OpenAiChatNoDocuments {
 //                System.out.println("\n\n****************************************************************************************");
             String question = questions[i];
 //                System.out.println("QUESTION: " + question);
-            answers[i] = this.assistant.answer(question);
+            answers[i] = askQuestion(question);
             theAnswer.append("\n// ANSWER\n");
             theAnswer.append(answers[i]);
             System.out.println("ANSWER: " + answers[i]);
@@ -43,9 +48,9 @@ public class OpenAiChatNoDocuments {
 
     protected String[] getQuestions() {
         String[] questions = {
-//            "How can I migrate a JetPck Views android app to Jetpack Compose?",
-//            "Based on your answer, please, provide a migration example for Activity/Fragment/XML to Compose but preserving jetpack navigation"
-//            "How can I use RAG with OpenAI to accelerate custom software development? Give mo some use cases.",
+            """
+            Dame una lista de tiendas en Barcelona donde comprar figuras Daruma. Incluye la dirección y precios aproximados
+            """
         };
         return questions;
     }
@@ -53,7 +58,7 @@ public class OpenAiChatNoDocuments {
     private Assistant createAssistant() {
         ChatModel chatModel = OpenAiChatModel.builder()
                 .apiKey(theApiKey)
-                .temperature(0.2)
+                .temperature(0.7)
                 .logRequests(false)
                 .logResponses(false)
                 .modelName(theModelName)
@@ -63,6 +68,10 @@ public class OpenAiChatNoDocuments {
                 .chatModel(chatModel)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
                 .build();
+    }
+
+    @Override
+    public void init() {
     }
 
 }

@@ -1,0 +1,650 @@
+QUESTION
+Give me a complete LangChain4j Java example of RAG (Retrieval-Augmented Generation) using guardrails to instruct the Ai model to only access some enterprise resources and not searching the Internet or not accessing remote sites that require authentication. Don't use SpringBoot.
+Include examples of how to limit local access to a list of folders.
+
+ANSWER
+Below is a **complete non-Spring Boot LangChain4j Java example** of a **RAG (Retrieval-Augmented Generation)** app with **guardrails** that:
+
+- only retrieves from **approved enterprise resources**
+- does **not search the Internet**
+- does **not access remote sites requiring authentication**
+- limits **local file access to an allowlist of folders**
+
+Important note: **LLMs cannot be trusted to “self-restrict” by prompt alone**. Real security must be enforced in your application code. So the example uses:
+1. **Prompt guardrails** to instruct the model
+2. **Tool-level guardrails** to prevent unauthorized access
+3. **Allowlisted local folders**
+4. **Allowlisted remote URLs**
+5. A **retriever** that only searches approved sources
+
+---
+
+# 1) Maven `pom.xml`
+
+This example uses:
+- LangChain4j
+- OpenAI model
+- local file loading
+- in-memory vector store
+- no Spring Boot
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>langchain4j-rag-guardrails</artifactId>
+    <version>1.0.0</version>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <langchain4j.version>0.35.0</langchain4j.version>
+    </properties>
+
+    <dependencies>
+        <!-- LangChain4j core -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!-- OpenAI integration -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!-- In-memory embedding store -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-embeddings-all-minilm-l6-v2</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.13</version>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+---
+
+# 2) Project structure
+
+```text
+src/main/java/com/example/rag/
+  App.java
+  EnterpriseAssistant.java
+  SecurityPolicy.java
+  SecureDocumentLoader.java
+  SecureWebFetcher.java
+  ApprovedResourceRetriever.java
+```
+
+---
+
+# 3) Security policy: allowlisted folders and URLs
+
+This is the core guardrail. The app only reads from approved folders and approved remote URLs.
+
+## `SecurityPolicy.java`
+
+```java
+package com.example.rag;
+
+import java.net.URI;
+import java.nio.file.Path;
+import java.util.List;
+
+public class SecurityPolicy {
+
+    private final List<Path> allowedFolders;
+    private final List<String> allowedRemoteHosts;
+
+    public SecurityPolicy(List<Path> allowedFolders, List<String> allowedRemoteHosts) {
+        this.allowedFolders = allowedFolders;
+        this.allowedRemoteHosts = allowedRemoteHosts;
+    }
+
+    public boolean isAllowedLocalPath(Path path) {
+        Path normalized = path.toAbsolutePath().normalize();
+        for (Path allowedFolder : allowedFolders) {
+            Path allowed = allowedFolder.toAbsolutePath().normalize();
+            if (normalized.startsWith(allowed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isAllowedRemoteUri(URI uri) {
+        if (uri == null || uri.getHost() == null) {
+            return false;
+        }
+
+        String host = uri.getHost().toLowerCase();
+        if (!("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))) {
+            return false;
+        }
+
+        // Block authenticated/private endpoints by policy:
+        // - only allow known hosts
+        // - no credentials in URI
+        // - no query-based auth tokens
+        if (uri.getUserInfo() != null) {
+            return false;
+        }
+
+        for (String allowedHost : allowedRemoteHosts) {
+            if (host.equalsIgnoreCase(allowedHost) || host.endsWith("." + allowedHost.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public List<Path> allowedFolders() {
+        return allowedFolders;
+    }
+
+    public List<String> allowedRemoteHosts() {
+        return allowedRemoteHosts;
+    }
+}
+```
+
+---
+
+# 4) Secure local document loader
+
+This loader only reads files from approved folders.
+
+## `SecureDocumentLoader.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.DocumentParser;
+import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
+import dev.langchain4j.data.document.parser.TextDocumentParser;
+
+import java.io.IOException;
+import java.nio.file.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class SecureDocumentLoader {
+
+    private final SecurityPolicy securityPolicy;
+    private final DocumentParser parser = new TextDocumentParser();
+
+    public SecureDocumentLoader(SecurityPolicy securityPolicy) {
+        this.securityPolicy = securityPolicy;
+    }
+
+    public List<Document> loadAllowedTextFiles() throws IOException {
+        List<Document> documents = new ArrayList<>();
+
+        for (Path folder : securityPolicy.allowedFolders()) {
+            if (!Files.exists(folder) || !Files.isDirectory(folder)) {
+                continue;
+            }
+
+            try (var stream = Files.walk(folder)) {
+                stream.filter(Files::isRegularFile)
+                      .filter(this::isAllowedFileType)
+                      .forEach(path -> {
+                          if (!securityPolicy.isAllowedLocalPath(path)) {
+                              return;
+                          }
+                          try {
+                              // Load only plain text-like files in this example
+                              String content = Files.readString(path);
+                              Document doc = Document.from(content);
+                              doc.metadata().put("source", path.toAbsolutePath().toString());
+                              documents.add(doc);
+                          } catch (IOException e) {
+                              throw new RuntimeException("Failed to read file: " + path, e);
+                          }
+                      });
+            }
+        }
+
+        return documents;
+    }
+
+    private boolean isAllowedFileType(Path path) {
+        String name = path.getFileName().toString().toLowerCase();
+        return name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".csv");
+    }
+}
+```
+
+---
+
+# 5) Secure web fetcher
+
+This fetcher only allows approved hosts and rejects authenticated/private URLs.
+
+## `SecureWebFetcher.java`
+
+```java
+package com.example.rag;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+
+public class SecureWebFetcher {
+
+    private final SecurityPolicy securityPolicy;
+    private final HttpClient httpClient;
+
+    public SecureWebFetcher(SecurityPolicy securityPolicy) {
+        this.securityPolicy = securityPolicy;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(5))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+    }
+
+    public String fetch(URI uri) throws IOException, InterruptedException {
+        if (!securityPolicy.isAllowedRemoteUri(uri)) {
+            throw new SecurityException("Blocked remote access to: " + uri);
+        }
+
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() >= 300) {
+            throw new SecurityException("Blocked or failed remote fetch, status=" + response.statusCode());
+        }
+
+        return response.body();
+    }
+}
+```
+
+---
+
+# 6) Build a retriever over approved resources only
+
+This example uses an in-memory vector store. You can replace it with a persistent store later.
+
+## `ApprovedResourceRetriever.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.embedding.EmbeddingMatch;
+import dev.langchain4j.data.embedding.EmbeddingSearchRequest;
+import dev.langchain4j.data.embedding.EmbeddingSearchResult;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class ApprovedResourceRetriever {
+
+    private final EmbeddingModel embeddingModel;
+    private final EmbeddingStore<TextSegment> embeddingStore;
+
+    public ApprovedResourceRetriever(EmbeddingModel embeddingModel) {
+        this.embeddingModel = embeddingModel;
+        this.embeddingStore = new InMemoryEmbeddingStore<>();
+    }
+
+    public void ingest(List<Document> documents) {
+        for (Document doc : documents) {
+            TextSegment segment = TextSegment.from(doc.text(), doc.metadata());
+            Embedding embedding = embeddingModel.embed(segment.text()).content();
+            embeddingStore.add(embedding, segment);
+        }
+    }
+
+    public List<TextSegment> retrieve(String query, int maxResults) {
+        Embedding queryEmbedding = embeddingModel.embed(query).content();
+
+        EmbeddingSearchResult<TextSegment> result = embeddingStore.search(
+                EmbeddingSearchRequest.builder()
+                        .queryEmbedding(queryEmbedding)
+                        .maxResults(maxResults)
+                        .build()
+        );
+
+        return result.matches().stream()
+                .map(EmbeddingMatch::embedded)
+                .collect(Collectors.toList());
+    }
+}
+```
+
+---
+
+# 7) AI assistant interface with guardrails
+
+The system prompt explicitly says:
+- use only provided context
+- do not browse the web
+- do not claim access to private/authenticated systems
+- if answer is not in context, say so
+
+## `EnterpriseAssistant.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+public interface SecureAssistant {
+
+    @SystemMessage("""
+        You are an enterprise assistant.
+        You must follow these rules:
+        1. Use ONLY the provided context to answer.
+        2. Do NOT search the Internet.
+        3. Do NOT claim to access remote sites that require authentication.
+        4. Do NOT invent information.
+        5. If the answer is not in the context, say: "I don't have enough approved enterprise context to answer that."
+        6. If the user asks for external web browsing, refuse.
+        7. If the user asks for private/internal systems not explicitly provided in context, refuse.
+        """)
+    String answer(@UserMessage("""
+        Question: {{question}}
+
+        Approved context:
+        {{context}}
+        """) @V("question") String question,
+                  @V("context") String context);
+}
+```
+
+---
+
+# 8) Main application
+
+This wires everything together:
+- defines allowed folders
+- loads local docs only from those folders
+- optionally fetches from approved remote hosts only
+- ingests into vector store
+- answers questions using retrieved context
+
+## `App.java`
+
+```java
+package com.example.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.embedding.onnx.allminilml6v2.AllMiniLmL6V2EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+
+import java.net.URI;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+public class App {
+
+    public static void main(String[] args) throws Exception {
+
+        // 1) Define security policy
+        SecurityPolicy policy = new SecurityPolicy(
+                List.of(
+                        Path.of("C:/enterprise/knowledge-base"),
+                        Path.of("/opt/enterprise/docs")
+                ),
+                List.of(
+                        "intranet.example.com",
+                        "docs.example.com"
+                )
+        );
+
+        // 2) Load local documents only from approved folders
+        SecureDocumentLoader localLoader = new SecureDocumentLoader(policy);
+        List<Document> documents = new ArrayList<>(localLoader.loadAllowedTextFiles());
+
+        // 3) Optionally fetch approved remote docs only
+        SecureWebFetcher webFetcher = new SecureWebFetcher(policy);
+
+        // Example approved URL
+        URI approvedUri = URI.create("https://docs.example.com/engineering/faq.txt");
+        try {
+            String remoteText = webFetcher.fetch(approvedUri);
+            Document remoteDoc = Document.from(remoteText);
+            remoteDoc.metadata().put("source", approvedUri.toString());
+            documents.add(remoteDoc);
+        } catch (Exception e) {
+            System.out.println("Remote fetch skipped/blocked: " + e.getMessage());
+        }
+
+        // Example blocked URL (auth/private or unapproved host)
+        URI blockedUri = URI.create("https://login.example.com/private");
+        try {
+            webFetcher.fetch(blockedUri);
+        } catch (Exception e) {
+            System.out.println("Expected block: " + e.getMessage());
+        }
+
+        // 4) Embedding model
+        EmbeddingModel embeddingModel = new AllMiniLmL6V2EmbeddingModel();
+
+        // 5) Build retriever and ingest approved docs
+        ApprovedResourceRetriever retriever = new ApprovedResourceRetriever(embeddingModel);
+        retriever.ingest(documents);
+
+        // 6) Chat model
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("gpt-4o-mini")
+                .build();
+
+        // 7) Create assistant
+        EnterpriseAssistant assistant = AiServices.builder(EnterpriseAssistant.class)
+                .chatModel(chatModel)
+                .build();
+
+        // 8) Ask a question
+        String question = "What is the password reset process?";
+        List<dev.langchain4j.data.segment.TextSegment> contextSegments = retriever.retrieve(question, 4);
+
+        String context = contextSegments.stream()
+                .map(dev.langchain4j.data.segment.TextSegment::text)
+                .reduce("", (a, b) -> a + "\n---\n" + b);
+
+        String answer = assistant.answer(question, context);
+
+        System.out.println("\nQUESTION:\n" + question);
+        System.out.println("\nANSWER:\n" + answer);
+    }
+}
+```
+
+---
+
+# 9) Example of limiting local access to a list of folders
+
+Here are a few patterns.
+
+## Pattern A: exact allowlist of folders
+
+```java
+SecurityPolicy policy = new SecurityPolicy(
+    List.of(
+        Path.of("/data/enterprise/hr"),
+        Path.of("/data/enterprise/it"),
+        Path.of("/data/enterprise/policies")
+    ),
+    List.of("intranet.example.com")
+);
+```
+
+This means:
+- `/data/enterprise/hr/**` allowed
+- `/data/enterprise/it/**` allowed
+- `/data/enterprise/policies/**` allowed
+- everything else blocked
+
+---
+
+## Pattern B: Windows example
+
+```java
+SecurityPolicy policy = new SecurityPolicy(
+    List.of(
+        Path.of("D:/Enterprise/HR"),
+        Path.of("D:/Enterprise/Legal"),
+        Path.of("D:/Enterprise/Support")
+    ),
+    List.of("intranet.example.com")
+);
+```
+
+---
+
+## Pattern C: validate a user-supplied path before reading
+
+```java
+Path requested = Path.of(userInputPath);
+
+if (!policy.isAllowedLocalPath(requested)) {
+    throw new SecurityException("Access denied to path: " + requested);
+}
+```
+
+---
+
+# 10) Why prompt guardrails alone are not enough
+
+Even if you tell the model:
+
+- “don’t browse the web”
+- “only use enterprise context”
+
+the model can still:
+- hallucinate
+- follow malicious user instructions
+- attempt to answer from general knowledge
+
+So the real protection is:
+
+1. **Do not give the model internet tools**
+2. **Do not expose arbitrary file access**
+3. **Only ingest approved documents**
+4. **Only retrieve from approved vector store**
+5. **Block remote URLs in code**
+6. **Refuse questions outside approved context**
+
+---
+
+# 11) Stronger guardrail: refuse if no approved context is found
+
+You can add a simple pre-check:
+
+```java
+if (contextSegments.isEmpty()) {
+    System.out.println("I don't have enough approved enterprise context to answer that.");
+    return;
+}
+```
+
+This prevents the model from answering from general knowledge when retrieval returns nothing.
+
+---
+
+# 12) Stronger guardrail: source filtering
+
+You can also ensure every retrieved segment comes from approved sources only:
+
+```java
+boolean allApproved = contextSegments.stream()
+        .allMatch(seg -> {
+            String source = seg.metadata().getString("source");
+            return source != null && (
+                    source.startsWith("C:/enterprise/knowledge-base") ||
+                    source.startsWith("/opt/enterprise/docs") ||
+                    source.startsWith("https://docs.example.com/")
+            );
+        });
+
+if (!allApproved) {
+    throw new SecurityException("Unapproved source detected in retrieval results.");
+}
+```
+
+---
+
+# 13) Recommended production hardening
+
+If you want this to be truly enterprise-safe, add:
+
+- **network egress firewall rules**
+- **DNS allowlisting**
+- **proxy restrictions**
+- **container filesystem mounts limited to approved folders**
+- **no browser tools**
+- **no generic HTTP tool exposed to the model**
+- **document-level ACLs**
+- **audit logs**
+- **human approval for new sources**
+- **content scanning for secrets/PII**
+
+---
+
+# 14) Minimal “no internet” design
+
+If you want the safest setup, do this:
+
+- remove `SecureWebFetcher` entirely
+- only ingest local approved docs
+- only use the vector store
+- no tool that can fetch URLs
+- no shell tool
+- no browser tool
+
+Then the model literally has no path to the internet.
+
+---
+
+# 15) Summary
+
+This example gives you:
+
+- a **LangChain4j RAG app**
+- **no Spring Boot**
+- **enterprise-only retrieval**
+- **guardrails against internet access**
+- **guardrails against authenticated remote sites**
+- **local folder allowlisting**
+
+If you want, I can also provide:
+1. a **fully compilable Gradle version**
+2. a version using **PGVector / Qdrant / Elasticsearch**
+3. a version with **document ACLs per user**
+4. a version that uses **tool calling** with explicit allowlisted tools only

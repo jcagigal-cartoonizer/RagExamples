@@ -80,7 +80,7 @@ public class NavigateQuestionsProcessor {
         if (f.exists()) {
             
             OpenAiChatNavigation chat = new OpenAiChatNavigation(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, outputPath, answerPath, processedAnswerPath);
-            chat.setup();
+            chat.init();
 
 //            String[] questions = getQuestions(savedComposable);
             

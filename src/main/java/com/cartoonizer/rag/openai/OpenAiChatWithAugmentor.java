@@ -37,7 +37,7 @@ import java.io.File;
 import java.io.PrintWriter;
 import java.util.List;
 
-public class OpenAiChatWithAugmentor {
+public class OpenAiChatWithAugmentor implements AiChatInterface {
 
     public static String[] PREFIXES_AUGMENTOR = new String[]{
 //            "Dashboard",
@@ -190,7 +190,7 @@ public class OpenAiChatWithAugmentor {
             PREFIX = PREFIXES_AUGMENTOR[i];
             LAYOUT = LAYOUTS_AUGMENTOR[i];
             OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, LAYOUT);
-            chat.askQuestions(LAYOUT);
+            chat.askQuestions();
         }
     }
     public String documentsPath;
@@ -224,7 +224,8 @@ public class OpenAiChatWithAugmentor {
         assistant = createAssistant();
     }
 
-    public void askQuestions(String layout) {
+    public void askQuestions() {
+        String layout = LAYOUT;
         String answerPath = ANSWER_FOLDER + "/" + fileToGenerate + ".txt";
         String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + fileToGenerate + ".txt";
 
@@ -239,22 +240,22 @@ public class OpenAiChatWithAugmentor {
 //                System.out.println("\n\n****************************************************************************************");
                 String question = questions[i];
 //                System.out.println("QUESTION: " + question);
-                answers[i] = this.assistant.answer(question);
+                answers[i] = askQuestion(question);
                 theAnswer.append("\n// FIRST ANSWER\n");
                 theAnswer.append(answers[i]);
                 System.out.println("ANSWER: " + answers[i]);
                 String secondQuestion = getSecondQuestion();
-                String secondAnswer = secondQuestion == null ? "" : this.assistant.answer(secondQuestion);
+                String secondAnswer = secondQuestion == null ? "" : askQuestion(secondQuestion);
                 theAnswer.append("\n// SECOND ANSWER\n");
                 theAnswer.append(secondAnswer);
 
                 String thirdQuestion = getThirdQuestion();
-                String thirdAnswer = thirdQuestion == null ? "" : this.assistant.answer(thirdQuestion);
+                String thirdAnswer = thirdQuestion == null ? "" : askQuestion(thirdQuestion);
                 theAnswer.append("\n// THIRD ANSWER\n");
                 theAnswer.append(thirdAnswer);
 
                 String fourthQuestion = getFourthQuestion();
-                String fourthAnswer = fourthQuestion == null ? "" : this.assistant.answer(fourthQuestion);
+                String fourthAnswer = fourthQuestion == null ? "" : askQuestion(fourthQuestion);
                 theAnswer.append("\n// FOURTH ANSWER\n");
                 theAnswer.append(fourthAnswer);
 
@@ -370,6 +371,14 @@ public class OpenAiChatWithAugmentor {
                 .retrievalAugmentor(retrievalAugmentor)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
                 .build();
+    }
+
+    @Override
+    public String askQuestion(String question) {
+        return this.assistant.answer(question);
+    }
+    @Override
+    public void init() {
     }
 
 }

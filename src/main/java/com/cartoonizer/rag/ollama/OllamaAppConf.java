@@ -12,10 +12,6 @@ public class OllamaAppConf {
         return "http://localhost:11434";
     }
 
-    public static String getEmbeddingModel() {
-        return "nomic-embed-text:latest";
-    }
-
     public static String getLlm() {
         return "llama3.1:8b";
     }

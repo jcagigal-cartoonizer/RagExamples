@@ -8,11 +8,11 @@ import dev.langchain4j.service.V;
 public interface Assistant {
 
     @SystemMessage(
-            "Answer the following question to the best of your ability:\n"
-                + "\n"
-                + "Question:\n"
-                + "{{question}}\n"
-                + "\n"
+            """
+            You are in charge of an online shop. Answer the following question to the best of your ability using the shop data:\n"
+                Question:
+                {{question}}
+            """
     )
-        String answer(@UserMessage @V("question") String question);
+    String answer(@UserMessage @V("question") String question);
 }

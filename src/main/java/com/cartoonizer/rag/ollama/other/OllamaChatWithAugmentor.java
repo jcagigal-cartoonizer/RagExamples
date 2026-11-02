@@ -67,7 +67,7 @@ public class OllamaChatWithAugmentor {
                 .temperature(0.2)
                 .logRequests(false)
                 .logResponses(false)
-                .modelName(OllamaWithRetrievalAugmentor.TINY_DOLPHIN_MODEL)
+                .modelName(OllamaWithRetrievalAugmentor.OLLAMA_MODEL)
                 .build();
 
         // We will create a CompressingQueryTransformer, which is responsible for compressing

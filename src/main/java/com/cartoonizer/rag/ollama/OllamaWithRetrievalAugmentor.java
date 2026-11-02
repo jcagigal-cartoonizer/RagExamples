@@ -16,13 +16,15 @@ import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 public class OllamaWithRetrievalAugmentor implements AiChatInterface {
 
-    public static final String TINY_DOLPHIN_MODEL = "tinydolphin";
+    public static final String OLLAMA_MODEL = "nomic-embed-text";
     public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
-    public static final String DOCKER_TINY_DOLPHIN_IMAGE_NAME = "tc-ollama/ollama:latest-tinydolphin";
+    public static final String DOCKER_IMAGE_NAME = "tc-ollama/ollama:latest-nomic-embed-text";
 
     public OllamaContainer ollama;
     public ChatModel ollamaModel;
@@ -41,8 +43,8 @@ public class OllamaWithRetrievalAugmentor implements AiChatInterface {
             "Dame una lista de libros de Murakami con su descripcion y precio"
         };
         String[] answers = new String[questions.length];
-        String model = TINY_DOLPHIN_MODEL;
-        String imageName = DOCKER_TINY_DOLPHIN_IMAGE_NAME;
+        String model = OLLAMA_MODEL;
+        String imageName = DOCKER_IMAGE_NAME;
         OllamaWithRetrievalAugmentor usingOllama = new OllamaWithRetrievalAugmentor(model, imageName, folders, urls);
         usingOllama.start();
         usingOllama.chatSession(questions, answers);
@@ -61,11 +63,11 @@ public class OllamaWithRetrievalAugmentor implements AiChatInterface {
         this.listOfUrls = listOfUrls;
     }
     public void start() {
-        startOllama();
         init();
     }
     @Override
     public void init() {
+        startOllama();
         setupOllamaRAG(0.7, listOfFolders, listOfUrls);
     }
     public void stop() {
@@ -108,7 +110,7 @@ public class OllamaWithRetrievalAugmentor implements AiChatInterface {
     }
     public QueryTransformer queryTransformer;
     public void setupOllamaRAG(double temperature, List listOfFolders, List listOfUrls) {
-        System.out.println("Build the ChatModel");
+        System.out.println("setupOllamaRAG Build the ChatModel");
         ollamaModel = OllamaChatModel.builder()
                 .baseUrl(ollama.getEndpoint())
                 .temperature(temperature)

@@ -1,5 +1,7 @@
 package com.cartoonizer.rag.openai;
 
+import com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor;
+import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.FOLDERS;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.URLS;
 import com.cartoonizer.rag.utils.ApiKeys;
@@ -21,13 +23,22 @@ public class OpenAiChatApp extends javax.swing.JFrame {
      * Creates new form OpenAiChatApp
      */
     public OpenAiChatApp() {
+//        OpenAiChatWithAugmentorGeneric.USE_OLLAMA = true;
+        OpenAiChatWithAugmentorGeneric.USE_OLLAMA = false;
         initComponents();
     }
     private AiChatInterface chat;
     private AiChatInterface createChat() {
+        AiChatInterface chat = null;
 //        AiChatInterface chat = new OpenAiChatNoDocuments(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI);
 //        AiChatInterface chat = new RagWithGuardrails();
-        AiChatInterface chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
+        if (OpenAiChatWithAugmentorGeneric.USE_OLLAMA) {
+            chat = new OllamaWithRetrievalAugmentor(ApiKeys.OPENAI_API_KEY, 
+                OLLAMA_MODEL, FOLDERS, URLS);
+        } else {
+            chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, 
+                ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
+        }
         chat.init();
         System.out.println("OpenAiChatApp createChat after init()");
         return chat;
@@ -103,7 +114,6 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         textAreaQuestion = new javax.swing.JTextArea();
         btnStart = new javax.swing.JButton();
         btnAskQuestion = new javax.swing.JButton();
-        btnExit = new javax.swing.JButton();
         btnSave = new javax.swing.JButton();
         jLabel3 = new javax.swing.JLabel();
         labelMessages = new javax.swing.JLabel();
@@ -137,14 +147,6 @@ public class OpenAiChatApp extends javax.swing.JFrame {
             }
         });
 
-        btnExit.setText("Exit");
-        btnExit.setEnabled(false);
-        btnExit.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                btnExitActionPerformed(evt);
-            }
-        });
-
         btnSave.setText("Save");
         btnSave.setEnabled(false);
         btnSave.addActionListener(new java.awt.event.ActionListener() {
@@ -174,10 +176,8 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                                 .addGap(18, 18, 18)
                                 .addComponent(btnAskQuestion, javax.swing.GroupLayout.PREFERRED_SIZE, 200, javax.swing.GroupLayout.PREFERRED_SIZE)
                                 .addGap(18, 18, 18)
-                                .addComponent(btnSave, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE)
-                                .addGap(18, 18, 18)
-                                .addComponent(btnExit, javax.swing.GroupLayout.PREFERRED_SIZE, 200, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                        .addGap(0, 207, Short.MAX_VALUE))
+                                .addComponent(btnSave, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                        .addGap(0, 425, Short.MAX_VALUE))
                     .addComponent(labelMessages, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
                 .addContainerGap())
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
@@ -202,7 +202,6 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(btnStart)
                     .addComponent(btnAskQuestion)
-                    .addComponent(btnExit)
                     .addComponent(btnSave))
                 .addGap(18, 18, 18)
                 .addComponent(labelMessages)
@@ -227,10 +226,6 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     private void btnStartActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_btnStartActionPerformed
         setupOpenAi();
     }//GEN-LAST:event_btnStartActionPerformed
-
-    private void btnExitActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_btnExitActionPerformed
-        System.exit(1);
-    }//GEN-LAST:event_btnExitActionPerformed
 
     private void askQuestion(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_askQuestion
         ask();
@@ -267,7 +262,6 @@ public class OpenAiChatApp extends javax.swing.JFrame {
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton btnAskQuestion;
-    private javax.swing.JButton btnExit;
     private javax.swing.JButton btnSave;
     private javax.swing.JButton btnStart;
     private javax.swing.JLabel jLabel1;

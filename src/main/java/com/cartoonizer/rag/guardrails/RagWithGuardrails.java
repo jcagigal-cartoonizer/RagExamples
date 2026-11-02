@@ -1,6 +1,10 @@
 package com.cartoonizer.rag.guardrails;
 
+import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.DOCKER_IMAGE_NAME;
+import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_IMAGE;
+import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
 import com.cartoonizer.rag.openai.AiChatInterface;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.USE_OLLAMA;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
 import com.github.dockerjava.api.DockerClient;
@@ -26,9 +30,6 @@ import org.testcontainers.utility.DockerImageName;
 
 public class RagWithGuardrails implements AiChatInterface {
 
-    public static boolean USE_OLLAMA = false;
-    public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
-    public static final String DOCKER_TINY_DOLPHIN_IMAGE_NAME = "tc-ollama/ollama:latest-tinydolphin";
     public static void main(String[] args) throws Exception {
         runAll();
     }
@@ -72,7 +73,7 @@ public class RagWithGuardrails implements AiChatInterface {
             String endPoint = ollama.getEndpoint();
             chatModel = OllamaChatModel.builder()
                 .baseUrl(endPoint)
-                .modelName(ModelNames.OLLAMA_MODEL)
+                .modelName(OLLAMA_MODEL)
                 .build();
             
         } else {
@@ -88,23 +89,23 @@ public class RagWithGuardrails implements AiChatInterface {
 
         DockerImageName dockerImageName = DockerImageName.parse(OLLAMA_IMAGE);
         DockerClient dockerClient = DockerClientFactory.instance().client();
-        List<Image> images = dockerClient.listImagesCmd().withReferenceFilter(DOCKER_TINY_DOLPHIN_IMAGE_NAME).exec();
+        List<Image> images = dockerClient.listImagesCmd().withReferenceFilter(DOCKER_IMAGE_NAME).exec();
         if (images.isEmpty()) {
             ollama = new OllamaContainer(dockerImageName);
         } else {
-            ollama = new OllamaContainer(DockerImageName.parse(DOCKER_TINY_DOLPHIN_IMAGE_NAME).asCompatibleSubstituteFor(OLLAMA_IMAGE));
+            ollama = new OllamaContainer(DockerImageName.parse(DOCKER_IMAGE_NAME).asCompatibleSubstituteFor(OLLAMA_IMAGE));
         }
         ollama.start();
 
         try {
-            System.out.println("RagWithGuardrails Start pulling the '" + ModelNames.OLLAMA_MODEL + "' model ... would take several minutes ...");
-            Container.ExecResult r = ollama.execInContainer("ollama", "pull", ModelNames.OLLAMA_MODEL);
+            System.out.println("RagWithGuardrails Start pulling the '" + OLLAMA_MODEL + "' model ... would take several minutes ...");
+            Container.ExecResult r = ollama.execInContainer("ollama", "pull", OLLAMA_MODEL);
             System.out.println("RagWithGuardrails Model pulling completed! {}" + r);
         } catch (Exception e) {
             throw new RuntimeException("RagWithGuardrails Error pulling model", e);
         }
-        System.out.println("RagWithGuardrails commit to image " + DOCKER_TINY_DOLPHIN_IMAGE_NAME);
-        ollama.commitToImage(DOCKER_TINY_DOLPHIN_IMAGE_NAME);
+        System.out.println("RagWithGuardrails commit to image " + DOCKER_IMAGE_NAME);
+        ollama.commitToImage(DOCKER_IMAGE_NAME);
         
     }
     public void init() {

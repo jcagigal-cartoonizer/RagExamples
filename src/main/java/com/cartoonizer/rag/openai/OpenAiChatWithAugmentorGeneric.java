@@ -1,6 +1,7 @@
 package com.cartoonizer.rag.openai;
 
 import com.cartoonizer.rag.guardrails.CustomJsonSplitter;
+import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
 import dev.langchain4j.data.segment.TextSegment;
@@ -21,20 +22,32 @@ import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import com.cartoonizer.rag.shared.Assistant;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
+import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.model.Image;
 
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.loader.UrlDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByLineSplitter;
 import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
+import dev.langchain4j.model.chat.listener.ChatModelListener;
+import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import org.testcontainers.DockerClientFactory;
+import org.testcontainers.containers.Container;
+import org.testcontainers.ollama.OllamaContainer;
+import org.testcontainers.utility.DockerImageName;
 
 public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
 
+    public static boolean USE_OLLAMA = true;
+    public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
     public static List FOLDERS = List.of(
             //                        Path.of("./output-files"),
             "./guardrails-files"
@@ -44,6 +57,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
     );
     private List listOfFolders;
     private List listOfUrls;
+    private OllamaContainer ollama;
 
     public static void main(String[] args) {
         String documentsPath = "./guardrails-files";
@@ -107,9 +121,33 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
         };
         return questions;
     }
+    private ChatModel createChatModel() {
+        ChatModel chatModel = null;
+        List<ChatModelListener> listenersList = new ArrayList<>();
+            MyChatModelListener myChatModelListener = new MyChatModelListener();
+            listenersList.add(myChatModelListener);
+        if (USE_OLLAMA) {
+            String endPoint = ollama.getEndpoint();
+            chatModel = OllamaChatModel.builder()
+                .baseUrl(endPoint)
+                .listeners(listenersList)
+                .modelName(OLLAMA_MODEL)
+                .build();
+            
+        } else {
+            chatModel = OpenAiChatModel.builder()
+                .apiKey(theApiKey)
+                .temperature(0.2)
+                .logRequests(false)
+                .logResponses(false)
+                .listeners(listenersList)
+                .modelName(theModelName)
+                .build();
+        }
+        return chatModel;
+    }
 
     private Assistant createAssistant() {
-
         List<Document> documents = new ArrayList<>();
         try {
             for (Object folder : listOfFolders) {
@@ -121,7 +159,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
         }
         List<Document> allowedUrls = new ArrayList<>();
         for (Object allowedRemoteHost : listOfUrls) {
-            System.out.println("*** RagWithGuardrails ingesting " + allowedRemoteHost);
+            System.out.println("*** OpenAiWithAugmentor ingesting " + allowedRemoteHost);
             final Document doc = UrlDocumentLoader.load(allowedRemoteHost.toString(), new TextDocumentParser());
             allowedUrls.add(doc);
         }
@@ -129,8 +167,14 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
         EmbeddingModel embeddingModel = new BgeSmallEnV15QuantizedEmbeddingModel();
 
         EmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
-        OpenAiTokenCountEstimator tokenCountEstimator = new OpenAiTokenCountEstimator(theModelName);
-        OpenAiTokenCountEstimator tokenCountEstimatorJson = new OpenAiTokenCountEstimator(theModelName);
+        OpenAiTokenCountEstimator tokenCountEstimator = null;
+        OpenAiTokenCountEstimator tokenCountEstimatorJson = null;
+        if (USE_OLLAMA) {
+            
+        } else {
+            tokenCountEstimator = new OpenAiTokenCountEstimator(theModelName);
+            tokenCountEstimatorJson = new OpenAiTokenCountEstimator(theModelName);
+        }
         DocumentByLineSplitter splitter = new DocumentByLineSplitter(512, 0, tokenCountEstimator);
         CustomJsonSplitter jsonSplitter = new CustomJsonSplitter(512, 0, tokenCountEstimatorJson);
         
@@ -148,15 +192,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
                 .build();
         urlIngestor.ingest(allowedUrls);
         
-        MyChatModelListener myChatModelListener = new MyChatModelListener();
-        ChatModel chatModel = OpenAiChatModel.builder()
-                .apiKey(theApiKey)
-                .temperature(0.2)
-                .logRequests(false)
-                .logResponses(false)
-                .listeners(myChatModelListener)
-                .modelName(theModelName)
-                .build();
+        ChatModel chatModel = createChatModel();
 
         // We will create a CompressingQueryTransformer, which is responsible for compressing
         // the user's query and the preceding conversation into a single, stand-alone query.

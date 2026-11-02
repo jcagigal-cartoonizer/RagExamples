@@ -57,7 +57,7 @@ public class CustomJsonSplitter extends DocumentByLineSplitter {
             String segmentText = sb.append(product.get("descripcion").toString()).append(" ").append(ampliacion.replaceAll("\n", " ")).append(" Precio: ").append(product.get("precio")).append(autor).toString();
             Metadata metadata = new Metadata();
             metadata.put("id", id);
-            TextSegment segment = new TextSegment(text, metadata);
+            TextSegment segment = new TextSegment(segmentText, metadata);
             segments.add(segment);
 //            System.out.println("--> " + segmentText);
         }

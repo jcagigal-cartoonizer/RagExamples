@@ -63,17 +63,26 @@ public class OpenAiChatApp extends javax.swing.JFrame {
             
         }.start();
     }
+    public StringBuilder conversation;
     public void ask() {
         labelMessages.setText("Thinking...");
+        if (conversation == null) {
+            conversation = new StringBuilder();
+        }
         textAreaAnswer.setText("");
         btnAskQuestion.setEnabled(false);
         btnSave.setEnabled(true);
         new Thread(){
             @Override
             public void run() {
-                String answer = chat.askQuestion(textAreaQuestion.getText());
+                String question = textAreaQuestion.getText();
+                String answer = chat.askQuestion(question);
                 SwingUtilities.invokeLater(new Runnable() {
                     public void run() {
+                        if (!answer.isBlank()) {
+                            conversation.append("QUESTION: ").append(question).append("\n");
+                            conversation.append("ANSWER:\n").append(answer).append("\n");
+                        }
                         textAreaAnswer.setText(answer);
                         btnAskQuestion.setEnabled(true);
                         btnSave.setEnabled(true);
@@ -86,14 +95,21 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     }
     public void save() {
         String answer = textAreaAnswer.getText();
+        StringBuilder sb = new StringBuilder("\n\nQUESTION\n");
+        sb.append(textAreaQuestion.getText()).append("\n\nANSWER\n").append(answer);
+        saveFile(sb.toString());
+    }
+    public void saveConversation() {
+        String answer = conversation.toString();
+        saveFile(answer);
+    }
+    public void saveFile(String answer) {
         JFileChooser fileChooser = new JFileChooser("./answer-files");
         int userSelection = fileChooser.showSaveDialog(this); 
         if (userSelection == JFileChooser.APPROVE_OPTION) {
             File fileToSave = fileChooser.getSelectedFile();
             System.out.println("Save as file: " + fileToSave.getAbsolutePath());
-            StringBuilder sb = new StringBuilder("QUESTION\n");
-            sb.append(textAreaQuestion.getText()).append("\n\nANSWER\n").append(answer);
-            Utils.saveFile(fileToSave.getAbsolutePath(), sb.toString());
+            Utils.saveFile(fileToSave.getAbsolutePath(), answer);
         }
     }
 
@@ -117,6 +133,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         btnSave = new javax.swing.JButton();
         jLabel3 = new javax.swing.JLabel();
         labelMessages = new javax.swing.JLabel();
+        jButtonSaveConversation = new javax.swing.JButton();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
 
@@ -159,6 +176,13 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         labelMessages.setText("Start session");
         labelMessages.setToolTipText("");
 
+        jButtonSaveConversation.setText("Save conversation");
+        jButtonSaveConversation.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                jButtonSaveConversationActionPerformed(evt);
+            }
+        });
+
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
         layout.setHorizontalGroup(
@@ -168,6 +192,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addComponent(jScrollPane1)
                     .addComponent(jLabel3, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                    .addComponent(labelMessages, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                     .addGroup(layout.createSequentialGroup()
                         .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                             .addComponent(jLabel1, javax.swing.GroupLayout.PREFERRED_SIZE, 226, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -176,9 +201,10 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                                 .addGap(18, 18, 18)
                                 .addComponent(btnAskQuestion, javax.swing.GroupLayout.PREFERRED_SIZE, 200, javax.swing.GroupLayout.PREFERRED_SIZE)
                                 .addGap(18, 18, 18)
-                                .addComponent(btnSave, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                        .addGap(0, 425, Short.MAX_VALUE))
-                    .addComponent(labelMessages, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                                .addComponent(btnSave, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                .addGap(18, 18, 18)
+                                .addComponent(jButtonSaveConversation, javax.swing.GroupLayout.PREFERRED_SIZE, 227, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                        .addGap(0, 180, Short.MAX_VALUE)))
                 .addContainerGap())
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                 .addGroup(layout.createSequentialGroup()
@@ -202,7 +228,8 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                 .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(btnStart)
                     .addComponent(btnAskQuestion)
-                    .addComponent(btnSave))
+                    .addComponent(btnSave)
+                    .addComponent(jButtonSaveConversation))
                 .addGap(18, 18, 18)
                 .addComponent(labelMessages)
                 .addGap(50, 50, 50)
@@ -235,6 +262,10 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         save();
     }//GEN-LAST:event_save
 
+    private void jButtonSaveConversationActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jButtonSaveConversationActionPerformed
+        saveConversation();
+    }//GEN-LAST:event_jButtonSaveConversationActionPerformed
+
     /**
      * @param args the command line arguments
      */
@@ -264,6 +295,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     private javax.swing.JButton btnAskQuestion;
     private javax.swing.JButton btnSave;
     private javax.swing.JButton btnStart;
+    private javax.swing.JButton jButtonSaveConversation;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;

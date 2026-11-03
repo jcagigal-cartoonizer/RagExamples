@@ -51,11 +51,6 @@ public class MyChatModelListener implements ChatModelListener {
             System.out.println("    input cachedTokens = " + openAiTokenUsage.inputTokensDetails().cachedTokens());
             System.out.println("    reasoningTokens = " + openAiTokenUsage.outputTokensDetails().reasoningTokens());
         }
-
-        ChatRequest chatRequest = responseContext.chatRequest();
-//        System.out.println(chatRequest);
-
-//        System.out.println(responseContext.modelProvider());
     }
 
     @Override

@@ -22,27 +22,18 @@ import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import com.cartoonizer.rag.shared.Assistant;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
-import com.github.dockerjava.api.DockerClient;
-import com.github.dockerjava.api.model.Image;
 
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.loader.UrlDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByLineSplitter;
-import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
 import java.io.PrintWriter;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.Container;
 import org.testcontainers.ollama.OllamaContainer;
-import org.testcontainers.utility.DockerImageName;
 
 public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
 
@@ -202,8 +193,8 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
         ContentRetriever contentRetriever = EmbeddingStoreContentRetriever.builder()
                 .embeddingStore(embeddingStore)
                 .embeddingModel(embeddingModel)
-                .maxResults(2)
-                .minScore(0.6)
+                .maxResults(100)
+//                .minScore(0.6)
                 .build();
 
         // The RetrievalAugmentor serves as the entry point into the RAG flow in LangChain4j.
@@ -230,6 +221,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
 
     @Override
     public void init() {
+        // The assistant is created in the constructor
     }
 
 }

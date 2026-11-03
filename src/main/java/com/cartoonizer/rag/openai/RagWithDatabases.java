@@ -7,6 +7,7 @@ import com.cartoonizer.rag.utils.Utils;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
+import dev.langchain4j.data.document.splitter.DocumentByLineSplitter;
 import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.experimental.rag.content.retriever.sql.SqlDatabaseContentRetriever;
@@ -36,13 +37,13 @@ import dev.langchain4j.rag.query.transformer.QueryTransformer;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.util.List;
 
-public class RagWithDatabases {
-    private String documentsPath;
+public class RagWithDatabases implements AiChatInterface {
     private String theModelName;
-    public RagWithDatabases(String documentsPath, String theModelName) {
-        this.documentsPath = documentsPath;
+    public RagWithDatabases(String theModelName) {
         this.theModelName = theModelName;
     }
 
@@ -66,33 +67,82 @@ public class RagWithDatabases {
      */
 
     public static void main(String[] args) {
-//        String documentsPath = "";
-//        String theModelName = GPT_4_O_MINI.name();
-//        RagWithDatabases rag = new RagWithDatabases(documentsPath, theModelName);
-//
-//        Assistant assistant = rag.createAssistant();
-//
-//        // You can ask questions such as "How many customers do we have?" and "What is our top seller?".
-//        assistant.answer("How many customers do we have?");
+        String documentsPath = "";
+        String theModelName = ModelNames.CHAT_GPT_MINI;
+        RagWithDatabases rag = new RagWithDatabases(theModelName);
+        rag.askQuestion("How many customers do we have?");
     }
 
-    private Assistant createAssistant() {
 
-        List<Document> documents = FileSystemDocumentLoader.loadDocuments(documentsPath, new TextDocumentParser());
+    private EmbeddingModel embeddingModel;
+    private EmbeddingStore<TextSegment> embeddingStore;
+    private DocumentByLineSplitter splitter;
+    private EmbeddingStoreIngestor ingestor;
+    private ChatModel chatModel;
+    private RetrievalAugmentor retrievalAugmentor;
+    private Assistant assistant;
+    private DataSource dataSource;
+    private static String URL_DB = "";
+    private static String USER_DB = "";
+    private static String PWD_DB = "";
+    private static DataSource createDataSource() {
 
-        EmbeddingModel embeddingModel = new BgeSmallEnV15QuantizedEmbeddingModel();
+        JdbcDataSource dataSource = new JdbcDataSource();
+        dataSource.setURL(URL_DB);
+        dataSource.setUser(USER_DB);
+        dataSource.setPassword(PWD_DB);
 
-        EmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
-        DocumentByParagraphSplitter splitter = new DocumentByParagraphSplitter(1024, 0, new OpenAiTokenCountEstimator(theModelName));
-        EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
+        return dataSource;
+    }
+
+    @Override
+    public String askQuestion(String question) {
+        String answer = assistant.answer(question);
+        return answer;
+    }
+    private void embedQueryProducts() {
+        String sql = "select a.id, a.descripcion, a.ampliacion, a.precio, a.imagen, a.sinstock, aut.nombre as autor from articulosweb a left join autores aut on a.autor = aut.id where publicar = 1 order by descripcion limit 0, 2000";
+        try {
+            Connection connection = dataSource.getConnection(); 
+            Statement statement = connection.createStatement();
+            boolean ok = statement.execute(sql.trim());
+            if (ok) {
+                ResultSet res = statement.getResultSet();
+                ResultSetMetaData metadata = res.getMetaData();
+                int columnCount = metadata.getColumnCount();
+                while (res.next()) {
+                    StringBuilder sb = new StringBuilder();
+                    String descripcion = res.getObject("descripcion").toString();
+                    String ampliacion = res.getObject("ampliacion").toString();
+                    String precio = res.getObject("precio").toString();
+                    String autor = res.getObject("autor").toString();
+                    String sinstock = res.getObject("sinstock").toString().equals("1") ? "EN STOCK" : "AGOTADO";
+                    String id = res.getObject("id").toString();
+                    sb.append(id).append(" ").append(descripcion).append(" ").append(ampliacion).append(" ")
+                        .append(precio).append(" ");
+                    if (autor != null && !autor.isBlank()) {
+                        sb.append(" Autor: ").append(autor);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    @Override
+    public void init() {
+
+        embeddingModel = new BgeSmallEnV15QuantizedEmbeddingModel();
+
+        embeddingStore = new InMemoryEmbeddingStore<>();
+        splitter = new DocumentByLineSplitter(1024, 0, new OpenAiTokenCountEstimator(theModelName));
+        ingestor = EmbeddingStoreIngestor.builder()
                 .documentSplitter(splitter)
                 .embeddingModel(embeddingModel)
                 .embeddingStore(embeddingStore)
                 .build();
 
-        ingestor.ingest(documents);
-
-        ChatModel chatModel = OpenAiChatModel.builder()
+        chatModel = OpenAiChatModel.builder()
                 .apiKey(ApiKeys.OPENAI_API_KEY)
                 .temperature(0.2)
                 .logRequests(false)
@@ -115,52 +165,17 @@ public class RagWithDatabases {
         // The RetrievalAugmentor serves as the entry point into the RAG flow in LangChain4j.
         // It can be configured to customize the RAG behavior according to your requirements.
         // In subsequent examples, we will explore more customizations.
-        RetrievalAugmentor retrievalAugmentor = DefaultRetrievalAugmentor.builder()
+        retrievalAugmentor = DefaultRetrievalAugmentor.builder()
                 .queryTransformer(queryTransformer)
                 .contentRetriever(contentRetriever)
                 .build();
 
-        return AiServices.builder(Assistant.class)
+        dataSource = createDataSource();
+        
+        this.assistant = AiServices.builder(Assistant.class)
                 .chatModel(chatModel)
                 .retrievalAugmentor(retrievalAugmentor)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
                 .build();
-    }
-    private static String URL_DB = "";
-    private static String USER_DB = "";
-    private static String PWD_DB = "";
-    private static DataSource createDataSource() {
-
-        JdbcDataSource dataSource = new JdbcDataSource();
-        dataSource.setURL(URL_DB);
-        dataSource.setUser(USER_DB);
-        dataSource.setPassword(PWD_DB);
-
-//        String createTablesScript = read("./sql/create_tables.sql");
-//        execute(createTablesScript, dataSource);
-//
-//        String prefillTablesScript = read("./sql/prefill_tables.sql");
-//        execute(prefillTablesScript, dataSource);
-
-        return dataSource;
-    }
-
-    private static String read(String path) {
-        try {
-            return Utils.readFullFile(path);
-        } catch (Exception e) {
-            System.out.println("EXCEPTION in read:  " + e);
-            return "EXCEPTION in read:  " + e;
-        }
-    }
-
-    private static void execute(String sql, DataSource dataSource) {
-        try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
-            for (String sqlStatement : sql.split(";")) {
-                statement.execute(sqlStatement.trim());
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

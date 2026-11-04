@@ -1,4 +1,4 @@
-package com.cartoonizer.rag.guardrails;
+package com.cartoonizer.rag.utils;
 
 import com.google.gson.Gson;
 import dev.langchain4j.data.document.Document;

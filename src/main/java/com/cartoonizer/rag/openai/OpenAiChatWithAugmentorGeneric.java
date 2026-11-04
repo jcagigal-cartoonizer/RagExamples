@@ -1,6 +1,6 @@
 package com.cartoonizer.rag.openai;
 
-import com.cartoonizer.rag.guardrails.CustomJsonSplitter;
+import com.cartoonizer.rag.utils.CustomJsonSplitter;
 import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
@@ -26,6 +26,7 @@ import com.cartoonizer.rag.utils.ModelNames;
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.loader.UrlDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByLineSplitter;
+import dev.langchain4j.model.anthropic.AnthropicChatModel;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -37,8 +38,9 @@ import org.testcontainers.ollama.OllamaContainer;
 
 public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
 
-    public static boolean USE_OLLAMA = true;
+    public static boolean USE_OLLAMA = false;
     public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
+    public static boolean USE_ANTHROPIC = true;
     public static List FOLDERS = List.of(
             //                        Path.of("./output-files"),
             "./guardrails-files"
@@ -51,13 +53,13 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
     private OllamaContainer ollama;
 
     public static void main(String[] args) {
-        String documentsPath = "./guardrails-files";
-        OpenAiChatWithAugmentorGeneric chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
-//        chat.askQuestions();
-        String question = "Dame una lista de libros de Murakami. Incluye precio y descripcion del libro.";
-        String answer = chat.askQuestion(question);
-        System.out.println("QUESTION = " + question + "\n");
-        System.out.println("ANSWER = " + answer);
+//        String documentsPath = "./guardrails-files";
+//        OpenAiChatWithAugmentorGeneric chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
+////        chat.askQuestions();
+//        String question = "Dame una lista de libros de Murakami. Incluye precio y descripcion del libro.";
+//        String answer = chat.askQuestion(question);
+//        System.out.println("QUESTION = " + question + "\n");
+//        System.out.println("ANSWER = " + answer);
     }
     private String theApiKey;
     private String theModelName;
@@ -124,7 +126,15 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
                 .listeners(listenersList)
                 .modelName(OLLAMA_MODEL)
                 .build();
-            
+        } else if (USE_ANTHROPIC) {
+            chatModel = AnthropicChatModel.builder()
+                .apiKey(theApiKey)
+                .temperature(0.2)
+                .logRequests(false)
+                .logResponses(false)
+                .listeners(listenersList)
+                .modelName(theModelName)
+                .build();
         } else {
             chatModel = OpenAiChatModel.builder()
                 .apiKey(theApiKey)
@@ -160,8 +170,8 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
         EmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
         OpenAiTokenCountEstimator tokenCountEstimator = null;
         OpenAiTokenCountEstimator tokenCountEstimatorJson = null;
-        if (USE_OLLAMA) {
-            
+        if (USE_OLLAMA) {            
+        } else if (USE_ANTHROPIC) {
         } else {
             tokenCountEstimator = new OpenAiTokenCountEstimator(theModelName);
             tokenCountEstimatorJson = new OpenAiTokenCountEstimator(theModelName);

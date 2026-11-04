@@ -1,9 +1,9 @@
 package com.cartoonizer.rag.ollama;
 
-import com.cartoonizer.rag.guardrails.CustomJsonSplitter;
-import static com.cartoonizer.rag.guardrails.CustomJsonSplitter.fromJsonArticles;
+import com.cartoonizer.rag.utils.CustomJsonSplitter;
+import static com.cartoonizer.rag.utils.CustomJsonSplitter.fromJsonArticles;
 import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
-import com.cartoonizer.rag.utils.Utils;
+import com.cartoonizer.utils.Utils;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentSplitter;
 import dev.langchain4j.data.document.Metadata;

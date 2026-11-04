@@ -4,6 +4,7 @@ import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.DOCKER_IMA
 import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_IMAGE;
 import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
 import com.cartoonizer.rag.openai.AiChatInterface;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.USE_OLLAMA;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
@@ -76,6 +77,11 @@ public class RagWithGuardrails implements AiChatInterface {
                 .modelName(OLLAMA_MODEL)
                 .build();
             
+        } else if (USE_ANTHROPIC) {
+            chatModel = OpenAiChatModel.builder()
+                    .apiKey(ApiKeys.CLAUDE_API_KEY)
+                    .modelName(ModelNames.CLAUDE_HAIKU)
+                    .build();
         } else {
             chatModel = OpenAiChatModel.builder()
                     .apiKey(ApiKeys.OPENAI_API_KEY)

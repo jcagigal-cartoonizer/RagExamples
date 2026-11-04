@@ -1,5 +1,6 @@
 package com.cartoonizer.rag.guardrails;
 
+import com.cartoonizer.rag.utils.CustomJsonSplitter;
 import com.cartoonizer.rag.utils.ModelNames;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentSplitter;

@@ -27,7 +27,7 @@ import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PREFIX;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.PROCESSED_FOLDER;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.SUFFIX;
 import com.cartoonizer.rag.utils.ModelNames;
-import com.cartoonizer.rag.utils.Utils;
+import com.cartoonizer.utils.Utils;
 
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByParagraphSplitter;
@@ -185,13 +185,13 @@ public class OpenAiChatWithAugmentor implements AiChatInterface {
     };
 
     public static void main(String[] args) {
-        String documentsPath = "./example-files";
-        for (int i = 0; i < PREFIXES_AUGMENTOR.length; i++) {
-            PREFIX = PREFIXES_AUGMENTOR[i];
-            LAYOUT = LAYOUTS_AUGMENTOR[i];
-            OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, LAYOUT);
-            chat.askQuestions();
-        }
+//        String documentsPath = "./example-files";
+//        for (int i = 0; i < PREFIXES_AUGMENTOR.length; i++) {
+//            PREFIX = PREFIXES_AUGMENTOR[i];
+//            LAYOUT = LAYOUTS_AUGMENTOR[i];
+//            OpenAiChatWithAugmentor chat = new OpenAiChatWithAugmentor(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, documentsPath, LAYOUT);
+//            chat.askQuestions();
+//        }
     }
     public String documentsPath;
     private String theApiKey;

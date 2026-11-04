@@ -1,5 +1,6 @@
-package com.cartoonizer.rag.utils;
+package com.cartoonizer.utils;
 
+import com.cartoonizer.rag.utils.ReadFile;
 import java.io.PrintWriter;
 
 public class Utils {

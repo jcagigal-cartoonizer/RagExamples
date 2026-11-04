@@ -3,7 +3,7 @@ package com.cartoonizer.rag.questions;
 import com.cartoonizer.rag.openai.OpenAiChat;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
-import com.cartoonizer.rag.utils.Utils;
+import com.cartoonizer.utils.Utils;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.ANSWER_FOLDER;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUTS;

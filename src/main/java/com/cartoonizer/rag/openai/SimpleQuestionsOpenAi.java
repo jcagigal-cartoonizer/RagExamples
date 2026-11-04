@@ -45,7 +45,7 @@ public class SimpleQuestionsOpenAi {
         File f = new File(documentsPath);
         String[] questions = {
 //            PROFILE,
-            OTHER,
+//            OTHER,
         };
         if (f.exists() && questions.length > 0) {
             System.out.println("Before setup ");

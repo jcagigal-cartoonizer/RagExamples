@@ -6,7 +6,7 @@ import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.FOLDERS;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.URLS;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
-import com.cartoonizer.rag.utils.Utils;
+import com.cartoonizer.utils.Utils;
 import java.io.File;
 import javax.swing.JFileChooser;
 import javax.swing.SwingUtilities;
@@ -24,7 +24,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
      */
     public OpenAiChatApp() {
 //        OpenAiChatWithAugmentorGeneric.USE_OLLAMA = true;
-        OpenAiChatWithAugmentorGeneric.USE_OLLAMA = false;
+        OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC = true;
         initComponents();
     }
     private AiChatInterface chat;
@@ -35,6 +35,9 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         if (OpenAiChatWithAugmentorGeneric.USE_OLLAMA) {
             chat = new OllamaWithRetrievalAugmentor(ApiKeys.OPENAI_API_KEY, 
                 OLLAMA_MODEL, FOLDERS, URLS);
+        } else if (OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC) {
+            chat = new OpenAiRagDatabases("database-rag-files", ApiKeys.CLAUDE_API_KEY, 
+                ModelNames.CLAUDE_HAIKU);
         } else {
             chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, 
                 ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
@@ -79,14 +82,19 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                 String answer = chat.askQuestion(question);
                 SwingUtilities.invokeLater(new Runnable() {
                     public void run() {
-                        if (!answer.isBlank()) {
-                            conversation.append("QUESTION: ").append(question).append("\n");
-                            conversation.append("ANSWER:\n").append(answer).append("\n");
+                        if (answer != null) {
+                            if (!answer.isBlank()) {
+                                conversation.append("QUESTION: ").append(question).append("\n");
+                                conversation.append("ANSWER:\n").append(answer).append("\n");
+                            }
+                            textAreaAnswer.setText(answer);
+                            btnAskQuestion.setEnabled(true);
+                            btnSave.setEnabled(true);
+                            labelMessages.setText("");
+                        } else {
+                            textAreaAnswer.setText("ERROR: answer is null");
+                            btnSave.setEnabled(false);
                         }
-                        textAreaAnswer.setText(answer);
-                        btnAskQuestion.setEnabled(true);
-                        btnSave.setEnabled(true);
-                        labelMessages.setText("");
                     }
                 });
             }

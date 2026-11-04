@@ -4,7 +4,7 @@ import com.cartoonizer.rag.openai.OpenAiChat;
 import com.cartoonizer.rag.openai.OpenAiChat;
 import com.cartoonizer.rag.utils.ApiKeys;
 import com.cartoonizer.rag.utils.ModelNames;
-import com.cartoonizer.rag.utils.Utils;
+import com.cartoonizer.utils.Utils;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.FIRST_PREFIX;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAST_PREFIX;
 import static com.cartoonizer.rag.answers.GeneralAnswerProcessor.LAYOUT;

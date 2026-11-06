@@ -2,7 +2,7 @@ package com.cartoonizer.rag.utils;
 
 public class ReadLogs extends ReadFile {
     public static void main(String[] args) {
-        String path = "/Cagi/Portfolio/RagUtils/RagExamples/log.txt";
+        String path = "/Cagi/Portfolio/RagUtils/RagExamples/files/log.txt";
         ReadLogs reader = new ReadLogs(path);
         reader.load();
     }

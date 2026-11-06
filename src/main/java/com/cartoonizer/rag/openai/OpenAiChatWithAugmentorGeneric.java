@@ -42,8 +42,8 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
     public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
     public static boolean USE_ANTHROPIC = true;
     public static List FOLDERS = List.of(
-            //                        Path.of("./output-files"),
-            "./guardrails-files"
+            //                        Path.of("./files/output-files"),
+            "./files/guardrails-files"
     );
     public static List URLS = List.of(
             "https://haikubarcelona.com/rest/catalogo_internal.php"
@@ -53,7 +53,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
     private OllamaContainer ollama;
 
     public static void main(String[] args) {
-//        String documentsPath = "./guardrails-files";
+//        String documentsPath = "./files/guardrails-files";
 //        OpenAiChatWithAugmentorGeneric chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
 ////        chat.askQuestions();
 //        String question = "Dame una lista de libros de Murakami. Incluye precio y descripcion del libro.";

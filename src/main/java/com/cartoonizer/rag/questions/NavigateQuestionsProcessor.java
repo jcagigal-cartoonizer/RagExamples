@@ -51,7 +51,7 @@ public class NavigateQuestionsProcessor {
     public NavigateQuestionsProcessor(String outputPath) {
         this.outputPath = outputPath;
         fileToGenerate = PREFIX + "NavigationFragment";
-        // /Cagi/Portfolio/RagUtils/RagExamples/generated-full-files/ui/screen/compose/
+        // /Cagi/Portfolio/RagUtils/RagExamples/files/generated-full-files/ui/screen/compose/
         pathForComposable = GENERATED_FULL_FILES  + "/ui/screen/compose/" + PREFIX + "ComposeImplementation.kt";
     }
 
@@ -84,7 +84,7 @@ public class NavigateQuestionsProcessor {
 
 //            String[] questions = getQuestions(savedComposable);
             
-            String pathOriginalFragment = "./example-files/" + PREFIX + "Fragment.kt";
+            String pathOriginalFragment = "./files/example-files/" + PREFIX + "Fragment.kt";
             String savedOriginalFragment = Utils.readFullFile(pathOriginalFragment);
             String[] questions = getSimpleQuestions(savedComposable, savedOriginalFragment, savedViewModel);
             

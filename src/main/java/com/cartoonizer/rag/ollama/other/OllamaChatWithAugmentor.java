@@ -29,7 +29,7 @@ import static java.util.stream.Collectors.joining;
 public class OllamaChatWithAugmentor {
     public static void main(String[] args) {
 
-        Assistant assistant = createAssistant("./example-files/story-about-joan-cagigal.txt");
+        Assistant assistant = createAssistant("./files/example-files/story-about-joan-cagigal.txt");
 
         String questions[] = {
 

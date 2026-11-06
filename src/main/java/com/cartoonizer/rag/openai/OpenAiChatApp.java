@@ -36,7 +36,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
             chat = new OllamaWithRetrievalAugmentor(ApiKeys.OPENAI_API_KEY, 
                 OLLAMA_MODEL, FOLDERS, URLS);
         } else if (OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC) {
-            chat = new OpenAiRagDatabases("database-rag-files", ApiKeys.CLAUDE_API_KEY, 
+            chat = new UpdateTableWithAi("database-rag-files", "", ApiKeys.CLAUDE_API_KEY, 
                 ModelNames.CLAUDE_HAIKU);
         } else {
             chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, 
@@ -112,7 +112,7 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         saveFile(answer);
     }
     public void saveFile(String answer) {
-        JFileChooser fileChooser = new JFileChooser("./answer-files");
+        JFileChooser fileChooser = new JFileChooser("./files/answer-files");
         int userSelection = fileChooser.showSaveDialog(this); 
         if (userSelection == JFileChooser.APPROVE_OPTION) {
             File fileToSave = fileChooser.getSelectedFile();

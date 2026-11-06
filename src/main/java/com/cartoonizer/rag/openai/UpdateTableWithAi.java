@@ -1,8 +1,14 @@
 package com.cartoonizer.rag.openai;
-import com.cartoonizer.rag.shared.Assistant;
+import com.cartoonizer.rag.shared.DbAssistant;
 import com.cartoonizer.rag.utils.ApiKeys;
+import com.cartoonizer.rag.utils.CustomJsonSplitter;
 import com.cartoonizer.rag.utils.ModelNames;
+import dev.langchain4j.agent.tool.P;
+import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.document.loader.UrlDocumentLoader;
+import dev.langchain4j.data.document.parser.TextDocumentParser;
 import dev.langchain4j.data.document.splitter.DocumentByLineSplitter;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
@@ -28,22 +34,32 @@ import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.util.List;
+import java.util.Map;
 
-public class OpenAiRagDatabases implements AiChatInterface {
+public class UpdateTableWithAi implements AiChatInterface {
     public static void main(String[] args) {
-        String documentsPath = "./database-rag-files";
-        String theModelName = ModelNames.CLAUDE_HAIKU;
+        String documentsPath = "./files/database-rag-files";
         String theApiKey = ApiKeys.CLAUDE_API_KEY;
-        OpenAiRagDatabases rag = new OpenAiRagDatabases(documentsPath, theApiKey, theModelName);
+        String theModelName = ModelNames.CLAUDE_HAIKU;
+        String remoteUrl = "https://haikubarcelona.com/rest/catalogo_internal.php";
+        UpdateTableWithAi rag = new UpdateTableWithAi(documentsPath, remoteUrl, theApiKey, theModelName);
         rag.init();
-//        rag.askQuestion("How many customers do we have?");
+        String question = "Cuantas filas tiene la tabla ARTICULOS";
+        String answer = rag.askQuestion(question);
+        System.out.println("QUESTION");
+        System.out.println(question);
+        System.out.println("\nANSWER");
+        System.out.println(answer);
     }
 
     private String theApiKey;
     private String theModelName;
     private String documentsPath;
-    public OpenAiRagDatabases(String documentsPath, String theApiKey, String theModelName) {
+    private String remoteUrl;
+    public UpdateTableWithAi(String documentsPath, String remoteUrl, String theApiKey, String theModelName) {
         this.documentsPath = documentsPath;
+        this.remoteUrl = remoteUrl;
         this.theApiKey = theApiKey;
         this.theModelName = theModelName;
     }
@@ -51,10 +67,12 @@ public class OpenAiRagDatabases implements AiChatInterface {
     private EmbeddingModel embeddingModel;
     private EmbeddingStore<TextSegment> embeddingStore;
     private DocumentByLineSplitter splitter;
+    private CustomJsonSplitter jsonSplitter;
     private EmbeddingStoreIngestor ingestor;
+    private EmbeddingStoreIngestor urlIngestor;
     private ChatModel chatModel;
     private RetrievalAugmentor retrievalAugmentor;
-    private Assistant assistant;
+    private DbAssistant assistant;
     private DataSource dataSource;
     private static String URL_DB = "jdbc:derby:./data/haikugourmet";
     private static String USER_DB = "";
@@ -64,9 +82,17 @@ public class OpenAiRagDatabases implements AiChatInterface {
 
     @Override
     public String askQuestion(String question) {
-        String answer = assistant.answer(question);
+        String answer = assistant.answer(question, "ARTICULOS", "ARTICULOSWEB");
         return answer;
     }
+//    @Tool(
+//      "Find remote id with similar description")
+//    public List<Map<String, Object>> findId(@P("Find remote id with similar description") String name) {
+//      return query(
+//        "SELECT " + COLUMNS + 
+//        " FROM employees WHERE name LIKE ? ORDER BY name ", 
+//        "%" + name + "%");
+//    }    
     private Document loadCatalog() {
 //        String sql = "select a.id, a.descripcion, a.ampliacion, a.precio, a.imagen, a.sinstock, aut.nombre as autor from ARTICULOS a left join AUTORES aut on a.autor = aut.id where publicar = 1 order by descripcion";
         String sql = "select a.id, a.descripcion, a.precio, a.imagen, aut.nombre as autor from ARTICULOS a left join AUTORES aut on a.autor = aut.id order by descripcion";
@@ -74,6 +100,7 @@ public class OpenAiRagDatabases implements AiChatInterface {
             Statement statement = connection.createStatement();
             boolean ok = statement.execute(sql.trim());
             StringBuilder results = new StringBuilder();
+            int rowCount = 0;
             if (ok) {
                 ResultSet res = statement.getResultSet();
                 ResultSetMetaData metadata = res.getMetaData();
@@ -94,9 +121,15 @@ public class OpenAiRagDatabases implements AiChatInterface {
                     }
                     sb.append(" Id: ").append(id).append("\n");
                     results.append(sb);
+                    rowCount++;
                 }
             }
-            return Document.from(results.toString());
+            Metadata metadata = new Metadata();
+            metadata.put("query", sql);
+            metadata.put("rowCount", rowCount);
+            metadata.put("db", "ARTICULOS");
+            Document doc = Document.from(results.toString(), metadata);
+            return doc;
         } catch (Exception e) {
             return Document.from("ERROR " + e);
         }
@@ -120,9 +153,9 @@ public class OpenAiRagDatabases implements AiChatInterface {
             System.exit(1);
         }
         final Document catalog = loadCatalog();
-        System.out.println("======================");
-        System.out.println(catalog.text());
-        System.out.println("======================");
+//        System.out.println("======================");
+//        System.out.println(catalog.text());
+//        System.out.println("======================");
 
         embeddingModel = new BgeSmallEnV15QuantizedEmbeddingModel();
 
@@ -136,6 +169,19 @@ public class OpenAiRagDatabases implements AiChatInterface {
                 .build();
         ingestor.ingest(catalog);
 
+        jsonSplitter = new CustomJsonSplitter(512, 0, (TokenCountEstimator)null);
+        urlIngestor = EmbeddingStoreIngestor.builder()
+                .documentSplitter(jsonSplitter)
+                .embeddingModel(embeddingModel)
+                .embeddingStore(embeddingStore)
+                .build();
+
+        Document remote = UrlDocumentLoader.load(remoteUrl, new TextDocumentParser());
+        Metadata metadata = remote.metadata();
+        metadata.put("query", "");
+        metadata.put("db", "ARTICULOSWEB");
+        urlIngestor.ingest(remote);
+
         chatModel = AnthropicChatModel.builder()
                 .apiKey(theApiKey)
                 .logRequests(false)
@@ -148,8 +194,8 @@ public class OpenAiRagDatabases implements AiChatInterface {
         ContentRetriever contentRetriever = EmbeddingStoreContentRetriever.builder()
                 .embeddingStore(embeddingStore)
                 .embeddingModel(embeddingModel)
-                .maxResults(2)
-                .minScore(0.6)
+                .maxResults(10000)
+                .minScore(0.2)
                 .build();
 
         retrievalAugmentor = DefaultRetrievalAugmentor.builder()
@@ -157,7 +203,7 @@ public class OpenAiRagDatabases implements AiChatInterface {
                 .contentRetriever(contentRetriever)
                 .build();
 
-        this.assistant = AiServices.builder(Assistant.class)
+        this.assistant = AiServices.builder(DbAssistant.class)
                 .chatModel(chatModel)
                 .retrievalAugmentor(retrievalAugmentor)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))

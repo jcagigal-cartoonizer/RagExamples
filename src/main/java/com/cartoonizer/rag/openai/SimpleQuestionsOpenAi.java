@@ -41,7 +41,7 @@ public class SimpleQuestionsOpenAi {
                 """;
     
     public static void main(String[] args) {
-        String documentsPath = "./example-files";
+        String documentsPath = "./files/example-files";
         File f = new File(documentsPath);
         String[] questions = {
 //            PROFILE,

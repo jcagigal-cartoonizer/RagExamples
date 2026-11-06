@@ -61,8 +61,8 @@ public class RagWithGuardrails implements AiChatInterface {
     private EnterpriseTools tools;
     private SecurityPolicy policy;
     private List listOfFolders = List.of(
-            //                        Path.of("./output-files"),
-            Path.of("./guardrails-files")
+            //                        Path.of("./files/output-files"),
+            Path.of("./files/guardrails-files")
     );
     private List listOfUrls = List.of(
             "https://haikubarcelona.com/rest/catalogo_internal.php"

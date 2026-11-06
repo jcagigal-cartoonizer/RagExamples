@@ -15,11 +15,11 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 public class GeneralAnswerProcessor extends ReadFile {
-    public static final String ANSWER_FOLDER_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/output-files/with-assistant";
-    public static final String PROCESSED_FOLDER_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/processed-files/with-assistant";
-    public static final String GENERATED_FILES_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/generated-files-with-assistant";
-    public static final String GENERATED_FULL_FILES_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/generated-full-files";
-    public static final String COPY_TO_APP_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/copy-to-app-with-assistant";
+    public static final String ANSWER_FOLDER_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/files/output-files/with-assistant";
+    public static final String PROCESSED_FOLDER_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/files/processed-files/with-assistant";
+    public static final String GENERATED_FILES_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/files/generated-files-with-assistant";
+    public static final String GENERATED_FULL_FILES_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/files/generated-full-files";
+    public static final String COPY_TO_APP_WITH_ASSISTANT = "/Cagi/Portfolio/RagUtils/RagExamples/files/copy-to-app-with-assistant";
     public static String ANSWER_FOLDER = ANSWER_FOLDER_WITH_ASSISTANT;
     public static String PROCESSED_FOLDER = PROCESSED_FOLDER_WITH_ASSISTANT;
     public static String GENERATED_FILES = GENERATED_FILES_WITH_ASSISTANT;

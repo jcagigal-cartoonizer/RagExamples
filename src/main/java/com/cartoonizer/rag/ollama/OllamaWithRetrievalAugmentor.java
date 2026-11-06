@@ -31,8 +31,8 @@ public class OllamaWithRetrievalAugmentor implements AiChatInterface {
     public IInfoRepo infoRepo;
 
     public static List folders = List.of(
-            //                        Path.of("./output-files"),
-            Path.of("./guardrails-files")
+            //                        Path.of("./files/output-files"),
+            Path.of("./files/guardrails-files")
     );
     public static List urls = List.of(
             "https://haikubarcelona.com/rest/catalogo_internal.php"

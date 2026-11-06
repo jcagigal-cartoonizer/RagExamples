@@ -5,7 +5,7 @@ import java.net.URI;
 public class OllamaAppConf {
 
     public static String getDocumentsPath() {
-        return "./example-files";
+        return "./files/example-files";
     }
 
     public static String getOllamaEndpoint() {

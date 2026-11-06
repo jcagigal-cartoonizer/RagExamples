@@ -22,7 +22,7 @@ public class FragmentQuestionsProcessor {
             if (shouldSkip(i)) {
                 continue;
             }
-            new FragmentQuestionsProcessor("./example-files").askQuestions();
+            new FragmentQuestionsProcessor("./files/example-files").askQuestions();
             try {
                 Thread.sleep(5000);
             } catch (InterruptedException ex) {

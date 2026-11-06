@@ -185,7 +185,7 @@ public class OpenAiChatWithAugmentor implements AiChatInterface {
     };
 
     public static void main(String[] args) {
-//        String documentsPath = "./example-files";
+//        String documentsPath = "./files/example-files";
 //        for (int i = 0; i < PREFIXES_AUGMENTOR.length; i++) {
 //            PREFIX = PREFIXES_AUGMENTOR[i];
 //            LAYOUT = LAYOUTS_AUGMENTOR[i];

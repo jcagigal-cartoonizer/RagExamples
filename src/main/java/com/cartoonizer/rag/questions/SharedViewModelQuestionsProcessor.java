@@ -9,7 +9,7 @@ import java.io.File;
 
 public class SharedViewModelQuestionsProcessor {
     public static void askQuestions() {
-        String documentsPath = "./example-files";
+        String documentsPath = "./files/example-files";
         String fileToGenerate = "ComposeSharedViewModel";
         String answerPath = ANSWER_FOLDER + "/" + fileToGenerate + ".txt";
         String processedAnswerPath = PROCESSED_FOLDER + "/processed-" + fileToGenerate + ".txt";

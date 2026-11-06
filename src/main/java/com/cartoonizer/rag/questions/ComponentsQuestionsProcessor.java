@@ -10,7 +10,7 @@ public class ComponentsQuestionsProcessor extends FragmentQuestionsProcessor {
 //        LAYOUT = "custom_dialog.xml";
 //        PREFIX = "Shared";
 //        SUFFIX = "CommonDialog";
-//        new ComponentsQuestionsProcessor("./example-files").askQuestions();
+//        new ComponentsQuestionsProcessor("./files/example-files").askQuestions();
 //        try {
 //            Thread.sleep(5000);
 //        } catch (InterruptedException ex) {

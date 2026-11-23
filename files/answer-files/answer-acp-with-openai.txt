@@ -1,0 +1,1494 @@
+QUESTION: Please, give an example of how to write an ACP-compatible AI Agent using langchain4j and Claude or OpenAI
+ANSWER:
+Below is a simple example of an **ACP-compatible AI Agent** built with **langchain4j** and either **Claude** or **OpenAI**.
+
+I’ll show:
+
+1. A minimal agent design
+2. A Java example using langchain4j
+3. How to expose it in an ACP-style way
+4. Notes for Claude/OpenAI model selection
+
+---
+
+## 1) What “ACP-compatible” usually means
+
+If by **ACP** you mean an agent that can be called through a standard protocol layer, the usual pattern is:
+
+- define a clear **input/output contract**
+- expose the agent as an **HTTP endpoint**
+- optionally support **tool calling**
+- keep the agent stateless or session-aware via a conversation ID
+
+In practice, your “ACP-compatible” agent can be a service that accepts something like:
+
+```json
+{
+  "conversationId": "abc-123",
+  "message": "What is the weather in Paris?"
+}
+```
+
+and returns:
+
+```json
+{
+  "conversationId": "abc-123",
+  "answer": "..."
+}
+```
+
+---
+
+## 2) Example architecture
+
+- **langchain4j** handles:
+  - chat model integration
+  - memory
+  - tools/functions
+- **Claude** or **OpenAI** provides the LLM
+- **Spring Boot** exposes a REST endpoint for ACP-style access
+
+---
+
+## 3) Maven dependencies
+
+### For OpenAI
+```xml
+<dependencies>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+</dependencies>
+```
+
+### For Claude (Anthropic)
+```xml
+<dependencies>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-anthropic</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+</dependencies>
+```
+
+---
+
+## 4) Define the agent interface
+
+```java
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.MemoryId;
+import dev.langchain4j.service.UserName;
+
+public interface SupportAgent {
+
+    @SystemMessage("""
+        You are a helpful assistant.
+        Answer briefly and clearly.
+        If you do not know, say so.
+    """)
+    String chat(@MemoryId String conversationId,
+                @UserName String userName,
+                @UserMessage String message);
+}
+```
+
+---
+
+## 5) Create the model and agent
+
+### OpenAI version
+
+```java
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.memory.chat.ChatMemory;
+import dev.langchain4j.store.memory.chat.InMemoryChatMemoryStore;
+
+public class AgentFactory {
+
+    public static SupportAgent createOpenAiAgent() {
+        ChatLanguageModel model = OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("gpt-4o-mini")
+                .build();
+
+        return AiServices.builder(SupportAgent.class)
+                .chatLanguageModel(model)
+                .chatMemoryProvider(memoryId ->
+                        MessageWindowChatMemory.builder()
+                                .id(memoryId)
+                                .maxMessages(20)
+                                .chatMemoryStore(new InMemoryChatMemoryStore())
+                                .build())
+                .build();
+    }
+}
+```
+
+### Claude version
+
+```java
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.anthropic.AnthropicChatModel;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.store.memory.chat.InMemoryChatMemoryStore;
+
+public class AgentFactory {
+
+    public static SupportAgent createClaudeAgent() {
+        ChatLanguageModel model = AnthropicChatModel.builder()
+                .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+                .modelName("claude-3-5-sonnet-20240620")
+                .build();
+
+        return AiServices.builder(SupportAgent.class)
+                .chatLanguageModel(model)
+                .chatMemoryProvider(memoryId ->
+                        MessageWindowChatMemory.builder()
+                                .id(memoryId)
+                                .maxMessages(20)
+                                .chatMemoryStore(new InMemoryChatMemoryStore())
+                                .build())
+                .build();
+    }
+}
+```
+
+---
+
+## 6) Expose it as an ACP-style REST endpoint
+
+```java
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/acp")
+public class AgentController {
+
+    private final SupportAgent agent;
+
+    public AgentController() {
+        // Choose one:
+        this.agent = AgentFactory.createOpenAiAgent();
+        // this.agent = AgentFactory.createClaudeAgent();
+    }
+
+    @PostMapping("/chat")
+    public ChatResponse chat(@RequestBody ChatRequest request) {
+        String answer = agent.chat(
+                request.conversationId(),
+                request.userName(),
+                request.message()
+        );
+
+        return new ChatResponse(request.conversationId(), answer);
+    }
+}
+```
+
+### Request/response DTOs
+
+```java
+public record ChatRequest(
+        String conversationId,
+        String userName,
+        String message
+) {}
+```
+
+```java
+public record ChatResponse(
+        String conversationId,
+        String answer
+) {}
+```
+
+---
+
+## 7) Example request
+
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "abc-123",
+    "userName": "Alice",
+    "message": "Explain what langchain4j does in one sentence."
+  }'
+```
+
+Example response:
+
+```json
+{
+  "conversationId": "abc-123",
+  "answer": "langchain4j is a Java library that helps you build LLM-powered applications with chat models, memory, tools, and retrieval."
+}
+```
+
+---
+
+## 8) Adding tools/functions
+
+If your ACP agent needs to call external systems, define tools.
+
+```java
+import dev.langchain4j.agent.tool.Tool;
+
+public class WeatherTools {
+
+    @Tool("Get current weather for a city")
+    public String getWeather(String city) {
+        return "It is sunny in " + city + " with 24°C.";
+    }
+}
+```
+
+Then register the tool:
+
+```java
+return AiServices.builder(SupportAgent.class)
+        .chatLanguageModel(model)
+        .tools(new WeatherTools())
+        .chatMemoryProvider(memoryId ->
+                MessageWindowChatMemory.builder()
+                        .id(memoryId)
+                        .maxMessages(20)
+                        .chatMemoryStore(new InMemoryChatMemoryStore())
+                        .build())
+        .build();
+```
+
+---
+
+## 9) If you want a more “agent-like” setup
+
+A more advanced agent usually has:
+
+- system prompt
+- memory
+- tools
+- structured output
+- retries / error handling
+- logging and tracing
+
+Example system prompt:
+
+```java
+@SystemMessage("""
+You are an ACP-compatible assistant.
+Follow the user's request carefully.
+Use tools when needed.
+If the task is ambiguous, ask one clarifying question.
+Return concise answers.
+""")
+```
+
+---
+
+## 10) Minimal production tips
+
+- Use a persistent chat memory store instead of in-memory if you need sessions across restarts
+- Add authentication to the endpoint
+- Validate input
+- Set model timeouts and retry policies
+- Log conversation IDs, not raw sensitive content
+- Use structured output if the ACP protocol expects strict JSON
+
+---
+
+## 11) Summary
+
+A simple ACP-compatible agent with langchain4j looks like:
+
+- **Agent interface** with `@SystemMessage`, `@UserMessage`, `@MemoryId`
+- **Model provider**: OpenAI or Claude
+- **Memory** for conversation continuity
+- **REST endpoint** for protocol access
+- **Tools** for external actions
+
+---
+
+If you want, I can also provide:
+
+1. a **full Spring Boot project structure**
+2. a version using **structured JSON output**
+3. a version with **tool calling + RAG**
+4. an example that follows a specific **ACP spec** if you share the exact protocol definition
+QUESTION: Give me a version with **tool calling + RAG**
+ANSWER:
+Below is a more complete **langchain4j agent with tool calling + RAG** using either **OpenAI** or **Claude**.
+
+I’ll show a practical Spring Boot example with:
+
+- **tool calling** for external actions
+- **RAG** for knowledge-base retrieval
+- a simple REST endpoint to expose the agent
+
+---
+
+# 1) What this setup does
+
+The agent can:
+
+- answer from a **vector store / knowledge base** via RAG
+- call **tools** for live or deterministic data
+- combine both when needed
+
+Example:
+- “What is your return policy?” → RAG
+- “What’s the weather in Paris?” → tool
+- “Compare the return policy and tell me if I can return a used item” → RAG + reasoning
+- “Check order 12345 and tell me if it can still be returned” → tool + RAG
+
+---
+
+# 2) Maven dependencies
+
+## OpenAI version
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-community</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+</dependencies>
+```
+
+## Claude version
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-anthropic</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-community</artifactId>
+        <version>0.35.0</version>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+</dependencies>
+```
+
+---
+
+# 3) Define the agent interface
+
+We’ll use a retrieval assistant that can answer using retrieved context.
+
+```java
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.MemoryId;
+
+public interface ShopAgent {
+
+    @SystemMessage("""
+        You are a helpful shop assistant.
+        Use the provided knowledge base context when relevant.
+        Use tools when you need live or deterministic data.
+        If you do not know, say so.
+        Keep answers concise and accurate.
+    """)
+    String chat(@MemoryId String conversationId,
+                @UserMessage String message);
+}
+```
+
+---
+
+# 4) Create tools
+
+Here are example tools for live shop data.
+
+```java
+import dev.langchain4j.agent.tool.Tool;
+
+public class ShopTools {
+
+    @Tool("Get order status by order ID")
+    public String getOrderStatus(String orderId) {
+        // Replace with real DB/API call
+        if ("12345".equals(orderId)) {
+            return "Order 12345 is DELIVERED.";
+        }
+        return "Order " + orderId + " not found.";
+    }
+
+    @Tool("Check if an item is eligible for return")
+    public String isReturnEligible(String sku) {
+        // Replace with real business logic
+        if ("SKU-RED-001".equalsIgnoreCase(sku)) {
+            return "Item SKU-RED-001 is eligible for return within 30 days if unused.";
+        }
+        return "Return eligibility unknown for " + sku + ".";
+    }
+}
+```
+
+---
+
+# 5) Build the RAG pipeline
+
+We’ll create:
+
+- a document loader
+- text splitter
+- embedding model
+- vector store
+- retriever
+
+## Example knowledge base documents
+
+Imagine these are your shop policies:
+
+- return policy
+- shipping policy
+- warranty policy
+
+---
+
+## 5.1 Load documents
+
+You can load from files, classpath, DB, or web pages. Here’s a simple in-memory example:
+
+```java
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.Metadata;
+
+import java.util.List;
+
+public class ShopDocuments {
+
+    public static List<Document> load() {
+        return List.of(
+            Document.from("""
+                Return Policy:
+                - Items can be returned within 30 days of delivery.
+                - Items must be unused and in original packaging.
+                - Final sale items are not returnable.
+                """, Metadata.metadata("source", "return-policy")),
+
+            Document.from("""
+                Shipping Policy:
+                - Standard shipping takes 3-5 business days.
+                - Express shipping takes 1-2 business days.
+                - Orders placed after 5 PM ship next business day.
+                """, Metadata.metadata("source", "shipping-policy")),
+
+            Document.from("""
+                Warranty Policy:
+                - Electronics include a 1-year limited warranty.
+                - Warranty covers manufacturing defects only.
+                - Accidental damage is not covered.
+                """, Metadata.metadata("source", "warranty-policy"))
+        );
+    }
+}
+```
+
+---
+
+## 5.2 Create embeddings and vector store
+
+Example using an in-memory vector store.
+
+```java
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+
+public class RagFactory {
+
+    public static EmbeddingModel embeddingModel() {
+        return OpenAiEmbeddingModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("text-embedding-3-small")
+                .build();
+    }
+
+    public static EmbeddingStore store() {
+        return new InMemoryEmbeddingStore();
+    }
+}
+```
+
+If using Claude, note that Claude itself is the chat model; embeddings still typically come from OpenAI or another embedding provider, since Claude is not usually used for embeddings in this setup.
+
+---
+
+## 5.3 Index documents
+
+```java
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+
+import java.util.List;
+
+public class RagIndexer {
+
+    public static void index(EmbeddingModel embeddingModel, EmbeddingStore store) {
+        List<dev.langchain4j.data.document.Document> docs = ShopDocuments.load();
+
+        EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
+                .embeddingModel(embeddingModel)
+                .embeddingStore(store)
+                .documentSplitter(DocumentSplitters.recursive(300, 30))
+                .build();
+
+        ingestor.ingest(docs);
+    }
+}
+```
+
+---
+
+## 5.4 Create retriever and content retriever
+
+```java
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+
+public class RetrieverFactory {
+
+    public static EmbeddingStoreContentRetriever create(EmbeddingModel embeddingModel, EmbeddingStore store) {
+        return EmbeddingStoreContentRetriever.builder()
+                .embeddingModel(embeddingModel)
+                .embeddingStore(store)
+                .maxResults(3)
+                .minScore(0.6)
+                .build();
+    }
+}
+```
+
+---
+
+# 6) Create the agent with tool calling + RAG
+
+Below is the key part.
+
+## OpenAI model
+
+```java
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.store.memory.chat.InMemoryChatMemoryStore;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+
+public class AgentFactory {
+
+    public static ShopAgent createOpenAiAgent(ContentRetriever retriever) {
+        ChatLanguageModel model = OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName("gpt-4o-mini")
+                .build();
+
+        return AiServices.builder(ShopAgent.class)
+                .chatLanguageModel(model)
+                .tools(new ShopTools())
+                .contentRetriever(retriever)
+                .chatMemoryProvider(memoryId ->
+                        MessageWindowChatMemory.builder()
+                                .id(memoryId)
+                                .maxMessages(20)
+                                .chatMemoryStore(new InMemoryChatMemoryStore())
+                                .build())
+                .build();
+    }
+}
+```
+
+## Claude model
+
+```java
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.anthropic.AnthropicChatModel;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.store.memory.chat.InMemoryChatMemoryStore;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+
+public class AgentFactory {
+
+    public static ShopAgent createClaudeAgent(ContentRetriever retriever) {
+        ChatLanguageModel model = AnthropicChatModel.builder()
+                .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+                .modelName("claude-3-5-sonnet-20240620")
+                .build();
+
+        return AiServices.builder(ShopAgent.class)
+                .chatLanguageModel(model)
+                .tools(new ShopTools())
+                .contentRetriever(retriever)
+                .chatMemoryProvider(memoryId ->
+                        MessageWindowChatMemory.builder()
+                                .id(memoryId)
+                                .maxMessages(20)
+                                .chatMemoryStore(new InMemoryChatMemoryStore())
+                                .build())
+                .build();
+    }
+}
+```
+
+---
+
+# 7) REST controller
+
+```java
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/acp")
+public class AgentController {
+
+    private final ShopAgent agent;
+
+    public AgentController() {
+        var embeddingModel = RagFactory.embeddingModel();
+        var store = RagFactory.store();
+
+        RagIndexer.index(embeddingModel, store);
+        var retriever = RetrieverFactory.create(embeddingModel, store);
+
+        // Choose one:
+        this.agent = AgentFactory.createOpenAiAgent(retriever);
+        // this.agent = AgentFactory.createClaudeAgent(retriever);
+    }
+
+    @PostMapping("/chat")
+    public ChatResponse chat(@RequestBody ChatRequest request) {
+        String answer = agent.chat(request.conversationId(), request.message());
+        return new ChatResponse(request.conversationId(), answer);
+    }
+}
+```
+
+DTOs:
+
+```java
+public record ChatRequest(
+        String conversationId,
+        String message
+) {}
+```
+
+```java
+public record ChatResponse(
+        String conversationId,
+        String answer
+) {}
+```
+
+---
+
+# 8) Example usage
+
+## Ask something from the knowledge base
+
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "c1",
+    "message": "What is your return policy?"
+  }'
+```
+
+The agent should retrieve the return policy and answer from RAG.
+
+---
+
+## Ask for a live tool-based answer
+
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "c2",
+    "message": "Check order 12345 and tell me its status."
+  }'
+```
+
+The agent should call `getOrderStatus("12345")`.
+
+---
+
+## Ask a combined question
+
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "c3",
+    "message": "My order 12345 was delivered. Can I still return it?"
+  }'
+```
+
+This may use:
+- tool: order status
+- RAG: return policy
+- reasoning: delivered + within 30 days + unused/original packaging
+
+---
+
+# 9) Better version: make the agent explicitly use RAG context
+
+If you want stronger control, you can use a **retrieval-augmented system message** or a custom prompt that tells the model to prefer retrieved context.
+
+Example:
+
+```java
+@SystemMessage("""
+You are a shop assistant.
+Use the retrieved context as the primary source of truth for policy questions.
+Use tools for live data such as order status or inventory.
+If retrieved context does not contain the answer, say you do not know.
+""")
+String chat(@MemoryId String conversationId, @UserMessage String message);
+```
+
+---
+
+# 10) Notes and best practices
+
+## Tool calling
+Use tools for:
+- order status
+- inventory
+- user account lookup
+- shipping calculation
+- refund eligibility checks
+
+## RAG
+Use RAG for:
+- policies
+- FAQs
+- manuals
+- product descriptions
+- internal docs
+
+## Production improvements
+- use a persistent vector store like PostgreSQL + pgvector, Pinecone, Weaviate, or Elasticsearch
+- use a persistent chat memory store
+- add auth and rate limiting
+- add citations in answers
+- log retrieval results for debugging
+
+---
+
+# 11) If you want citations
+
+You can also instruct the agent to cite sources from retrieved documents. For that, you’d typically customize the RAG pipeline and answer formatting so the model includes document metadata like `source`.
+
+---
+
+# 12) Recommended next step
+
+If you want, I can give you one of these:
+
+1. a **full working Spring Boot project**
+2. a version using **pgvector**
+3. a version with **citations in the answer**
+4. a version with **structured JSON output**
+5. a version using **Claude only** or **OpenAI only**
+
+If you want, I can generate the **full project tree + all Java files** next.
+QUESTION: Give me a version using OpenAI only and a full project tree + all Java files
+ANSWER:
+Below is a complete **OpenAI-only** example of a **langchain4j agent with tool calling + RAG** in a **Spring Boot** app.
+
+It includes:
+
+- full project tree
+- all Java files
+- a simple REST endpoint
+- OpenAI chat model
+- OpenAI embeddings
+- in-memory vector store
+- tool calling
+- RAG over shop policy documents
+
+---
+
+# Project tree
+
+```text
+shop-agent/
+├── pom.xml
+└── src/
+    └── main/
+        ├── java/
+        │   └── com/
+        │       └── example/
+        │           └── shopagent/
+        │               ├── ShopAgentApplication.java
+        │               ├── controller/
+        │               │   └── AgentController.java
+        │               ├── dto/
+        │               │   ├── ChatRequest.java
+        │               │   └── ChatResponse.java
+        │               ├── agent/
+        │               │   ├── ShopAgent.java
+        │               │   └── AgentFactory.java
+        │               ├── tools/
+        │               │   └── ShopTools.java
+        │               ├── rag/
+        │               │   ├── RagConfig.java
+        │               │   ├── RagIndexer.java
+        │               │   ├── RetrieverFactory.java
+        │               │   └── ShopDocuments.java
+        │               └── config/
+        │                   └── AppConfig.java
+        └── resources/
+            └── application.properties
+```
+
+---
+
+# 1) `pom.xml`
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>shop-agent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>shop-agent</name>
+    <description>OpenAI-only langchain4j shop agent with tool calling and RAG</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <spring-boot.version>3.3.2</spring-boot.version>
+        <langchain4j.version>0.35.0</langchain4j.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+---
+
+# 2) `src/main/resources/application.properties`
+
+```properties
+server.port=8080
+
+# Set these in your environment:
+# OPENAI_API_KEY=...
+# Optional:
+app.openai.chat-model=gpt-4o-mini
+app.openai.embedding-model=text-embedding-3-small
+```
+
+---
+
+# 3) Main application
+
+## `ShopAgentApplication.java`
+
+```java
+package com.example.shopagent;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class ShopAgentApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ShopAgentApplication.class, args);
+    }
+}
+```
+
+---
+
+# 4) DTOs
+
+## `dto/ChatRequest.java`
+
+```java
+package com.example.shopagent.dto;
+
+public record ChatRequest(
+        String conversationId,
+        String message
+) {}
+```
+
+## `dto/ChatResponse.java`
+
+```java
+package com.example.shopagent.dto;
+
+public record ChatResponse(
+        String conversationId,
+        String answer
+) {}
+```
+
+---
+
+# 5) Agent interface
+
+## `agent/ShopAgent.java`
+
+```java
+package com.example.shopagent.agent;
+
+import dev.langchain4j.service.MemoryId;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+
+public interface ShopAgent {
+
+    @SystemMessage("""
+        You are a helpful shop assistant.
+
+        Use the retrieved knowledge base context as the primary source of truth for policy questions.
+        Use tools when you need live or deterministic data, such as order status.
+        If the answer is not in the knowledge base and no tool can help, say you do not know.
+        Be concise and accurate.
+    """)
+    String chat(@MemoryId String conversationId,
+                @UserMessage String message);
+}
+```
+
+---
+
+# 6) Tools
+
+## `tools/ShopTools.java`
+
+```java
+package com.example.shopagent.tools;
+
+import dev.langchain4j.agent.tool.Tool;
+
+public class ShopTools {
+
+    @Tool("Get order status by order ID")
+    public String getOrderStatus(String orderId) {
+        // Replace this with a real DB/API call
+        if ("12345".equals(orderId)) {
+            return "Order 12345 is DELIVERED.";
+        }
+        if ("99999".equals(orderId)) {
+            return "Order 99999 is SHIPPED.";
+        }
+        return "Order " + orderId + " not found.";
+    }
+
+    @Tool("Check whether an item is eligible for return")
+    public String isReturnEligible(String sku) {
+        // Replace this with real business logic
+        if ("SKU-RED-001".equalsIgnoreCase(sku)) {
+            return "Item SKU-RED-001 is eligible for return within 30 days if unused and in original packaging.";
+        }
+        if ("SKU-OPEN-BOX-9".equalsIgnoreCase(sku)) {
+            return "Item SKU-OPEN-BOX-9 is not eligible for return because it is final sale.";
+        }
+        return "Return eligibility unknown for " + sku + ".";
+    }
+}
+```
+
+---
+
+# 7) RAG documents
+
+## `rag/ShopDocuments.java`
+
+```java
+package com.example.shopagent.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.Metadata;
+
+import java.util.List;
+
+public class ShopDocuments {
+
+    public static List<Document> load() {
+        return List.of(
+                Document.from("""
+                        Return Policy:
+                        - Items can be returned within 30 days of delivery.
+                        - Items must be unused and in original packaging.
+                        - Final sale items are not returnable.
+                        - Refunds are issued to the original payment method after inspection.
+                        """, Metadata.metadata("source", "return-policy")),
+
+                Document.from("""
+                        Shipping Policy:
+                        - Standard shipping takes 3-5 business days.
+                        - Express shipping takes 1-2 business days.
+                        - Orders placed after 5 PM ship the next business day.
+                        - Shipping is free for orders over $50.
+                        """, Metadata.metadata("source", "shipping-policy")),
+
+                Document.from("""
+                        Warranty Policy:
+                        - Electronics include a 1-year limited warranty.
+                        - Warranty covers manufacturing defects only.
+                        - Accidental damage is not covered.
+                        - Warranty claims require proof of purchase.
+                        """, Metadata.metadata("source", "warranty-policy"))
+        );
+    }
+}
+```
+
+---
+
+# 8) RAG config
+
+## `rag/RagConfig.java`
+
+```java
+package com.example.shopagent.rag;
+
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class RagConfig {
+
+    @Bean
+    public EmbeddingModel embeddingModel(@Value("${app.openai.embedding-model:text-embedding-3-small}") String embeddingModelName) {
+        return OpenAiEmbeddingModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName(embeddingModelName)
+                .build();
+    }
+
+    @Bean
+    public EmbeddingStore embeddingStore() {
+        return new InMemoryEmbeddingStore<>();
+    }
+}
+```
+
+---
+
+# 9) RAG indexer
+
+## `rag/RagIndexer.java`
+
+```java
+package com.example.shopagent.rag;
+
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
+import org.springframework.stereotype.Component;
+
+import jakarta.annotation.PostConstruct;
+import java.util.List;
+
+@Component
+public class RagIndexer {
+
+    private final EmbeddingModel embeddingModel;
+    private final EmbeddingStore embeddingStore;
+
+    public RagIndexer(EmbeddingModel embeddingModel, EmbeddingStore embeddingStore) {
+        this.embeddingModel = embeddingModel;
+        this.embeddingStore = embeddingStore;
+    }
+
+    @PostConstruct
+    public void indexDocuments() {
+        List<Document> documents = ShopDocuments.load();
+
+        EmbeddingStoreIngestor ingestor = EmbeddingStoreIngestor.builder()
+                .embeddingModel(embeddingModel)
+                .embeddingStore(embeddingStore)
+                .documentSplitter(DocumentSplitters.recursive(300, 30))
+                .build();
+
+        ingestor.ingest(documents);
+    }
+}
+```
+
+---
+
+# 10) Retriever factory
+
+## `rag/RetrieverFactory.java`
+
+```java
+package com.example.shopagent.rag;
+
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class RetrieverFactory {
+
+    @Bean
+    public ContentRetriever contentRetriever(EmbeddingModel embeddingModel, EmbeddingStore embeddingStore) {
+        return EmbeddingStoreContentRetriever.builder()
+                .embeddingModel(embeddingModel)
+                .embeddingStore(embeddingStore)
+                .maxResults(3)
+                .minScore(0.6)
+                .build();
+    }
+}
+```
+
+---
+
+# 11) Agent factory
+
+## `agent/AgentFactory.java`
+
+```java
+package com.example.shopagent.agent;
+
+import com.example.shopagent.tools.ShopTools;
+import dev.langchain4j.memory.chat.ChatMemory;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.store.memory.chat.InMemoryChatMemoryStore;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class AgentFactory {
+
+    @Bean
+    public ChatLanguageModel chatLanguageModel(@Value("${app.openai.chat-model:gpt-4o-mini}") String chatModelName) {
+        return OpenAiChatModel.builder()
+                .apiKey(System.getenv("OPENAI_API_KEY"))
+                .modelName(chatModelName)
+                .build();
+    }
+
+    @Bean
+    public ShopAgent shopAgent(ChatLanguageModel chatLanguageModel,
+                               ContentRetriever contentRetriever) {
+        return AiServices.builder(ShopAgent.class)
+                .chatLanguageModel(chatLanguageModel)
+                .tools(new ShopTools())
+                .contentRetriever(contentRetriever)
+                .chatMemoryProvider(memoryId ->
+                        MessageWindowChatMemory.builder()
+                                .id(memoryId)
+                                .maxMessages(20)
+                                .chatMemoryStore(new InMemoryChatMemoryStore())
+                                .build())
+                .build();
+    }
+}
+```
+
+---
+
+# 12) Controller
+
+## `controller/AgentController.java`
+
+```java
+package com.example.shopagent.controller;
+
+import com.example.shopagent.agent.ShopAgent;
+import com.example.shopagent.dto.ChatRequest;
+import com.example.shopagent.dto.ChatResponse;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/acp")
+public class AgentController {
+
+    private final ShopAgent agent;
+
+    public AgentController(ShopAgent agent) {
+        this.agent = agent;
+    }
+
+    @PostMapping("/chat")
+    public ChatResponse chat(@RequestBody ChatRequest request) {
+        String answer = agent.chat(
+                request.conversationId(),
+                request.message()
+        );
+
+        return new ChatResponse(request.conversationId(), answer);
+    }
+}
+```
+
+---
+
+# 13) Optional config placeholder
+
+## `config/AppConfig.java`
+
+```java
+package com.example.shopagent.config;
+
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class AppConfig {
+    // Reserved for future config
+}
+```
+
+---
+
+# 14) How it works
+
+## RAG
+When the user asks policy-related questions, the retriever finds relevant chunks from the embedded documents, and langchain4j passes them to the model.
+
+Example:
+- “What is your return policy?”
+- “How long does shipping take?”
+- “Is accidental damage covered by warranty?”
+
+## Tool calling
+When the user asks something like:
+- “What is the status of order 12345?”
+- “Is SKU-RED-001 returnable?”
+
+the model can call the corresponding Java tools.
+
+---
+
+# 15) Example requests
+
+## Policy question
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "c1",
+    "message": "What is your return policy?"
+  }'
+```
+
+## Order status question
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "c2",
+    "message": "Check order 12345 and tell me its status."
+  }'
+```
+
+## Combined question
+```bash
+curl -X POST http://localhost:8080/acp/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "conversationId": "c3",
+    "message": "My order 12345 was delivered. Can I still return it?"
+  }'
+```
+
+---
+
+# 16) Run it
+
+Set your API key:
+
+```bash
+export OPENAI_API_KEY=your_key_here
+```
+
+Then:
+
+```bash
+mvn spring-boot:run
+```
+
+---
+
+# 17) Notes for production
+
+You’ll likely want to replace:
+
+- `InMemoryEmbeddingStore` with `pgvector`, Pinecone, Weaviate, Elasticsearch, etc.
+- `InMemoryChatMemoryStore` with a persistent store
+- hardcoded sample data with real docs / database content
+- simple tools with real inventory/order/refund services
+
+---
+
+# 18) One important improvement
+
+If you want stronger RAG behavior, you can make the agent answer in a more grounded way by adding a stricter system instruction, for example:
+
+```java
+@SystemMessage("""
+You are a shop assistant.
+Answer using retrieved context whenever available.
+Do not invent policy details.
+If the context is insufficient, say you do not know.
+Use tools for live operational data.
+""")
+```
+
+---
+
+If you want, I can next give you a **second version with pgvector persistence** or a **version that returns citations from the retrieved documents**.
+

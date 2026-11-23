@@ -3,9 +3,14 @@ package com.cartoonizer.rag.openai;
 import com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor;
 import static com.cartoonizer.rag.ollama.OllamaWithRetrievalAugmentor.OLLAMA_MODEL;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.FOLDERS;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.NO_DOCUMENTS;
 import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.URLS;
-import com.cartoonizer.rag.utils.ApiKeys;
-import com.cartoonizer.rag.utils.ModelNames;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.USE_OLLAMA;
+import static com.cartoonizer.rag.utils.ApiKeys.CLAUDE_API_KEY;
+import static com.cartoonizer.rag.utils.ApiKeys.OPENAI_API_KEY;
+import static com.cartoonizer.rag.utils.ModelNames.CHAT_GPT_MINI;
+import static com.cartoonizer.rag.utils.ModelNames.CLAUDE_HAIKU;
 import com.cartoonizer.utils.Utils;
 import java.io.File;
 import javax.swing.JFileChooser;
@@ -23,8 +28,8 @@ public class OpenAiChatApp extends javax.swing.JFrame {
      * Creates new form OpenAiChatApp
      */
     public OpenAiChatApp() {
-//        OpenAiChatWithAugmentorGeneric.USE_OLLAMA = true;
-        OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC = true;
+//        USE_OLLAMA = true;
+//        USE_ANTHROPIC = true;
         initComponents();
     }
     private AiChatInterface chat;
@@ -32,18 +37,33 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         AiChatInterface chat = null;
 //        AiChatInterface chat = new OpenAiChatNoDocuments(ApiKeys.OPENAI_API_KEY, ModelNames.CHAT_GPT_MINI);
 //        AiChatInterface chat = new RagWithGuardrails();
-        if (OpenAiChatWithAugmentorGeneric.USE_OLLAMA) {
-            chat = new OllamaWithRetrievalAugmentor(ApiKeys.OPENAI_API_KEY, 
-                OLLAMA_MODEL, FOLDERS, URLS);
-        } else if (OpenAiChatWithAugmentorGeneric.USE_ANTHROPIC) {
-            chat = new UpdateTableWithAi("database-rag-files", "", ApiKeys.CLAUDE_API_KEY, 
-                ModelNames.CLAUDE_HAIKU);
+        String model = "";
+        jLabelDocuments.setText(NO_DOCUMENTS ? "NOT USING DOCUMENTS" : "USING DOCUMENTS");
+        if (USE_OLLAMA) {
+            model = "OLLAMA";
+            if (NO_DOCUMENTS) {
+                chat = new OpenAiChatNoDocuments(OPENAI_API_KEY, OLLAMA_MODEL);
+            } else {
+                chat = new OllamaWithRetrievalAugmentor(OPENAI_API_KEY, OLLAMA_MODEL, FOLDERS, URLS);
+            }
+        } else if (USE_ANTHROPIC) {
+            model = "CLAUDE";
+            if (NO_DOCUMENTS) {
+                chat = new OpenAiChatNoDocuments(CLAUDE_API_KEY, CLAUDE_HAIKU);
+            } else {
+                chat = new UpdateTableWithAi("database-rag-files", "", CLAUDE_API_KEY, CLAUDE_HAIKU);
+            }
         } else {
-            chat = new OpenAiChatWithAugmentorGeneric(ApiKeys.OPENAI_API_KEY, 
-                ModelNames.CHAT_GPT_MINI, FOLDERS, URLS);
+            model = "OPENAI";
+            if (NO_DOCUMENTS) {
+                chat = new OpenAiChatNoDocuments(OPENAI_API_KEY, CHAT_GPT_MINI);
+            } else {
+                chat = new OpenAiChatWithAugmentorGeneric(OPENAI_API_KEY, CHAT_GPT_MINI, FOLDERS, URLS);
+            }
         }
+        jLabelModel.setText("Model: " + model);
         chat.init();
-        System.out.println("OpenAiChatApp createChat after init()");
+        System.out.println("OpenAiChatApp createChat after init() model = " + model);
         return chat;
     }
     public void setupOpenAi() {
@@ -142,6 +162,8 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         jLabel3 = new javax.swing.JLabel();
         labelMessages = new javax.swing.JLabel();
         jButtonSaveConversation = new javax.swing.JButton();
+        jLabelModel = new javax.swing.JLabel();
+        jLabelDocuments = new javax.swing.JLabel();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
 
@@ -191,6 +213,10 @@ public class OpenAiChatApp extends javax.swing.JFrame {
             }
         });
 
+        jLabelModel.setText(" ");
+
+        jLabelDocuments.setText(" ");
+
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
         getContentPane().setLayout(layout);
         layout.setHorizontalGroup(
@@ -214,6 +240,12 @@ public class OpenAiChatApp extends javax.swing.JFrame {
                                 .addComponent(jButtonSaveConversation, javax.swing.GroupLayout.PREFERRED_SIZE, 227, javax.swing.GroupLayout.PREFERRED_SIZE)))
                         .addGap(0, 180, Short.MAX_VALUE)))
                 .addContainerGap())
+            .addGroup(layout.createSequentialGroup()
+                .addGap(286, 286, 286)
+                .addComponent(jLabelModel, javax.swing.GroupLayout.PREFERRED_SIZE, 248, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addGap(18, 18, 18)
+                .addComponent(jLabelDocuments, javax.swing.GroupLayout.PREFERRED_SIZE, 248, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
             .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                 .addGroup(layout.createSequentialGroup()
                     .addGap(16, 16, 16)
@@ -228,7 +260,11 @@ public class OpenAiChatApp extends javax.swing.JFrame {
         layout.setVerticalGroup(
             layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(layout.createSequentialGroup()
-                .addGap(321, 321, 321)
+                .addGap(15, 15, 15)
+                .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabelModel)
+                    .addComponent(jLabelDocuments))
+                .addGap(284, 284, 284)
                 .addComponent(jLabel1)
                 .addGap(18, 18, 18)
                 .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 261, javax.swing.GroupLayout.PREFERRED_SIZE)
@@ -307,6 +343,8 @@ public class OpenAiChatApp extends javax.swing.JFrame {
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;
+    private javax.swing.JLabel jLabelDocuments;
+    private javax.swing.JLabel jLabelModel;
     private javax.swing.JScrollPane jScrollPane1;
     private javax.swing.JScrollPane jScrollPane2;
     private javax.swing.JLabel labelMessages;

@@ -9,8 +9,9 @@ public interface Assistant {
 
     @SystemMessage(
             """
-            You are in charge of an online shop. Answer the following question to the best of your ability using the shop data:\n"
-                Question:
+//            You are in charge of an online shop. Answer the following question to the best of your ability using the shop data:\n"
+            You are an expert in creating AI agents using Claude or OpenAi and langchain4j. Answer the following question to the best of your ability:\n"
+            Question:
                 {{question}}
             """
     )

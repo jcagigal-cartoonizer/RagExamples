@@ -41,6 +41,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
     public static boolean USE_OLLAMA = false;
     public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
     public static boolean USE_ANTHROPIC = true;
+    public static boolean NO_DOCUMENTS = true;
     public static List FOLDERS = List.of(
             //                        Path.of("./files/output-files"),
             "./files/guardrails-files"

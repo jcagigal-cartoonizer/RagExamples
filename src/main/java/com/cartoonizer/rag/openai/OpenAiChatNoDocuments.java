@@ -41,21 +41,16 @@ public class OpenAiChatNoDocuments implements AiChatInterface {
     @Override
     public String askQuestion(String question) {
         String answer = "";
-        if (CLAUDE_API_KEY.equals(theApiKey)){
-//            answer = this.chatModel.chat(question);
-            ChatRequestParameters params = this.chatModel.defaultRequestParameters();
-            ChatRequest chatRequest = ChatRequest.builder()
+        ChatRequestParameters params = this.chatModel.defaultRequestParameters();
+        ChatRequest chatRequest = ChatRequest.builder()
                 .parameters(params)
                 .messages(
-                    SystemMessage.from("You are an expert in creating AI agents using Claude or OpenAi. Answer the question to the best of your ability"),
-                    UserMessage.from(question)
-            )
-            .build();
-            ChatResponse response = this.chatModel.doChat(chatRequest);            
-            answer = response.aiMessage().text();
-        } else {
-            answer = this.assistant.answer(question);
-        }
+                        SystemMessage.from("You are an expert in creating Android apps with JetPack Compose. Answer the question to the best of your ability"),
+                        UserMessage.from(question)
+                )
+                .build();
+        ChatResponse response = this.chatModel.doChat(chatRequest);
+        answer = response.aiMessage().text();
         System.out.println("ANSWER = " + answer);
         return answer;
     }
@@ -126,31 +121,32 @@ AI powered online shop search Agent using RAG
         return questions;
     }
     public ChatModel chatModel;
+
     private Assistant createAssistant() {
         if (OPENAI_API_KEY.equals(theApiKey)) {
             chatModel = OpenAiChatModel.builder()
-                .apiKey(theApiKey)
-                .temperature(0.0)
-                .logRequests(false)
-                .logResponses(false)
-                .modelName(theModelName)
-                .build();
-        } else if (CLAUDE_API_KEY.equals(theApiKey)){
+                    .apiKey(theApiKey)
+                    .temperature(0.0)
+                    .logRequests(false)
+                    .logResponses(false)
+                    .modelName(theModelName)
+                    .build();
+        } else if (CLAUDE_API_KEY.equals(theApiKey)) {
             chatModel = AnthropicChatModel.builder()
-                .apiKey(theApiKey)
-//                .temperature(0.0)
-                .logRequests(false)
-                .logResponses(false)
-                .modelName(theModelName)
-                .maxTokens(64000)
-                .build();
+                    .apiKey(theApiKey)
+                    //                .temperature(0.0)
+                    .logRequests(false)
+                    .logResponses(false)
+                    .modelName(theModelName)
+                    .maxTokens(64000)
+                    .build();
         } else {
             chatModel = OllamaChatModel.builder()
-                .temperature(0.0)
-                .logRequests(false)
-                .logResponses(false)
-                .modelName(theModelName)
-                .build();
+                    .temperature(0.0)
+                    .logRequests(false)
+                    .logResponses(false)
+                    .modelName(theModelName)
+                    .build();
         }
 
         return AiServices.builder(Assistant.class)

@@ -26,8 +26,13 @@ import com.cartoonizer.rag.utils.ModelNames;
 import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
 import dev.langchain4j.data.document.loader.UrlDocumentLoader;
 import dev.langchain4j.data.document.splitter.DocumentByLineSplitter;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.anthropic.AnthropicChatModel;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.ChatRequestParameters;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
@@ -40,7 +45,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
 
     public static boolean USE_OLLAMA = false;
     public static final String OLLAMA_IMAGE = "ollama/ollama:latest";
-    public static boolean USE_ANTHROPIC = true;
+    public static boolean USE_ANTHROPIC = false;
     public static boolean NO_DOCUMENTS = true;
     public static List FOLDERS = List.of(
             //                        Path.of("./files/output-files"),
@@ -64,6 +69,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
     }
     private String theApiKey;
     private String theModelName;
+    public ChatModel chatModel;
 
     public Assistant assistant;
 
@@ -194,7 +200,7 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
                 .build();
         urlIngestor.ingest(allowedUrls);
         
-        ChatModel chatModel = createChatModel();
+        chatModel = createChatModel();
 
         // We will create a CompressingQueryTransformer, which is responsible for compressing
         // the user's query and the preceding conversation into a single, stand-alone query.
@@ -227,7 +233,20 @@ public class OpenAiChatWithAugmentorGeneric implements AiChatInterface {
 
     @Override
     public String askQuestion(String question) {
-        return this.assistant.answer(question);
+//        return this.assistant.answer(question);
+        String answer = "";
+        ChatRequestParameters params = this.chatModel.defaultRequestParameters();
+        ChatRequest chatRequest = ChatRequest.builder()
+                .parameters(params)
+                .messages(
+                        SystemMessage.from("You are an expert in creating Android apps with JetPack Compose. Answer the question to the best of your ability"),
+                        UserMessage.from(question)
+                )
+                .build();
+        ChatResponse response = this.chatModel.doChat(chatRequest);
+        answer = response.aiMessage().text();
+        System.out.println("ANSWER = " + answer);
+        return answer;
     }
 
     @Override

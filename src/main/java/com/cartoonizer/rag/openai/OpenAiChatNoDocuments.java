@@ -1,6 +1,7 @@
 package com.cartoonizer.rag.openai;
 
 import static com.cartoonizer.rag.openai.OpenAiChatApp.SESSION_UUID;
+import static com.cartoonizer.rag.openai.OpenAiChatWithAugmentorGeneric.STORE_MESSAGES;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;
@@ -44,8 +45,10 @@ public class OpenAiChatNoDocuments implements AiChatInterface {
         ChatRequestParameters params = this.chatModel.defaultRequestParameters();
         UserMessage userMessage = UserMessage.from(question);
         
-        store.messageList.add((ChatMessage)userMessage);
-        store.updateMessages(SESSION_UUID, store.messageList);
+        if (STORE_MESSAGES) {
+            store.messageList.add((ChatMessage)userMessage);
+            store.updateMessages(SESSION_UUID, store.messageList);
+        }
         
         ChatRequest chatRequest = ChatRequest.builder()
                 .parameters(params)
@@ -57,8 +60,10 @@ public class OpenAiChatNoDocuments implements AiChatInterface {
         ChatResponse response = this.chatModel.doChat(chatRequest);
         AiMessage aiMessage = response.aiMessage();
         
-        store.messageList.add((ChatMessage)aiMessage);
-        store.updateMessages(SESSION_UUID, store.messageList);
+        if (STORE_MESSAGES) {
+            store.messageList.add((ChatMessage)aiMessage);
+            store.updateMessages(SESSION_UUID, store.messageList);
+        }
         
         answer = aiMessage.text();
         System.out.println("ANSWER = " + answer);
